@@ -17,27 +17,48 @@
 }
 
 /*
-  Very soft CSS-only grain, purely to break up the flat graphite fields -
-  no raster texture, no filter that would read as 3D/photoreal. Two
-  offset repeating-linear-gradient layers at a very low opacity are enough
-  to suggest a worn console surface without becoming visual noise.
+  Very soft CSS-only grain, purely to break up flat colour fields - no
+  raster texture, no filter that would read as 3D/photoreal. A dozen tiny
+  radial dots at irregular, non-repeating-looking coordinates (rather than
+  straight repeating lines, which read as an obvious diagonal pattern at
+  a glance) tiled at an odd, non-round size so the repeat seam stays
+  inconspicuous - opacity is low enough that the eye reads "worn surface"
+  rather than "grid".
 */
 .app::after {
   content: "";
   position: absolute;
   inset: 0;
   pointer-events: none;
-  opacity: 0.035;
+  opacity: 0.055;
   mix-blend-mode: overlay;
   background-image:
-    repeating-linear-gradient(115deg, #fff 0, #fff 1px, transparent 1px, transparent 3px),
-    repeating-linear-gradient(25deg, #fff 0, #fff 1px, transparent 1px, transparent 4px);
+    radial-gradient(circle at 6% 22%, #fff 0.5px, transparent 0.5px),
+    radial-gradient(circle at 17% 68%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 29% 9%, #fff 0.6px, transparent 0.6px),
+    radial-gradient(circle at 38% 47%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 51% 81%, #fff 0.5px, transparent 0.5px),
+    radial-gradient(circle at 62% 31%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 71% 63%, #fff 0.6px, transparent 0.6px),
+    radial-gradient(circle at 83% 14%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 91% 52%, #fff 0.5px, transparent 0.5px),
+    radial-gradient(circle at 12% 91%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 45% 15%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 79% 87%, #fff 0.5px, transparent 0.5px),
+    radial-gradient(circle at 94% 76%, #fff 0.4px, transparent 0.4px),
+    radial-gradient(circle at 24% 39%, #fff 0.4px, transparent 0.4px);
+  background-size: 53px 61px;
 }
 
 .app__main {
+  position: relative;
   display: grid;
   grid-template-columns: repeat(7, 1fr);
   min-height: 0;
-  border-top: var(--border-hairline) solid var(--line-hairline);
-  border-bottom: var(--border-hairline) solid var(--line-hairline);
+  /* The coloured module row is inset relative to the dark chassis on all
+     sides, with one shared radius on its outer corners - modules are NOT
+     individually rounded/carded, only the group as a whole. */
+  margin-inline: var(--frame-thickness);
+  border-radius: var(--frame-radius);
+  overflow: hidden;
 }

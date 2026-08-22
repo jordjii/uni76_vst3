@@ -80,20 +80,20 @@
 .signal-path__list {
   display: flex;
   align-items: center;
-  gap: 0.35em;
+  gap: 0.4em;
   font-family: var(--font-mono);
   font-size: var(--fs-footer);
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.05em;
   color: var(--text-primary);
   white-space: nowrap;
 }
 
 .signal-path__chip {
-  padding: 0.3em 0.55em;
-  border: 1px solid var(--line-hairline-strong);
+  padding: 0.4em 0.7em;
+  border: 1.5px solid var(--line-hairline-strong);
   border-radius: var(--radius-sm);
-  background: rgba(236, 231, 220, 0.04);
+  background: rgba(236, 231, 220, 0.05);
 }
 
 .signal-path__arrow {

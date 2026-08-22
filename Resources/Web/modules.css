@@ -4,11 +4,15 @@
   Each <section class="module"> carries its own vintage colour as the
   `--module-accent` custom property (set inline in index.html from the
   tokens in tokens.css) - nothing here hard-codes a module's colour. The
-  panel's *entire* working height is filled with that colour (the approved
-  reference's core visual principle: a dark header/footer frame around 7
-  fully-coloured vintage panels) - text on top of it uses the dark "ink"
-  tokens from tokens.css, not the light text-* tokens used in the header
-  and footer.
+  panel's *entire* working height is filled with that colour - text on top
+  of it uses the dark "ink" tokens from tokens.css, not the light text-*
+  tokens used in the dark header/footer.
+
+  The header/knob-area/aux zones use fixed heights (not content-driven
+  auto-sizing) specifically so all 7 modules' knobs, value read-outs and
+  aux scales land on the same horizontal lines even though the actual aux
+  content differs in line-count from module to module (PREAMP's two
+  filter-lines + caption vs. every other module's single tri-scale).
 */
 
 .module {
@@ -18,41 +22,47 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--space-sm) var(--space-sm) var(--space-lg);
+  padding: var(--space-sm) var(--space-sm) var(--space-md);
   background: var(--module-accent);
   color: var(--ink-strong);
   border-right: var(--border-module) solid var(--ink-hairline);
   min-width: 0;
   overflow: hidden; /* never let a module's content bleed into its neighbour */
+  /* A faint engraved-panel highlight under every glyph keeps ink text
+     legible now that the panel colours read darker/more desaturated -
+     text-shadow is inherited, so this covers every label in the module
+     (including the aux scales) from one declaration. */
+  text-shadow: 0 1px 0 rgba(255, 255, 255, 0.14);
 }
 
 .module:last-child {
   border-right: none;
 }
 
-/* A soft seam under the dark header rather than a separate accent bar -
-   the panel colour itself now carries the module identity. */
-.module::before {
+/* Very soft inward edge-darkening so each panel reads as a slightly worn,
+   lit-from-above surface rather than a flat poster-colour swatch. */
+.module::after {
   content: "";
   position: absolute;
-  inset: 0 0 auto 0;
-  height: 2px;
-  background: rgba(0, 0, 0, 0.18);
+  inset: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at 50% 38%, transparent 45%, rgba(0, 0, 0, 0.16) 100%);
 }
 
 .module__header {
+  flex: 0 0 var(--zone-header-height);
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.2em;
+  justify-content: center;
+  gap: 0.15em;
   text-align: center;
-  margin-block: var(--space-xs) var(--space-sm);
 }
 
 .module__index {
   font-family: var(--font-mono);
   font-size: var(--fs-module-index);
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: var(--tracking-wide);
   color: var(--ink-mid);
 }
@@ -60,20 +70,26 @@
 .module__name {
   font-size: var(--fs-module-name);
   font-weight: 800;
-  letter-spacing: 0.02em;
+  letter-spacing: 0.01em;
   color: var(--ink-strong);
-  line-height: 1;
+  line-height: 0.95;
+  /* Condensed industrial character even where Arial Narrow/Liberation Sans
+     Narrow aren't installed (see --font-face in tokens.css) - a small
+     horizontal scale keeps the letterforms tall and narrow without
+     distorting them enough to look stretched. */
+  transform: scaleX(0.92);
 }
 
 .module__tag {
   font-size: var(--fs-module-tag);
-  font-weight: 700;
-  letter-spacing: var(--tracking-wider);
+  font-weight: 800;
+  letter-spacing: 0.06em;
   color: var(--ink-mid);
+  white-space: nowrap;
 }
 
 .module__knob-area {
-  flex: 1;
+  flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -83,6 +99,9 @@
 }
 
 .module__aux {
+  flex: 0 0 var(--zone-aux-height);
   width: 100%;
-  margin-top: var(--space-md);
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }

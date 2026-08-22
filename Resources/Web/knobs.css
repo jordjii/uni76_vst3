@@ -95,16 +95,29 @@
   position: absolute;
   top: 0;
   left: 50%;
-  width: 1.5px;
+  width: 1.8px;
   height: var(--knob-tick-length);
-  background: var(--ink-soft);
+  background: var(--ink-mid);
   transform: translateX(-50%);
 }
 
 .knob__tick--major .knob__tick-mark {
   width: 2.5px;
-  height: calc(var(--knob-tick-length) * 1.6);
+  height: calc(var(--knob-tick-length) * 1.7);
   background: var(--ink-strong);
+}
+
+/* ---- Concentric collar ring ----------------------------------------------
+   A second, thinner ring between the tick ends and the knob body itself -
+   a plain border with no fill, sitting behind the body so only its rim
+   shows. Purely decorative hardware detail, not interactive. */
+
+.knob__collar {
+  position: absolute;
+  inset: var(--knob-collar-inset);
+  border-radius: 50%;
+  border: 1.5px solid var(--ink-hairline-strong);
+  pointer-events: none;
 }
 
 /* ---- Body + live indicator ---------------------------------------------- */
@@ -114,7 +127,7 @@
   inset: var(--knob-ring-inset);
   border-radius: 50%;
   background: var(--knob-face);
-  border: 3px solid var(--module-accent);
+  border: 4.5px solid var(--module-accent);
   box-shadow:
     0 0 0 1px var(--knob-face-edge) inset,
     0 2px 4px rgba(0, 0, 0, 0.35);
