@@ -8,6 +8,11 @@
   parameter change). Both work the same way: a full-size, centred,
   invisible box is rotated, and a short mark pinned to its top edge sweeps
   around the knob's circumference as a result.
+
+  All 7 knobs share one dark-graphite face and one pale pointer colour -
+  a single hardware "family" - and differ from each other only in the
+  module-coloured ring around that face and the module-coloured scale
+  ticks/numbers, both driven by --module-accent from the parent panel.
 */
 
 .knob-module {
@@ -15,6 +20,16 @@
   flex-direction: column;
   align-items: center;
   gap: var(--space-xs);
+}
+
+.knob-wrap {
+  position: relative;
+  /* Just enough room for the static 0/50/100 scale numbers to sit outside
+     the knob itself without widening the module's content box by much -
+     there are 7 of these side by side, so every extra pixel here is
+     multiplied by 7. */
+  padding: 1.1em 0.75em 0.1em;
+  max-width: 100%;
 }
 
 .knob {
@@ -26,8 +41,40 @@
 }
 
 .knob:focus-visible {
-  box-shadow: 0 0 0 2px var(--bg-module), 0 0 0 4px var(--focus-ring);
+  box-shadow: 0 0 0 2px var(--module-accent), 0 0 0 4px var(--focus-ring);
   border-radius: 50%;
+}
+
+/* ---- Static 0 / 50 / 100 scale numbers ----------------------------------- */
+
+.knob__scale-numbers {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.knob__scale-numbers span {
+  position: absolute;
+  font-family: var(--font-mono);
+  font-size: var(--fs-knob-scale-num);
+  font-weight: 700;
+  color: var(--ink-mid);
+}
+
+.knob__scale-numbers .is-min {
+  left: 0;
+  bottom: 0.15em;
+}
+
+.knob__scale-numbers .is-mid {
+  top: -1.05em;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+.knob__scale-numbers .is-max {
+  right: 0;
+  bottom: 0.15em;
 }
 
 /* ---- Static tick ring --------------------------------------------------- */
@@ -50,14 +97,14 @@
   left: 50%;
   width: 1.5px;
   height: var(--knob-tick-length);
-  background: var(--line-hairline-strong);
+  background: var(--ink-soft);
   transform: translateX(-50%);
 }
 
 .knob__tick--major .knob__tick-mark {
-  width: 2px;
-  height: calc(var(--knob-tick-length) * 1.5);
-  background: var(--text-secondary);
+  width: 2.5px;
+  height: calc(var(--knob-tick-length) * 1.6);
+  background: var(--ink-strong);
 }
 
 /* ---- Body + live indicator ---------------------------------------------- */
@@ -66,21 +113,24 @@
   position: absolute;
   inset: var(--knob-ring-inset);
   border-radius: 50%;
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0) 40%),
-    var(--neutral-800);
-  border: 1.5px solid color-mix(in srgb, var(--module-accent) 55%, var(--neutral-700));
+  background: var(--knob-face);
+  border: 3px solid var(--module-accent);
+  box-shadow:
+    0 0 0 1px var(--knob-face-edge) inset,
+    0 2px 4px rgba(0, 0, 0, 0.35);
   cursor: ns-resize;
   transition: border-color 120ms ease, box-shadow 120ms ease;
 }
 
 .knob:hover .knob__body {
-  border-color: var(--module-accent);
+  box-shadow:
+    0 0 0 1px var(--knob-face-edge) inset,
+    0 2px 4px rgba(0, 0, 0, 0.35),
+    0 0 0 3px rgba(0, 0, 0, 0.12);
 }
 
 .knob--dragging .knob__body {
   cursor: ns-resize;
-  box-shadow: 0 0 0 1px color-mix(in srgb, var(--module-accent) 40%, transparent);
 }
 
 .knob__indicator {
@@ -97,11 +147,11 @@
 .knob__indicator::after {
   content: "";
   position: absolute;
-  top: 8%;
+  top: 12%;
   left: 50%;
   width: var(--knob-indicator-width);
   height: var(--knob-indicator-length);
-  background: var(--module-accent);
+  background: var(--knob-pointer);
   border-radius: 999px;
   transform: translateX(-50%);
 }
@@ -110,11 +160,11 @@
   position: absolute;
   inset: 0;
   margin: auto;
-  width: 10%;
-  height: 10%;
+  width: 12%;
+  height: 12%;
   border-radius: 50%;
-  background: var(--neutral-950);
-  box-shadow: 0 0 0 1px var(--line-hairline-strong) inset;
+  background: #0f0d0b;
+  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.06) inset;
 }
 
 /* ---- Value / label read-outs -------------------------------------------- */
@@ -122,16 +172,17 @@
 .knob__value {
   font-family: var(--font-mono);
   font-size: var(--fs-knob-value);
-  color: var(--text-primary);
+  color: var(--ink-strong);
   font-variant-numeric: tabular-nums;
+  font-weight: 700;
   min-width: 3.2em;
   text-align: center;
 }
 
 .knob__label {
   font-size: var(--fs-knob-label);
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: var(--tracking-wide);
-  color: var(--module-accent);
+  color: var(--ink-mid);
   text-align: center;
 }

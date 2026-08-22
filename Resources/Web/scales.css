@@ -3,10 +3,12 @@
 
   These are read-outs only, derived visually from an existing parameter's
   value in JS (see aux_visuals.js) - they never create or read a separate
-  parameter of their own.
+  parameter of their own. They sit directly on a coloured module panel, so
+  every colour here is a dark "ink" token (see tokens.css), never the
+  light text-*/line-hairline tokens used in the dark header/footer.
 */
 
-/* ---- Generic 3-point scale (EQ / PITCH / PAN / VERB / IMAGE) ------------- */
+/* ---- Generic 3-point scale (SAT / EQ / PITCH / PAN / VERB / IMAGE) ------- */
 
 .tri-scale {
   display: flex;
@@ -19,17 +21,18 @@
   position: relative;
   height: 2px;
   border-radius: 2px;
-  background: var(--line-hairline-strong);
+  background: var(--ink-hairline-strong);
 }
 
 .tri-scale__marker {
   position: absolute;
   top: 50%;
   left: var(--marker-pos, 50%);
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--module-accent);
+  background: var(--ink-strong);
+  border: 1.5px solid var(--knob-pointer);
   transform: translate(-50%, -50%);
   transition: left 60ms linear;
 }
@@ -38,10 +41,10 @@
   display: flex;
   justify-content: space-between;
   gap: 0.4em;
-  font-size: calc(var(--fs-scale) * 0.86);
-  font-weight: 600;
+  font-size: calc(var(--fs-scale) * 0.9);
+  font-weight: 700;
   letter-spacing: 0.02em;
-  color: var(--text-tertiary);
+  color: var(--ink-mid);
   white-space: nowrap;
 }
 
@@ -58,7 +61,7 @@
 }
 
 .tri-scale__labels span.is-active {
-  color: var(--module-accent);
+  color: var(--ink-strong);
 }
 
 /* ---- Preamp filter indicator lines --------------------------------------- */
@@ -79,9 +82,9 @@
 
 .filter-line__label {
   font-size: var(--fs-scale);
-  font-weight: 600;
+  font-weight: 700;
   letter-spacing: var(--tracking-wide);
-  color: var(--text-tertiary);
+  color: var(--ink-mid);
   white-space: nowrap;
 }
 
@@ -89,16 +92,17 @@
   position: relative;
   height: 2px;
   border-radius: 2px;
-  background: var(--line-hairline-strong);
+  background: var(--ink-hairline-strong);
 }
 
 .filter-line__mark {
   position: absolute;
   top: 50%;
   left: var(--pos, 50%);
-  width: 2px;
-  height: 8px;
-  background: var(--module-accent);
+  width: 3px;
+  height: 11px;
+  background: var(--ink-strong);
+  border-radius: 1px;
   transform: translate(-50%, -50%);
   transition: left 60ms linear;
 }
@@ -106,7 +110,8 @@
 .filter-lines__caption {
   margin-top: 0.15em;
   font-size: var(--fs-scale);
+  font-weight: 600;
   letter-spacing: var(--tracking-wider);
-  color: var(--text-tertiary);
+  color: var(--ink-soft);
   text-align: center;
 }

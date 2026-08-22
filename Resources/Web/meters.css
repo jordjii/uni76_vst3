@@ -4,6 +4,10 @@
   No DSP/telemetry pipeline exists yet (see CLAUDE.md realtime rules), so
   the meters are deliberately rendered in a static, honest idle state -
   never a fake/random animation implying a live signal that isn't there.
+  The segmented LED-style look is drawn as a single CSS background (a
+  repeating gradient for the segment dividers, layered under a green-
+  amber-red spectrum gradient) rendered at low opacity to read as an
+  unlit faceplate, not a live reading.
 */
 
 .footer {
@@ -18,46 +22,50 @@
 
 .meter {
   display: flex;
-  align-items: center;
-  gap: var(--space-sm);
+  flex-direction: column;
+  gap: 0.3em;
   min-width: 0;
 }
 
 .meter--output {
-  justify-content: flex-end;
+  align-items: flex-end;
 }
 
 .meter--input {
-  justify-content: flex-start;
+  align-items: flex-start;
 }
 
 .meter__label {
   font-size: var(--fs-footer);
-  font-weight: 700;
+  font-weight: 800;
   letter-spacing: var(--tracking-wide);
-  color: var(--text-secondary);
+  color: var(--text-primary);
 }
 
 .meter-bar {
   position: relative;
   width: var(--meter-width);
   height: var(--meter-height);
-  border-radius: 999px;
-  background: var(--neutral-800);
+  border-radius: 2px;
+  background:
+    repeating-linear-gradient(
+      90deg,
+      rgba(0, 0, 0, 0.55) 0,
+      rgba(0, 0, 0, 0.55) 1.5px,
+      transparent 1.5px,
+      transparent calc(100% / var(--meter-segments))
+    ),
+    linear-gradient(90deg, #5c8a4a 0%, #5c8a4a 56%, #c2a23e 56%, #c2a23e 80%, #c2a23e 88%, #b0503a 88%, #b0503a 100%);
+  opacity: 0.45; /* idle: a static printed scale, not a live reading - see note above */
   border: 1px solid var(--line-hairline-strong);
-  overflow: hidden;
 }
 
-.meter-bar__fill {
-  position: absolute;
-  inset: 0;
-  width: 0%; /* idle: no live level data - see note above */
-  background: var(--neutral-600);
-}
-
-.meter__status {
-  font-size: var(--fs-footer);
-  letter-spacing: var(--tracking-wide);
+.meter__scale {
+  display: flex;
+  justify-content: space-between;
+  width: var(--meter-width);
+  font-family: var(--font-mono);
+  font-size: var(--fs-footer-caption);
   color: var(--text-tertiary);
 }
 
@@ -65,20 +73,27 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.2em;
+  gap: 0.35em;
   min-width: 0;
 }
 
 .signal-path__list {
   display: flex;
   align-items: center;
-  gap: 0.5em;
+  gap: 0.35em;
   font-family: var(--font-mono);
   font-size: var(--fs-footer);
-  font-weight: 600;
-  letter-spacing: var(--tracking-wide);
-  color: var(--text-secondary);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--text-primary);
   white-space: nowrap;
+}
+
+.signal-path__chip {
+  padding: 0.3em 0.55em;
+  border: 1px solid var(--line-hairline-strong);
+  border-radius: var(--radius-sm);
+  background: rgba(236, 231, 220, 0.04);
 }
 
 .signal-path__arrow {
@@ -86,7 +101,7 @@
 }
 
 .signal-path__caption {
-  font-size: var(--fs-footer);
+  font-size: var(--fs-footer-caption);
   letter-spacing: var(--tracking-wider);
   color: var(--text-tertiary);
 }

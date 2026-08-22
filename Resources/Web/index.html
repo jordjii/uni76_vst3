@@ -19,13 +19,17 @@
     <header class="header">
       <div class="header__brand">NOSTALGIA AUDIO</div>
       <div class="header__title">
-        <span class="header__product">UNI 76</span>
+        <div class="header__product-row">
+          <span class="header__deco-line" aria-hidden="true"></span>
+          <span class="header__product">UNI 76</span>
+          <span class="header__deco-line" aria-hidden="true"></span>
+        </div>
         <span class="header__subtitle">UNIVERSAL ANALOG PROCESSOR</span>
       </div>
       <div class="header__controls">
         <button class="header__btn" type="button" disabled>A / B</button>
-        <button class="header__btn" type="button" disabled>PRESET</button>
-        <button class="header__btn" type="button" disabled>SETTINGS</button>
+        <button class="header__btn" type="button" disabled>PRESET &#9662;</button>
+        <button class="header__btn header__btn--icon" type="button" disabled aria-label="Settings">&#9881;</button>
       </div>
     </header>
 
@@ -40,11 +44,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="preamp">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="preamp">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -77,11 +88,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="eq">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="eq">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -109,15 +127,33 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="saturation">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="saturation">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
             <div class="knob__label">HEAT</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <!-- Purely a derived, non-interactive read-out of the SAT value -
+               no second parameter. -->
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>CLEAN</span><span>WARM</span><span>HOT</span>
+            </div>
           </div>
         </div>
       </section>
@@ -132,11 +168,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="pitch">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="pitch">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -164,11 +207,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="panorama">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="panorama">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -196,11 +246,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="reverb">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="reverb">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -228,11 +285,18 @@
 
         <div class="module__knob-area">
           <div class="knob-module">
-            <div class="knob" data-param="imager">
-              <div class="knob__ticks"></div>
-              <div class="knob__body">
-                <div class="knob__indicator"></div>
-                <div class="knob__center-dot"></div>
+            <div class="knob-wrap">
+              <div class="knob" data-param="imager">
+                <div class="knob__ticks"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
+              <div class="knob__scale-numbers" aria-hidden="true">
+                <span class="is-min">0</span>
+                <span class="is-mid">50</span>
+                <span class="is-max">100</span>
               </div>
             </div>
             <div class="knob__value">50%</div>
@@ -254,27 +318,31 @@
     <footer class="footer">
       <div class="meter meter--input">
         <span class="meter__label">INPUT</span>
-        <span class="meter-bar" aria-hidden="true"><span class="meter-bar__fill"></span></span>
-        <span class="meter__status">IDLE</span>
+        <span class="meter-bar" aria-hidden="true"></span>
+        <span class="meter__scale" aria-hidden="true">
+          <span>-24</span><span>-12</span><span>-6</span><span>-3</span><span>0</span><span>+3</span>
+        </span>
       </div>
 
       <div class="signal-path">
         <ol class="signal-path__list">
-          <li>PREAMP</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>EQ</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>SAT</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>PITCH</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>PAN</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>VERB</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li>IMAGE</li>
+          <li class="signal-path__chip">PREAMP</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">EQ</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">SAT</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">PITCH</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">PAN</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">VERB</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li class="signal-path__chip">IMAGE</li>
         </ol>
         <div class="signal-path__caption">ANALOG SIGNAL PATH</div>
       </div>
 
       <div class="meter meter--output">
-        <span class="meter__status">IDLE</span>
-        <span class="meter-bar" aria-hidden="true"><span class="meter-bar__fill"></span></span>
         <span class="meter__label">OUTPUT</span>
+        <span class="meter-bar" aria-hidden="true"></span>
+        <span class="meter__scale" aria-hidden="true">
+          <span>-24</span><span>-12</span><span>-6</span><span>-3</span><span>0</span><span>+3</span>
+        </span>
       </div>
     </footer>
   </div>

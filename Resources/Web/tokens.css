@@ -9,64 +9,80 @@
   Sizes are expressed with clamp()/vw so the whole interface scales with
   the editor window instead of being pinned to physical pixels - see
   responsive.css for the min/default/max reasoning.
+
+  Visual model: a DARK header/footer frame around a LIGHTER, fully-coloured
+  middle row of 7 module panels - each panel's own vintage colour fills its
+  entire working height, not just a trim/accent line. Text sitting on top
+  of a panel therefore uses the dark "ink" tokens below, never the light
+  "text-*" tokens meant for the dark header/footer.
 */
 
 :root {
   color-scheme: dark;
 
-  /* ---- Neutrals (graphite console body) -------------------------------- */
-  --neutral-950: #17181a;
-  --neutral-900: #1d1e21;
-  --neutral-850: #232427;
-  --neutral-800: #2a2b2f;
-  --neutral-700: #3a3b40;
-  --neutral-600: #4c4d53;
-  --neutral-400: #8a8b90;
+  /* ---- Neutrals (dark header/footer frame) ------------------------------ */
+  --neutral-950: #131211;
+  --neutral-850: #201f1d;
+  --neutral-800: #2a2825;
+  --neutral-700: #3a3733;
+  --neutral-600: #504c46;
+  --neutral-400: #9b9284;
   --neutral-200: #c7c8cc;
-  --neutral-100: #e9e9eb;
+  --neutral-100: #ece7dc;
 
   --bg-app: var(--neutral-950);
-  --bg-header: #1a1b1d;
-  --bg-footer: #1a1b1d;
-  --bg-module: var(--neutral-900);
-  --line-hairline: rgba(233, 233, 235, 0.08);
-  --line-hairline-strong: rgba(233, 233, 235, 0.14);
+  --bg-header: #141210;
+  --bg-footer: #141210;
+  --line-hairline: rgba(236, 231, 220, 0.1);
+  --line-hairline-strong: rgba(236, 231, 220, 0.18);
 
   --text-primary: var(--neutral-100);
-  --text-secondary: var(--neutral-400);
-  --text-tertiary: rgba(199, 200, 204, 0.45);
+  --text-secondary: #b9b2a4;
+  --text-tertiary: rgba(236, 231, 220, 0.5);
 
-  /* ---- Module accent colours (muted, vintage, flat) --------------------- */
-  --color-preamp: #7c8360;      /* faded olive */
-  --color-eq: #b9975b;          /* muted mustard */
-  --color-saturation: #b1613c;  /* burnt orange */
-  --color-pitch: #7c4653;       /* dusty burgundy */
-  --color-panorama: #6c7f8c;    /* blue/grey */
-  --color-reverb: #8a7361;      /* warm taupe/brown */
-  --color-imager: #3f6864;      /* dark desaturated teal */
+  /* ---- Dark "ink" tokens - for text sitting on a coloured module panel -- */
+  --ink-strong: #221c15;
+  --ink-mid: rgba(34, 28, 21, 0.72);
+  --ink-soft: rgba(34, 28, 21, 0.52);
+  --ink-hairline: rgba(34, 28, 21, 0.22);
+  --ink-hairline-strong: rgba(34, 28, 21, 0.34);
 
-  --focus-ring: rgba(233, 233, 235, 0.55);
+  /* ---- Module panel colours (muted, vintage, worn - fills the whole
+     panel, not just an accent line) ---------------------------------------- */
+  --color-preamp: #9a9968;      /* faded olive / khaki */
+  --color-eq: #c7a256;          /* muted mustard / ochre */
+  --color-saturation: #c17f49;  /* burnt orange / copper */
+  --color-pitch: #9c5b62;       /* dusty burgundy / wine */
+  --color-panorama: #7992a1;    /* desaturated blue-grey */
+  --color-reverb: #a68a6b;      /* warm taupe / brown */
+  --color-imager: #4c7d72;      /* deep desaturated teal */
+
+  --focus-ring: rgba(34, 28, 21, 0.65); /* for controls sitting on a light panel */
+  --focus-ring-on-dark: rgba(236, 231, 220, 0.65); /* for controls in the dark header/footer */
+  --header-accent: #c7a256; /* warm decorative line colour either side of the product name */
 
   /* ---- Typography --------------------------------------------------------
-     System font stack only - no external/CDN fonts. A grotesk-leaning
-     system stack reads closest to the console's utilitarian label style. */
-  --font-face: -apple-system, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+     System font stack only - no external/CDN fonts. A condensed grotesk
+     leaning stack reads closest to the console's industrial label style. */
+  --font-face: "Arial Narrow", "Segoe UI", -apple-system, "Helvetica Neue", Arial, sans-serif;
   --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, Menlo, monospace;
 
-  --tracking-wide: 0.14em;
-  --tracking-wider: 0.22em;
+  --tracking-wide: 0.12em;
+  --tracking-wider: 0.2em;
 
-  --fs-brand: clamp(0.6rem, 0.5rem + 0.35vw, 0.75rem);
-  --fs-product: clamp(1.35rem, 1rem + 1.6vw, 2.1rem);
-  --fs-subtitle: clamp(0.55rem, 0.48rem + 0.3vw, 0.68rem);
+  --fs-brand: clamp(0.62rem, 0.52rem + 0.35vw, 0.78rem);
+  --fs-product: clamp(1.7rem, 1.2rem + 2.2vw, 2.7rem);
+  --fs-subtitle: clamp(0.56rem, 0.48rem + 0.3vw, 0.7rem);
   --fs-header-btn: clamp(0.55rem, 0.48rem + 0.28vw, 0.65rem);
-  --fs-module-index: clamp(0.6rem, 0.52rem + 0.3vw, 0.7rem);
-  --fs-module-name: clamp(0.72rem, 0.6rem + 0.5vw, 0.92rem);
+  --fs-module-index: clamp(0.65rem, 0.56rem + 0.32vw, 0.78rem);
+  --fs-module-name: clamp(0.95rem, 0.78rem + 0.7vw, 1.3rem);
   --fs-module-tag: clamp(0.52rem, 0.46rem + 0.24vw, 0.62rem);
-  --fs-knob-value: clamp(0.78rem, 0.64rem + 0.5vw, 1rem);
-  --fs-knob-label: clamp(0.62rem, 0.54rem + 0.28vw, 0.75rem);
+  --fs-knob-value: clamp(0.92rem, 0.76rem + 0.6vw, 1.2rem);
+  --fs-knob-label: clamp(0.68rem, 0.58rem + 0.32vw, 0.85rem);
+  --fs-knob-scale-num: clamp(0.5rem, 0.44rem + 0.22vw, 0.6rem);
   --fs-scale: clamp(0.48rem, 0.42rem + 0.22vw, 0.58rem);
-  --fs-footer: clamp(0.5rem, 0.44rem + 0.22vw, 0.6rem);
+  --fs-footer: clamp(0.55rem, 0.48rem + 0.26vw, 0.68rem);
+  --fs-footer-caption: clamp(0.46rem, 0.4rem + 0.2vw, 0.55rem);
 
   /* ---- Spacing ------------------------------------------------------------ */
   --space-xs: clamp(0.25rem, 0.2rem + 0.2vw, 0.4rem);
@@ -76,8 +92,8 @@
   --space-xl: clamp(1.4rem, 1.1rem + 1.1vw, 2.2rem);
 
   /* ---- Structural chrome --------------------------------------------------- */
-  --header-height: clamp(3.2rem, 2.6rem + 2vw, 4.6rem);
-  --footer-height: clamp(2.6rem, 2.2rem + 1.4vw, 3.4rem);
+  --header-height: clamp(3.4rem, 2.8rem + 2vw, 4.8rem);
+  --footer-height: clamp(3.2rem, 2.7rem + 1.6vw, 4rem);
   --border-hairline: 1px;
   --border-module: 1px;
   --radius-sm: 3px;
@@ -85,16 +101,22 @@
 
   /* ---- Knob geometry -------------------------------------------------------
      A single scale so the knob, its tick ring and its indicator always
-     stay proportional to one another. */
-  --knob-size: clamp(3.6rem, 2.6rem + 4vw, 6.4rem);
-  --knob-ring-inset: 10%;
-  --knob-indicator-width: 6%;
-  --knob-indicator-length: 38%;
-  --knob-tick-length: 10%;
+     stay proportional to one another. Sized up from the first pass so the
+     knob reads as the dominant object in each module, per the approved
+     reference. */
+  --knob-size: clamp(4.6rem, 3.2rem + 5.4vw, 8.4rem);
+  --knob-ring-inset: 8%;
+  --knob-indicator-width: 5.5%;
+  --knob-indicator-length: 40%;
+  --knob-tick-length: 11%;
   --knob-rotation-min: -135deg;
   --knob-rotation-max: 135deg;
+  --knob-face: #201c17;
+  --knob-face-edge: #322c24;
+  --knob-pointer: #ece4d3;
 
   /* ---- Meters --------------------------------------------------------------- */
-  --meter-height: 0.4rem;
-  --meter-width: clamp(4.5rem, 3.5rem + 5vw, 8rem);
+  --meter-height: 0.9rem;
+  --meter-width: clamp(6rem, 4.5rem + 7vw, 11rem);
+  --meter-segments: 16;
 }

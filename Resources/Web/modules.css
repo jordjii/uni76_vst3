@@ -1,9 +1,14 @@
 /*
   UNI 76 - processor module panels.
 
-  Each <section class="module"> carries its accent colour as the
+  Each <section class="module"> carries its own vintage colour as the
   `--module-accent` custom property (set inline in index.html from the
-  tokens in tokens.css) - nothing here hard-codes a module's colour.
+  tokens in tokens.css) - nothing here hard-codes a module's colour. The
+  panel's *entire* working height is filled with that colour (the approved
+  reference's core visual principle: a dark header/footer frame around 7
+  fully-coloured vintage panels) - text on top of it uses the dark "ink"
+  tokens from tokens.css, not the light text-* tokens used in the header
+  and footer.
 */
 
 .module {
@@ -13,9 +18,10 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: var(--space-md) var(--space-sm) var(--space-lg);
-  background: var(--bg-module);
-  border-right: var(--border-module) solid var(--line-hairline);
+  padding: var(--space-sm) var(--space-sm) var(--space-lg);
+  background: var(--module-accent);
+  color: var(--ink-strong);
+  border-right: var(--border-module) solid var(--ink-hairline);
   min-width: 0;
   overflow: hidden; /* never let a module's content bleed into its neighbour */
 }
@@ -24,43 +30,46 @@
   border-right: none;
 }
 
+/* A soft seam under the dark header rather than a separate accent bar -
+   the panel colour itself now carries the module identity. */
 .module::before {
   content: "";
   position: absolute;
   inset: 0 0 auto 0;
-  height: 3px;
-  background: var(--module-accent);
-  opacity: 0.75;
+  height: 2px;
+  background: rgba(0, 0, 0, 0.18);
 }
 
 .module__header {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.3em;
+  gap: 0.2em;
   text-align: center;
-  margin-block: var(--space-sm) var(--space-md);
+  margin-block: var(--space-xs) var(--space-sm);
 }
 
 .module__index {
   font-family: var(--font-mono);
   font-size: var(--fs-module-index);
+  font-weight: 700;
   letter-spacing: var(--tracking-wide);
-  color: var(--module-accent);
+  color: var(--ink-mid);
 }
 
 .module__name {
   font-size: var(--fs-module-name);
-  font-weight: 700;
-  letter-spacing: var(--tracking-wide);
-  color: var(--text-primary);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--ink-strong);
+  line-height: 1;
 }
 
 .module__tag {
   font-size: var(--fs-module-tag);
-  font-weight: 500;
+  font-weight: 700;
   letter-spacing: var(--tracking-wider);
-  color: var(--text-tertiary);
+  color: var(--ink-mid);
 }
 
 .module__knob-area {
@@ -69,7 +78,7 @@
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: var(--space-sm);
+  gap: var(--space-xs);
   min-height: 0;
 }
 
