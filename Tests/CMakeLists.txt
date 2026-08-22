@@ -16,6 +16,7 @@ target_link_libraries(UNI76Tests
     PRIVATE
         UNI76
         juce::juce_audio_processors
+        juce::juce_dsp
     PUBLIC
         juce::juce_recommended_config_flags
         juce::juce_recommended_warning_flags)

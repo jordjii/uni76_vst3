@@ -1,5 +1,6 @@
 #include "PluginProcessor.h"
 #include "Core/PluginIdentity.h"
+#include "Parameters/ParameterIDs.h"
 #include "Parameters/ParameterLayout.h"
 #include "UI/WebUIEditor.h"
 
@@ -10,6 +11,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
                           .withOutput ("Output", juce::AudioChannelSet::stereo(), true)),
       apvts (*this, nullptr, "PARAMETERS", uni76::createParameterLayout())
 {
+    preampParameter = apvts.getRawParameterValue (uni76::ParamID::preamp);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -17,12 +19,15 @@ UNI76AudioProcessor::~UNI76AudioProcessor() = default;
 //==============================================================================
 void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 {
-    juce::ignoreUnused (sampleRate, samplesPerBlock);
-    // No DSP state to prepare yet - this stage is passthrough only.
+    const auto numChannels = juce::jmax (1, getTotalNumOutputChannels());
+
+    preampProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    setLatencySamples (preampProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
 {
+    preampProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -42,15 +47,19 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     juce::ScopedNoDenormals noDenormals;
     juce::ignoreUnused (midiMessages);
 
-    // Measured before the (currently nonexistent) processing chain.
+    // Measured before the processing chain.
     inputLevelMeter.pushBlock (buffer);
 
-    // Stage-1 foundation: strictly transparent passthrough. input == output,
-    // no gain, no latency, no allocations, no locks, no DSP.
+    const auto preampDrive = preampParameter != nullptr ? preampParameter->load() / 100.0f : 0.0f;
+    const auto preampEnabled = moduleEnableState.isEnabled (0); // index 0 = preamp, see ModuleEnableState::propertyNames
 
-    // Measured after the processing chain. With processing still a strict
-    // passthrough this naturally matches the input reading - that's
-    // correct, not a bug to paper over once real DSP lands here.
+    preampProcessor.process (buffer, preampDrive, preampEnabled);
+
+    // EQ/Saturation/Pitch/Panorama/Reverb/Imager remain a strict
+    // passthrough at this stage - see CLAUDE.md.
+
+    // Measured after the processing chain - now meaningfully different
+    // from the input reading whenever PREAMP is enabled and driven.
     outputLevelMeter.pushBlock (buffer);
 }
 

@@ -3,23 +3,25 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Core/LevelMeter.h"
 #include "Core/ModuleEnableState.h"
+#include "DSP/PreampProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
 
-    Stage-1 foundation rules for this file (see CLAUDE.md for the full
-    policy):
-      - processBlock() is a strictly transparent passthrough: input == output,
-        no gain, no latency, no DSP, no allocations, no locks, no file I/O,
-        and no calls into the WebView/GUI layer.
-      - The 7 public parameters exist and are DAW-automation compatible via
-        APVTS, but none of them influence the audio signal yet.
-      - The one exception to "no calls into the WebView/GUI layer" is the
-        INPUT/OUTPUT level meters: processBlock() pushes the block's peak
-        into a lock-free uni76::LevelMeter (atomic, no allocation, no
-        locking - see Core/LevelMeter.h). The editor's UI timer, running on
-        the message thread, is what actually reads those meters and talks
-        to the WebView - the audio thread itself never touches the UI.
+    Foundation rules for this file (see CLAUDE.md for the full policy):
+      - processBlock() must stay realtime-safe: no allocations, no locks,
+        no file I/O, no calls into the WebView/GUI layer. The one exception
+        is the INPUT/OUTPUT level meters: processBlock() pushes each
+        block's peak into a lock-free uni76::LevelMeter (atomic, no
+        allocation, no locking - see Core/LevelMeter.h). The editor's UI
+        timer, running on the message thread, is what actually reads those
+        meters and talks to the WebView - the audio thread itself never
+        touches the UI.
+      - PREAMP is the only module with real DSP so far (see
+        Source/DSP/PreampProcessor.h and docs/DSP_PREAMP.md). EQ,
+        Saturation, Pitch, Panorama, Reverb and Imager remain a strict
+        passthrough - their parameters exist and are DAW-automation
+        compatible via APVTS, but do not yet influence the audio signal.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -83,6 +85,13 @@ private:
     // getStateInformation/setStateInformation) but deliberately not part
     // of the APVTS parameter tree - see Core/ModuleEnableState.h.
     uni76::ModuleEnableState moduleEnableState;
+
+    uni76::dsp::PreampProcessor preampProcessor;
+
+    // Cached raw parameter pointer (juce::AudioProcessorValueTreeState's
+    // documented realtime-safe way to read a parameter's current value
+    // from processBlock - no lock, no allocation).
+    std::atomic<float>* preampParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

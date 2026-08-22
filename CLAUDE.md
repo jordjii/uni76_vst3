@@ -88,8 +88,27 @@ see [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
 All are `0..100%`. Default is `50%` for `eq` (its centred/flat "PHONE"
 position) and `0%` for the other six (fully off, matching a console where
 drive/saturation/pitch/width/space/image all start at zero). Low Cut /
-High Cut are **not** separate parameters - they will be internal to the
-future Preamp DSP module.
+High Cut are **not** separate parameters - they are internal to
+`Source/DSP/PreampProcessor`, derived entirely from `preamp` (see
+[docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
+
+## PREAMP DSP (the only module with real audio processing so far)
+
+`Source/DSP/PreampProcessor.*` implements the `01 PREAMP / TRANSFORMER`
+module's full signal chain - see
+[docs/DSP_PREAMP.md](docs/DSP_PREAMP.md) for the topology, curves,
+oversampling strategy, measured harmonic/frequency-response data, and
+known tradeoffs in full. In short: DC/infrasonic protection, a
+drive-dependent "transformer" coloration + asymmetric tanh waveshaper
+(oversampled 4x at 44.1/48kHz, 2x at 88.2/96kHz, none at 176.4kHz+),
+drive-dependent soft Low Cut/High Cut, output compensation, and a
+latency-aligned enable/disable crossfade driven by `preampEnabled`
+(`Source/Core/ModuleEnableState.h`).
+
+**EQ, Saturation, Pitch, Panorama, Reverb and Imager remain a strict
+passthrough** - do not add DSP to any of them without a separate,
+deliberate decision. `Source/DSP/Eq.h` / `Saturation.h` / `Pitch.h` /
+`Panorama.h` / `Reverb.h` / `Imager.h` are still empty placeholders.
 
 ### Per-module enabled/disabled state (not a parameter)
 
@@ -110,12 +129,15 @@ has no audio effect, and the UI must not imply otherwise.
 
 ## Realtime audio-thread rules
 
-`AudioProcessor::processBlock()` must stay a strictly transparent
-passthrough at this project stage: input == output, no gain, no latency, no
-DSP, **no allocations, no locks, no file I/O, no calls into the
-WebView/GUI layer**. When real DSP is eventually wired in, these rules
-still apply to whatever runs on the audio thread - allocate/lock/log on the
-message thread or in `prepareToPlay`, never in `processBlock`.
+`AudioProcessor::processBlock()` must stay realtime-safe: **no allocations,
+no locks, no file I/O, no calls into the WebView/GUI layer**. This applies
+to every module's DSP once it exists, not just at the foundation stage -
+`Source/DSP/PreampProcessor` allocates its oversampler, scratch buffers,
+and delay lines exclusively in `prepare()`; `process()` only reads/writes
+already-sized buffers and plain-float filter state (see
+`Source/DSP/Biquad.h`'s comment on why it isn't `juce::dsp::IIR::Filter`).
+Allocate/lock/log on the message thread or in `prepareToPlay`, never in
+`processBlock`.
 
 **The one sanctioned exception is INPUT/OUTPUT meter telemetry**
 (`Source/Core/LevelMeter.h`). `processBlock()` pushes the block's peak
@@ -145,37 +167,47 @@ particular:
 
 ## Current status (as of this entry)
 
-**Stage: technical foundation + production UI complete for this pass. No
-DSP - deliberately.**
+**Stage: technical foundation + production UI + PREAMP DSP. EQ, Saturation,
+Pitch, Panorama, Reverb, Imager remain deliberately passthrough.**
 
 Verified on this machine (Windows, Visual Studio Community 2026 /
 MSVC 19.51):
 
 - Clean configure + build for both `windows-debug` and `windows-release`
-  presets, **zero compiler warnings**.
+  presets, **zero compiler warnings**, including `juce_dsp` (newly linked
+  for PREAMP's oversampling).
 - Real `.vst3` produced at
   `build/windows-release/Source/Plugin/UNI76_artefacts/Release/VST3/UNI 76.vst3`.
-- All `UNI76Tests` (JUCE `UnitTest`-based) pass in both Debug and Release:
-  processor construction, mono/stereo bus layout negotiation, all 7
-  parameter IDs present at 50% default, state save/modify/restore
-  round-trip, passthrough audio-buffer integrity across multiple sample
-  rates/block sizes with zero reported latency, the saved-state XML
-  schema/shape contract, and exact 0%/50%/100% normalised<->percent
-  conversion.
-- **Real VST3 host validation.** JUCE's own `AudioPluginHost` built
-  cleanly from this project's exact pinned JUCE 9.0.1 source. A
-  purpose-built harness using the same real `AudioPluginFormatManager` /
-  `VST3PluginFormat` hosting code then loaded the built `.vst3`,
-  round-tripped all 7 parameters and full state through the *hosted*
-  instance (not `UNI76AudioProcessor` directly), opened the real WebView2
-  editor at its documented default size, confirmed the resize constrainer
-  clamps to the documented maximum, closed/reopened the editor, and held
-  the real window open for an OS-level screenshot
-  (`docs/screenshots/editor.png`) - which shows the 7 knobs at the exact
-  test values the harness set through the host, visually confirming the JS
-  <-> JUCE bridge works end-to-end. See docs/BUILD.md for the full detail
-  and why this is stronger evidence than the previous entry's
-  `moduleinfo.json`-only check.
+- All `UNI76Tests` (JUCE `UnitTest`-based) pass in both Debug and Release,
+  including the full PREAMP DSP suite (see
+  [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md) for the harmonic/frequency
+  measurements these tests generate): transparency near DRIVE=0%,
+  `preampEnabled=false` bypass, bypass-transition continuity, harmonic
+  growth 0%<50%<100% without hard clipping, DC-offset safety, Low
+  Cut/High Cut actually changing measured frequency response with DRIVE,
+  output-compensation bounding, mono, stereo channel independence, all 4
+  sample-rate/oversampling tiers, 5 block sizes, automation sweeps,
+  silence-stays-silence, NaN/Inf safety, and latency staying constant
+  regardless of DRIVE/enabled state.
+- **Real VST3 host validation.** A purpose-built harness using the real
+  `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
+  `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
+  parameters, drove PREAMP through 0/50/100% via real `processBlock()`
+  calls and confirmed the output is measurably different and stays
+  bounded/finite at every setting, ran an 0->100->0 automation sweep during
+  continuous audio, opened/closed/reopened the real WebView2 editor with
+  no crash, and round-tripped the PREAMP parameter through a real
+  `getStateInformation()`/`setStateInformation()` save+restore. Also
+  confirmed identical behaviour from a `.vst3` copy in a completely
+  isolated directory (no `Resources/Web` nearby), proving both the UI
+  resources and the PREAMP DSP code are genuinely self-contained in the
+  binary. `preampEnabled` bypass itself is verified at the C++ level
+  (`Tests/PluginTests.cpp`) rather than through this external harness -
+  like the editor's `IPlugView`, `ModuleEnableState` is deliberately not
+  VST3-visible (no parameter, no exposed state format), so an external
+  black-box host harness has no legitimate way to toggle it without going
+  through the WebView native bridge, which - as established in the prior
+  UI audit - such a harness cannot reach either.
 
 Not verified (say so plainly rather than guessing):
 
@@ -199,6 +231,7 @@ Not verified (say so plainly rather than guessing):
 
 ## Next steps (not started - waiting for a separate go-ahead)
 
-DSP for any of the 7 modules, final visual design details beyond the
-approved concept, presets browser, copy protection, licensing system. See
+DSP for the remaining 6 modules (EQ, Saturation, Pitch, Panorama, Reverb,
+Imager - PREAMP is done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)),
+presets browser, copy protection, licensing system. See
 [docs/RELEASE.md](docs/RELEASE.md) for the pre-public-release checklist.

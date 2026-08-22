@@ -36,7 +36,10 @@ target_sources(UNI76
         ../Parameters/ParameterLayout.h
         ../Parameters/ParameterLayout.cpp
 
-        ../DSP/Preamp.h
+        ../DSP/Biquad.h
+        ../DSP/PreampCurves.h
+        ../DSP/PreampProcessor.h
+        ../DSP/PreampProcessor.cpp
         ../DSP/Eq.h
         ../DSP/Saturation.h
         ../DSP/Pitch.h
@@ -103,6 +106,7 @@ target_link_libraries(UNI76
         UNI76WebResources
         juce::juce_audio_processors
         juce::juce_audio_utils
+        juce::juce_dsp
         juce::juce_gui_extra
     PUBLIC
         juce::juce_recommended_config_flags

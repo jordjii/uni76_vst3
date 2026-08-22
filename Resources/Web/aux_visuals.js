@@ -41,11 +41,39 @@ export function bindTriScale(root) {
   };
 }
 
+// Mirrors Source/DSP/PreampCurves.h::preampLowCutHz / preampHighCutHz
+// exactly (see docs/DSP_PREAMP.md for the measured curve/rationale).
+// There is no shared runtime between the plugin core and this WebView UI,
+// so this is a hand-transcribed literal of the same formula, not a live
+// binding - if the DSP curve ever changes, update both places together.
+const PREAMP_LOW_CUT_MIN_HZ = 20;
+const PREAMP_LOW_CUT_MAX_HZ = 70;
+const PREAMP_LOW_CUT_EXPONENT = 1.4;
+
+const PREAMP_HIGH_CUT_MIN_HZ = 11000;
+const PREAMP_HIGH_CUT_MAX_HZ = 20000;
+const PREAMP_HIGH_CUT_EXPONENT = 1.15;
+
+function preampLowCutHz(t) {
+  return PREAMP_LOW_CUT_MIN_HZ + (PREAMP_LOW_CUT_MAX_HZ - PREAMP_LOW_CUT_MIN_HZ) * Math.pow(t, PREAMP_LOW_CUT_EXPONENT);
+}
+
+function preampHighCutHz(t) {
+  return PREAMP_HIGH_CUT_MAX_HZ - (PREAMP_HIGH_CUT_MAX_HZ - PREAMP_HIGH_CUT_MIN_HZ) * Math.pow(t, PREAMP_HIGH_CUT_EXPONENT);
+}
+
+// Log-frequency position on a fixed visual track range - chosen so both
+// markers read as clear movement without needing to print an Hz label.
+function freqToTrackPosition(freqHz, trackMinHz, trackMaxHz) {
+  const t = (Math.log(freqHz) - Math.log(trackMinHz)) / (Math.log(trackMaxHz) - Math.log(trackMinHz));
+  return clamp(t * 100, 0, 100);
+}
+
 /**
- * Binds the Preamp module's two filter-position indicator lines. The
- * mapping below is illustrative only (Low Cut tracks up, High Cut tracks
- * down, symmetrically around the 50% default) - it has no bearing on any
- * future DSP implementation.
+ * Binds the Preamp module's two filter-position indicator lines to the
+ * real, drive-dependent Low Cut / High Cut the DSP actually applies (see
+ * Source/DSP/PreampProcessor.cpp) - purely a read-out, not a control: it
+ * never creates, reads, or writes any additional APVTS parameter.
  */
 export function bindPreampFilterLines(root) {
   const lowCutTrack = root.querySelector('[data-role="low-cut"] .filter-line__track');
@@ -57,8 +85,16 @@ export function bindPreampFilterLines(root) {
   if (highCutTrack) buildTrackTicks(highCutTrack);
 
   return function update(scaledValue) {
-    const lowCutPos = clamp(10 + scaledValue * 0.5, 10, 60);
-    const highCutPos = clamp(90 - scaledValue * 0.5, 40, 90);
+    const t = scaledValue / 100;
+
+    // Open (20Hz) reads near the left of the track, restrictive (up to
+    // 70Hz) moves right - display range gives headroom above the DSP's
+    // actual 70Hz ceiling so the marker never pins to the track's edge.
+    const lowCutPos = freqToTrackPosition(preampLowCutHz(t), 20, 100);
+
+    // Open (20kHz) reads near the right of the track, restrictive (down
+    // to 11kHz) moves left.
+    const highCutPos = freqToTrackPosition(preampHighCutHz(t), 8000, 20000);
 
     if (lowCutMark) lowCutMark.style.setProperty("--pos", `${lowCutPos}%`);
     if (highCutMark) highCutMark.style.setProperty("--pos", `${highCutPos}%`);

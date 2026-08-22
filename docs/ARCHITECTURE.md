@@ -1,8 +1,11 @@
 # UNI 76 - Architecture
 
-Status: technical foundation + production UI. No DSP yet - audio remains a
-strict passthrough. See root [CLAUDE.md](../CLAUDE.md) for the living
-project log and the rules this architecture exists to enforce.
+Status: technical foundation + production UI + PREAMP DSP (the first of the
+7 modules to get real audio processing - see
+[docs/DSP_PREAMP.md](DSP_PREAMP.md)). EQ, Saturation, Pitch, Panorama,
+Reverb and Imager remain a strict passthrough. See root
+[CLAUDE.md](../CLAUDE.md) for the living project log and the rules this
+architecture exists to enforce.
 
 ## Layers
 
@@ -15,9 +18,10 @@ Source/
                 codebase (e.g. state schema version).
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
-  DSP/          Architectural placeholders for the 7 processing modules
-                (Preamp, Eq, Saturation, Pitch, Panorama, Reverb, Imager).
-                Empty at this stage - see "DSP modules" below.
+  DSP/          PreampProcessor (real DSP - see docs/DSP_PREAMP.md) plus
+                architectural placeholders for the other 6 processing
+                modules (Eq, Saturation, Pitch, Panorama, Reverb, Imager).
+                See "DSP modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -78,13 +82,29 @@ can migrate old saves instead of silently misreading them.
 
 ## DSP modules
 
-`Source/DSP/*.h` contain one placeholder class per future module
-(`Preamp`, `Eq`, `Saturation`, `Pitch`, `Panorama`, `Reverb`, `Imager`).
-They are deliberately empty - no `prepare`/`process` methods, no fake
-processing - and are not referenced from `PluginProcessor` yet.
-`processBlock()` is a strict passthrough (see the realtime rules in
-CLAUDE.md). Wiring a module in means giving it real behaviour, not just
-calling an empty stub.
+`Source/DSP/PreampProcessor.h`/`.cpp` is the first module with real audio
+processing - see [docs/DSP_PREAMP.md](DSP_PREAMP.md) for its full signal
+chain, oversampling strategy, curves, and measured harmonic/frequency
+data. It's built from three pieces:
+
+- `PreampCurves.h` - pure, stateless functions mapping the `preamp`
+  parameter (0..1) onto every drive-dependent shape (waveshaper drive,
+  asymmetry, Low Cut/High Cut, output trim, ...). One place to look up "what
+  does the curve do at t=0.5", directly unit-testable.
+- `Biquad.h` - a small allocation-free biquad/one-pole/DC-blocker/
+  integer-delay-line toolkit. Deliberately not `juce::dsp::IIR::Filter`:
+  that class's `Coefficients` are heap-allocated and its `makeLowPass()`-
+  style factories allocate on every call, which `PreampProcessor` cannot
+  afford since it recomputes filter shapes every block.
+- `PreampProcessor.h`/`.cpp` - the actual engine: `juce::dsp::Oversampling`
+  around the nonlinear stage only, the filter chain, smoothing, and the
+  enable/disable crossfade.
+
+`Source/DSP/Eq.h`/`Saturation.h`/`Pitch.h`/`Panorama.h`/`Reverb.h`/
+`Imager.h` remain deliberately empty placeholder classes - no
+`prepare`/`process` methods, no fake processing - and are not referenced
+from `PluginProcessor`. Wiring one in means giving it real behaviour like
+PREAMP got, not just calling an empty stub.
 
 ## Web UI / native bridge
 
@@ -166,10 +186,16 @@ backend (see the comment in `ParameterKnob`'s constructor).
 
 ### Derived (non-parameter) visual indicators
 
-The Preamp module's "LOW CUT" / "HIGH CUT" lines and the tri-point scales
-on EQ/Pitch/Pan/Verb/Imager (`aux_visuals.js`) are illustrative read-outs
-computed from the *existing* parameter's value - they do not create, read,
-or write any additional APVTS parameter, and they don't imply DSP behaviour
-that isn't implemented. If a future DSP pass changes what these controls
-actually do, update the mapping functions in `aux_visuals.js`, not the
-parameter system.
+The tri-point scales on EQ/Saturation/Pitch/Panorama/Reverb/Imager
+(`aux_visuals.js`) are illustrative read-outs computed from the *existing*
+parameter's value - those 6 modules are still passthrough, so these don't
+imply DSP behaviour that isn't implemented. They do not create, read, or
+write any additional APVTS parameter.
+
+The Preamp module's "LOW CUT" / "HIGH CUT" lines are different: they now
+track the *real* drive-dependent filters `Source/DSP/PreampProcessor`
+applies (`preampLowCutHz`/`preampHighCutHz` in `PreampCurves.h`, see
+[docs/DSP_PREAMP.md](DSP_PREAMP.md)). `aux_visuals.js`'s copy of that
+formula is a hand-mirrored literal, not a live binding (there's no shared
+runtime between the plugin core and the WebView UI) - if the DSP curve
+changes, update both places together.
