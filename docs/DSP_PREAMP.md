@@ -226,8 +226,12 @@ measured end-to-end through the real `PreampProcessor`:
 | 75%  | +0.46 dB |
 | 100% | +1.82 dB |
 
-Comfortably inside the product brief's +/-2 to 3dB target, and smooth/
-monotonic rather than dipping and recovering. This is a deliberate creative
+Comfortably inside the product brief's +/-2 to 3dB target, and a single
+smooth curve (each step differs from its neighbour by well under 1dB)
+rather than the earlier version's sharp -6dB dip-then-recover artifact -
+note this sequence is *not* monotonic (it dips slightly through 50% before
+rising), just smooth; "monotonic" would be the wrong word for it. This is
+a deliberate creative
 trim, not a full loudness normaliser (there is no envelope-follower/AGC
 anywhere in the chain) - hotter input signals still reach the saturating
 region, and get proportionally more gain reduction, earlier than quiet

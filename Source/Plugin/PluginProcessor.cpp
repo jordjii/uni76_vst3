@@ -12,6 +12,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
       apvts (*this, nullptr, "PARAMETERS", uni76::createParameterLayout())
 {
     preampParameter = apvts.getRawParameterValue (uni76::ParamID::preamp);
+    eqParameter = apvts.getRawParameterValue (uni76::ParamID::eq);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -22,12 +23,17 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     const auto numChannels = juce::jmax (1, getTotalNumOutputChannels());
 
     preampProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
-    setLatencySamples (preampProcessor.getLatencySamples());
+    eqProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+
+    // EQ adds no algorithmic latency (getLatencySamples() == 0) - PREAMP's
+    // oversampling remains the plugin's only source of latency.
+    setLatencySamples (preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
 {
     preampProcessor.reset();
+    eqProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -55,8 +61,13 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     preampProcessor.process (buffer, preampDrive, preampEnabled);
 
-    // EQ/Saturation/Pitch/Panorama/Reverb/Imager remain a strict
-    // passthrough at this stage - see CLAUDE.md.
+    const auto eqTone = eqParameter != nullptr ? eqParameter->load() / 100.0f : 0.5f;
+    const auto eqEnabled = moduleEnableState.isEnabled (1); // index 1 = eq, see ModuleEnableState::propertyNames
+
+    eqProcessor.process (buffer, eqTone, eqEnabled);
+
+    // Saturation/Pitch/Panorama/Reverb/Imager remain a strict passthrough
+    // at this stage - see CLAUDE.md.
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.

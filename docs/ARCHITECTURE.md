@@ -1,11 +1,10 @@
 # UNI 76 - Architecture
 
-Status: technical foundation + production UI + PREAMP DSP (the first of the
-7 modules to get real audio processing - see
-[docs/DSP_PREAMP.md](DSP_PREAMP.md)). EQ, Saturation, Pitch, Panorama,
-Reverb and Imager remain a strict passthrough. See root
-[CLAUDE.md](../CLAUDE.md) for the living project log and the rules this
-architecture exists to enforce.
+Status: technical foundation + production UI + PREAMP DSP (frozen after a
+sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
+(see [docs/DSP_EQ.md](DSP_EQ.md)). Saturation, Pitch, Panorama, Reverb and
+Imager remain a strict passthrough. See root [CLAUDE.md](../CLAUDE.md) for
+the living project log and the rules this architecture exists to enforce.
 
 ## Layers
 
@@ -18,9 +17,10 @@ Source/
                 codebase (e.g. state schema version).
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
-  DSP/          PreampProcessor (real DSP - see docs/DSP_PREAMP.md) plus
-                architectural placeholders for the other 6 processing
-                modules (Eq, Saturation, Pitch, Panorama, Reverb, Imager).
+  DSP/          PreampProcessor + EqProcessor (real DSP, chained in that
+                order - see docs/DSP_PREAMP.md / docs/DSP_EQ.md) plus
+                architectural placeholders for the other 5 processing
+                modules (Saturation, Pitch, Panorama, Reverb, Imager).
                 See "DSP modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
@@ -100,11 +100,20 @@ data. It's built from three pieces:
   around the nonlinear stage only, the filter chain, smoothing, and the
   enable/disable crossfade.
 
-`Source/DSP/Eq.h`/`Saturation.h`/`Pitch.h`/`Panorama.h`/`Reverb.h`/
-`Imager.h` remain deliberately empty placeholder classes - no
-`prepare`/`process` methods, no fake processing - and are not referenced
-from `PluginProcessor`. Wiring one in means giving it real behaviour like
-PREAMP got, not just calling an empty stub.
+`Source/DSP/EqProcessor.h`/`.cpp` is the second - see
+[docs/DSP_EQ.md](DSP_EQ.md) for its morph curves and measured frequency
+response. Chained after PREAMP in `PluginProcessor::processBlock()`. Built
+from `EqCurves.h` (the DARK/PHONE/AIR anchors and the smoothstepped morph
+function) and `EqProcessor.h`/`.cpp` (a fixed five-stage minimum-phase
+filter network - HP, low shelf, bell, high shelf, LP - reusing the same
+`Biquad.h` toolkit PREAMP uses). No oversampling (adds zero latency), no
+nonlinearity.
+
+`Source/DSP/Saturation.h`/`Pitch.h`/`Panorama.h`/`Reverb.h`/`Imager.h`
+remain deliberately empty placeholder classes - no `prepare`/`process`
+methods, no fake processing - and are not referenced from
+`PluginProcessor`. Wiring one in means giving it real behaviour like
+PREAMP/EQ got, not just calling an empty stub.
 
 ## Web UI / native bridge
 
@@ -186,11 +195,18 @@ backend (see the comment in `ParameterKnob`'s constructor).
 
 ### Derived (non-parameter) visual indicators
 
-The tri-point scales on EQ/Saturation/Pitch/Panorama/Reverb/Imager
+The tri-point scales on Saturation/Pitch/Panorama/Reverb/Imager
 (`aux_visuals.js`) are illustrative read-outs computed from the *existing*
-parameter's value - those 6 modules are still passthrough, so these don't
+parameter's value - those 5 modules are still passthrough, so these don't
 imply DSP behaviour that isn't implemented. They do not create, read, or
 write any additional APVTS parameter.
+
+EQ's tri-point scale is different in status (it's now real DSP) but not in
+implementation: `DARK`/`PHONE`/`AIR` are the three genuinely correct named
+positions at 0%/50%/100% already, so the existing generic marker binding
+(`bindTriScale` - a plain 0..100% position, no per-module formula) needed
+no change when EQ's DSP landed, unlike Preamp's filter-line indicators
+below.
 
 The Preamp module's "LOW CUT" / "HIGH CUT" lines are different: they now
 track the *real* drive-dependent filters `Source/DSP/PreampProcessor`

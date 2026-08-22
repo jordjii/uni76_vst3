@@ -40,7 +40,9 @@ target_sources(UNI76
         ../DSP/PreampCurves.h
         ../DSP/PreampProcessor.h
         ../DSP/PreampProcessor.cpp
-        ../DSP/Eq.h
+        ../DSP/EqCurves.h
+        ../DSP/EqProcessor.h
+        ../DSP/EqProcessor.cpp
         ../DSP/Saturation.h
         ../DSP/Pitch.h
         ../DSP/Panorama.h

@@ -9,6 +9,8 @@
 #include "Core/ModuleEnableState.h"
 #include "DSP/PreampProcessor.h"
 #include "DSP/PreampCurves.h"
+#include "DSP/EqProcessor.h"
+#include "DSP/EqCurves.h"
 
 #include <array>
 #include <cmath>
@@ -1166,6 +1168,10 @@ public:
             preampParam->setValueNotifyingHost (1.0f); // 100%
 
             processor.getModuleEnableState().setEnabled (0, false); // preamp OFF
+            // EQ defaults to 50% (PHONE) and is real DSP now too - disable
+            // it here so this test isolates PREAMP's own bypass behaviour
+            // rather than also measuring PHONE's bell/band-pass shaping.
+            processor.getModuleEnableState().setEnabled (1, false); // eq OFF
 
             juce::MidiBuffer midi;
             juce::AudioBuffer<float> buffer (2, 512);
@@ -1575,6 +1581,594 @@ public:
 };
 
 static UNI76PreampHarmonicAnalysisTests uni76PreampHarmonicAnalysisTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// uni76::dsp::EqProcessor - the deterministic DSP test suite required by the
+// EQ audit.
+namespace
+{
+    juce::AudioBuffer<float> runEqSine (uni76::dsp::EqProcessor& eq, int numChannels, int blockSize,
+                                         int totalSamples, double sampleRate, float freqHz, float amplitude,
+                                         float eqNormalised01, bool enabled)
+    {
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+        const auto increment = juce::MathConstants<float>::twoPi * freqHz / (float) sampleRate;
+        float phase = 0.0f;
+        int done = 0;
+
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto p = phase;
+                for (int i = 0; i < thisBlock; ++i)
+                {
+                    block.setSample (ch, i, amplitude * std::sin (p));
+                    p += increment;
+                }
+            }
+
+            eq.process (block, eqNormalised01, enabled);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+
+            phase += increment * (float) thisBlock;
+            done += thisBlock;
+        }
+
+        return result;
+    }
+
+    /** Steady-state gain (dB) of the EQ at one frequency - runs long enough
+        to settle, then measures via an exact-period Goertzel window. The
+        buffer length is sized from the actual window needed (not a fixed
+        block count), since a low frequency at a high sample rate can need
+        far more samples than a fixed "60 blocks" budget provides. */
+    float eqGainDb (uni76::dsp::EqProcessor& eq, double sampleRate, int blockSize, float freqHz,
+                     float amplitude, float eqNormalised01, bool enabled = true)
+    {
+        const auto cycles = freqHz <= 150.0f ? 20 : 100;
+        const auto win = periodicAnalysisLength (sampleRate, freqHz, cycles);
+        const auto settle = blockSize * 4;
+        const auto totalSamples = win + settle + blockSize;
+
+        auto sig = runEqSine (eq, 1, blockSize, totalSamples, sampleRate, freqHz, amplitude, eqNormalised01, enabled);
+        const auto mag = goertzelMagnitude (sig, 0, totalSamples - win, win, sampleRate, freqHz);
+        return juce::Decibels::gainToDecibels (mag / amplitude);
+    }
+}
+
+class UNI76EqProcessorTests final : public juce::UnitTest
+{
+public:
+    UNI76EqProcessorTests() : juce::UnitTest ("uni76::dsp::EqProcessor", "UNI76") {}
+
+    void runTest() override
+    {
+        constexpr double sr = 44100.0;
+        constexpr int blockSize = 512;
+        constexpr float amplitude = 0.25f;
+
+        beginTest ("eqEnabled=false bypasses the EQ (dry passthrough, no delay needed - zero latency)");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            // DARK is the most aggressive top-cut anchor - if disabled
+            // didn't truly bypass, this would show heavy attenuation.
+            const auto gainDb = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.0f, false);
+            expectWithinAbsoluteError (gainDb, 0.0f, 0.3f, "disabled EQ should leave a 10kHz tone essentially untouched");
+        }
+
+        beginTest ("EQ=0% (DARK): bass retained, top rounded - not an underwater effect");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            const auto bass = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.0f);
+            const auto highs = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 0.0f);
+
+            expect (bass > -1.5f, "DARK should keep bass close to unity, not cut it");
+            expect (highs < -6.0f, "DARK should noticeably round off the top");
+            expect (highs > -60.0f, "DARK should round the top, not remove it entirely (not an underwater effect)");
+        }
+
+        beginTest ("EQ=50% (PHONE): voice-band character - both ends attenuated, mid stays present");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            const auto low = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.5f);
+            const auto mid = eqGainDb (eq, sr, blockSize, 1000.0f, amplitude, 0.5f);
+            const auto high = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.5f);
+
+            expect (low < -10.0f, "PHONE should clearly attenuate below the voice band");
+            expect (high < -10.0f, "PHONE should clearly attenuate above the voice band");
+            expect (mid > -3.0f && mid < 6.0f, "PHONE's midrange should stay present/readable, not buried or blaring");
+        }
+
+        beginTest ("EQ=100% (AIR): open bass, lifted highs, no runaway gain");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            const auto bass = eqGainDb (eq, sr, blockSize, 300.0f, amplitude, 1.0f);
+            const auto highs = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 1.0f);
+
+            expect (bass > -3.0f, "AIR should keep the bass/low-mid mostly open");
+            expect (highs > 0.5f, "AIR should measurably lift the highs");
+            expect (highs < 6.0f, "AIR's lift should stay gentle, not a runaway boost");
+        }
+
+        beginTest ("PHONE suppresses 100Hz more than 1kHz, and 10kHz more than 1kHz");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            const auto low  = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.5f);
+            const auto mid  = eqGainDb (eq, sr, blockSize, 1000.0f, amplitude, 0.5f);
+            const auto high = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.5f);
+
+            expect (low < mid - 10.0f, "PHONE should suppress 100Hz well below 1kHz");
+            expect (high < mid - 10.0f, "PHONE should suppress 10kHz well below 1kHz");
+        }
+
+        beginTest ("DARK preserves bass significantly better than PHONE");
+        {
+            uni76::dsp::EqProcessor eqDark, eqPhone;
+            eqDark.prepare (sr, blockSize, 1);
+            eqPhone.prepare (sr, blockSize, 1);
+
+            const auto darkBass  = eqGainDb (eqDark,  sr, blockSize, 100.0f, amplitude, 0.0f);
+            const auto phoneBass = eqGainDb (eqPhone, sr, blockSize, 100.0f, amplitude, 0.5f);
+
+            expect (darkBass > phoneBass + 10.0f, "DARK should retain 100Hz much better than PHONE");
+        }
+
+        beginTest ("DARK suppresses the high end relative to an unprocessed (bypass) reference");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            const auto highDark   = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 0.0f, true);
+            expect (highDark < -6.0f, "DARK's high end should sit clearly below the 0dB bypass reference");
+        }
+
+        beginTest ("AIR has more high-frequency energy than the neutral/unprocessed input, without runaway gain");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+
+            for (float freqHz : { 8000.0f, 12000.0f, 16000.0f })
+            {
+                const auto gainDb = eqGainDb (eq, sr, blockSize, freqHz, amplitude, 1.0f);
+                expect (gainDb > 0.0f, juce::String ("AIR should have more energy than input at ") + juce::String (freqHz, 0) + "Hz");
+                expect (gainDb < 8.0f, juce::String ("AIR's gain at ") + juce::String (freqHz, 0) + "Hz should not run away");
+            }
+        }
+
+        beginTest ("Transition 49% -> 50% -> 51% is smooth (no coefficient/topology jump)");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            const auto increment = juce::MathConstants<float>::twoPi * 1000.0f / (float) sr;
+            float phase = 0.0f;
+            float prevSample = 0.0f;
+            bool havePrev = false;
+            float maxJump = 0.0f;
+
+            for (float t : { 0.49f, 0.50f, 0.51f })
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    auto p = phase;
+                    for (int i = 0; i < blockSize; ++i) { buffer.setSample (ch, i, 0.5f * std::sin (p)); p += increment; }
+                }
+                phase += increment * (float) blockSize;
+
+                eq.process (buffer, t, true);
+
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const auto s = buffer.getSample (0, i);
+                    if (havePrev) maxJump = juce::jmax (maxJump, std::abs (s - prevSample));
+                    prevSample = s;
+                    havePrev = true;
+                }
+            }
+
+            expect (maxJump < 0.3f, "49% -> 50% -> 51% transition produced an unexpectedly large sample-to-sample jump");
+        }
+
+        beginTest ("Automation sweep 0 -> 100 -> 0 produces no discontinuity or NaN/Inf");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            float prevSample = 0.0f;
+            float maxJump = 0.0f;
+            bool havePrev = false;
+
+            for (int block = 0; block < 60; ++block)
+            {
+                const auto t = (float) block / 59.0f;
+                const auto eqValue = t < 0.5f ? (t * 2.0f) : (2.0f - t * 2.0f);
+
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < blockSize; ++i)
+                        buffer.setSample (ch, i, 0.5f * std::sin (juce::MathConstants<float>::twoPi * 500.0f
+                                                                    * (float) (block * blockSize + i) / (float) sr));
+
+                eq.process (buffer, eqValue, true);
+
+                expect (bufferIsFinite (buffer), "EQ automation sweep produced non-finite samples");
+
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const auto s = buffer.getSample (0, i);
+                    if (havePrev) maxJump = juce::jmax (maxJump, std::abs (s - prevSample));
+                    prevSample = s;
+                    havePrev = true;
+                }
+            }
+
+            expect (maxJump < 0.3f, "EQ automation sweep produced an unexpectedly large sample-to-sample jump");
+        }
+
+        beginTest ("Enable/disable bypass transition is clean (no click)");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            float prevSample = 0.0f;
+            float maxJump = 0.0f;
+            bool havePrev = false;
+            const auto increment = juce::MathConstants<float>::twoPi * 400.0f / (float) sr;
+            float phase = 0.0f;
+
+            for (int block = 0; block < 9; ++block)
+            {
+                const auto enabled = block < 8;
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    auto p = phase;
+                    for (int i = 0; i < blockSize; ++i) { buffer.setSample (ch, i, 0.5f * std::sin (p)); p += increment; }
+                }
+                phase += increment * (float) blockSize;
+
+                eq.process (buffer, 0.5f, enabled);
+                expect (bufferIsFinite (buffer), "bypass transition produced non-finite samples");
+
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const auto s = buffer.getSample (0, i);
+                    if (havePrev) maxJump = juce::jmax (maxJump, std::abs (s - prevSample));
+                    prevSample = s;
+                    havePrev = true;
+                }
+            }
+
+            expect (maxJump < 0.3f, "enable/disable transition produced an unexpectedly large sample-to-sample jump");
+        }
+
+        beginTest ("Silence remains silence at any EQ/enabled setting");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            for (float t : { 0.0f, 0.5f, 1.0f })
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                buffer.clear();
+                for (int block = 0; block < 10; ++block)
+                    eq.process (buffer, t, true);
+
+                expectWithinAbsoluteError (bufferPeak (buffer, 0, 0, blockSize), 0.0f, 1.0e-6f, "silence in should stay silence out");
+                buffer.clear();
+            }
+        }
+
+        beginTest ("Mono processes without error and stays finite");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 1);
+            auto processed = runEqSine (eq, 1, blockSize, blockSize * 10, sr, 1000.0f, amplitude, 0.5f, true);
+            expect (bufferIsFinite (processed), "mono processing produced non-finite samples");
+        }
+
+        beginTest ("Stereo: identical L/R input stays numerically identical after EQ (no stereo coloration)");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = blockSize * 20;
+            juce::AudioBuffer<float> result (2, totalSamples);
+            int done = 0;
+            float phase = 0.0f;
+            const auto increment = juce::MathConstants<float>::twoPi * 700.0f / (float) sr;
+
+            while (done < totalSamples)
+            {
+                const auto n = juce::jmin (blockSize, totalSamples - done);
+                juce::AudioBuffer<float> block (2, n);
+                auto p = phase;
+                for (int i = 0; i < n; ++i)
+                {
+                    const auto s = 0.5f * std::sin (p);
+                    block.setSample (0, i, s);
+                    block.setSample (1, i, s);
+                    p += increment;
+                }
+                phase += increment * (float) n;
+
+                eq.process (block, 0.35f, true);
+                result.copyFrom (0, done, block, 0, 0, n);
+                result.copyFrom (1, done, block, 1, 0, n);
+                done += n;
+            }
+
+            expect (bufferIsFinite (result), "stereo processing produced non-finite samples");
+
+            float maxDrift = 0.0f;
+            for (int i = 0; i < totalSamples; ++i)
+                maxDrift = juce::jmax (maxDrift, std::abs (result.getSample (0, i) - result.getSample (1, i)));
+
+            expectWithinAbsoluteError (maxDrift, 0.0f, 1.0e-6f, "identical L/R input must produce numerically identical L/R output");
+        }
+
+        beginTest ("Sample rates 44.1/48/88.2/96/176.4/192kHz all process finite audio with zero added latency");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+
+            for (auto rate : rates)
+            {
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (rate, blockSize, 2);
+
+                auto processed = runEqSine (eq, 2, blockSize, blockSize * 10, rate, 1000.0f, amplitude, 0.5f, true);
+                expect (bufferIsFinite (processed), juce::String ("non-finite output at ") + juce::String (rate) + "Hz");
+                expectEquals (eq.getLatencySamples(), 0);
+            }
+        }
+
+        beginTest ("PHONE mapping sounds semantically the same across sample rates (HP/LP land near the same Hz-based targets)");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+
+            for (auto rate : rates)
+            {
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (rate, blockSize, 1);
+
+                const auto low  = eqGainDb (eq, rate, blockSize, 100.0f, amplitude, 0.5f);
+                const auto mid  = eqGainDb (eq, rate, blockSize, 1000.0f, amplitude, 0.5f);
+                const auto high = eqGainDb (eq, rate, blockSize, 10000.0f, amplitude, 0.5f);
+
+                expect (low < mid - 10.0f, juce::String ("PHONE should suppress 100Hz well below 1kHz at ") + juce::String (rate) + "Hz");
+                expect (high < mid - 10.0f, juce::String ("PHONE should suppress 10kHz well below 1kHz at ") + juce::String (rate) + "Hz");
+            }
+        }
+
+        beginTest ("Different block sizes (1/7/64/512/4096) all remain finite and stable");
+        {
+            const int sizes[] { 1, 7, 64, 512, 4096 };
+
+            for (auto size : sizes)
+            {
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (sr, juce::jmax (size, 4096), 2);
+
+                auto processed = runEqSine (eq, 2, size, size * 30, sr, 1000.0f, amplitude, 0.5f, true);
+                expect (bufferIsFinite (processed), juce::String ("non-finite output at block size ") + juce::String (size));
+            }
+        }
+
+        beginTest ("NaN/Inf input samples never reach the output and don't permanently poison filter state");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            buffer.clear();
+            buffer.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+            buffer.setSample (0, 20, std::numeric_limits<float>::infinity());
+            buffer.setSample (1, 30, -std::numeric_limits<float>::infinity());
+
+            eq.process (buffer, 0.5f, true);
+            expect (bufferIsFinite (buffer), "NaN/Inf input samples leaked through to the output");
+
+            // Filter state must not stay poisoned - a clean block right
+            // after should also be clean.
+            juce::AudioBuffer<float> clean (2, blockSize);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < blockSize; ++i)
+                    clean.setSample (ch, i, 0.3f * std::sin (juce::MathConstants<float>::twoPi * 1000.0f * (float) i / (float) sr));
+
+            eq.process (clean, 0.5f, true);
+            expect (bufferIsFinite (clean), "filter state remained poisoned after a NaN/Inf block");
+        }
+
+        beginTest ("EQ adds zero latency at every setting");
+        {
+            uni76::dsp::EqProcessor eq;
+            eq.prepare (sr, blockSize, 2);
+            expectEquals (eq.getLatencySamples(), 0);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            for (float t : { 0.0f, 0.5f, 1.0f })
+                for (bool enabled : { true, false })
+                {
+                    eq.process (buffer, t, enabled);
+                    expectEquals (eq.getLatencySamples(), 0, "EQ should never report nonzero latency");
+                }
+        }
+    }
+};
+
+static UNI76EqProcessorTests uni76EqProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Full-processor integration: eqEnabled=false really bypasses through the
+// real processor, PREAMP+EQ combinations stay stable, and state round-trips.
+class UNI76EqIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76EqIntegrationTests() : juce::UnitTest ("UNI76AudioProcessor + EQ", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("eqEnabled=false (via ModuleEnableState) bypasses EQ inside the real processor");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 512);
+
+            processor.getModuleEnableState().setEnabled (0, false); // preamp OFF - isolate EQ
+            processor.getModuleEnableState().setEnabled (1, false); // eq OFF
+
+            auto* eqParam = processor.getValueTreeState().getParameter (uni76::ParamID::eq);
+            eqParam->setValueNotifyingHost (0.0f); // DARK - would heavily cut highs if active
+
+            juce::MidiBuffer midi;
+            juce::AudioBuffer<float> buffer (2, 512);
+            float peak = 0.0f;
+
+            for (int b = 0; b < 20; ++b)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        buffer.setSample (ch, s, 0.4f * std::sin (juce::MathConstants<float>::twoPi * 12000.0f
+                                                                    * (float) (b * 512 + s) / 44100.0f));
+                processor.processBlock (buffer, midi);
+            }
+
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < 512; ++s)
+                    peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+            expectWithinAbsoluteError (peak, 0.4f, 0.05f, "disabled EQ should not attenuate a 12kHz tone even at DARK");
+        }
+
+        beginTest ("Default state has EQ at 50% (PHONE) - the product default");
+        {
+            UNI76AudioProcessor processor;
+            auto* eqParam = processor.getValueTreeState().getParameter (uni76::ParamID::eq);
+            expectWithinAbsoluteError (eqParam->getValue(), 0.5f, 0.001f, "EQ must default to 50% (PHONE)");
+        }
+
+        beginTest ("PREAMP + EQ combinations: no NaN/Inf, no gain explosion, meters work");
+        {
+            const float preampValues[] { 0.0f, 0.5f };
+            const float eqValues[] { 0.0f, 0.5f, 1.0f };
+
+            for (auto preampT : preampValues)
+            {
+                for (auto eqT : eqValues)
+                {
+                    UNI76AudioProcessor processor;
+                    processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                    processor.prepareToPlay (44100.0, 512);
+
+                    processor.getValueTreeState().getParameter (uni76::ParamID::preamp)->setValueNotifyingHost (preampT);
+                    processor.getValueTreeState().getParameter (uni76::ParamID::eq)->setValueNotifyingHost (eqT);
+
+                    juce::MidiBuffer midi;
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    float peak = 0.0f;
+
+                    for (int b = 0; b < 20; ++b)
+                    {
+                        for (int ch = 0; ch < 2; ++ch)
+                            for (int s = 0; s < 512; ++s)
+                                buffer.setSample (ch, s, 0.4f * std::sin (juce::MathConstants<float>::twoPi * 800.0f
+                                                                            * (float) (b * 512 + s) / 44100.0f));
+                        processor.processBlock (buffer, midi);
+                    }
+
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int s = 0; s < 512; ++s)
+                            peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+                    const juce::String label = "PREAMP=" + juce::String (preampT) + " EQ=" + juce::String (eqT);
+                    expect (std::isfinite (peak), "non-finite output for " + label);
+                    expect (peak < 4.0f, "unexpected gain explosion for " + label);
+                    expect (processor.getInputLevelMeter().readAndResetPeak() >= 0.0f, "input meter unavailable for " + label);
+                    expect (processor.getOutputLevelMeter().readAndResetPeak() >= 0.0f, "output meter unavailable for " + label);
+                }
+            }
+        }
+
+        beginTest ("EQ value round-trips through a real getStateInformation()/setStateInformation() save+restore (0/50/100)");
+        {
+            for (float eqValue : { 0.0f, 0.5f, 1.0f })
+            {
+                UNI76AudioProcessor processor;
+                auto* eqParam = processor.getValueTreeState().getParameter (uni76::ParamID::eq);
+                eqParam->setValueNotifyingHost (eqValue);
+
+                juce::MemoryBlock saved;
+                processor.getStateInformation (saved);
+
+                eqParam->setValueNotifyingHost (eqValue > 0.5f ? 0.0f : 1.0f); // perturb away
+                processor.setStateInformation (saved.getData(), (int) saved.getSize());
+
+                expectWithinAbsoluteError (eqParam->getValue(), eqValue, 0.001f, "EQ value should round-trip through save/restore");
+            }
+        }
+    }
+};
+
+static UNI76EqIntegrationTests uni76EqIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Offline frequency-response measurement for docs/DSP_EQ.md - prints
+// unconditionally so the numbers can be captured for the docs.
+class UNI76EqFrequencyResponseTests final : public juce::UnitTest
+{
+public:
+    UNI76EqFrequencyResponseTests() : juce::UnitTest ("uni76::dsp::EqProcessor frequency response", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Frequency response at EQ 0/25/50/75/100% across the documented test-frequency set");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            constexpr float amplitude = 0.25f;
+
+            const float testFreqs[] { 30.0f, 60.0f, 100.0f, 300.0f, 1000.0f, 3400.0f, 5000.0f, 10000.0f, 16000.0f, 20000.0f };
+            const float eqPositions[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+
+            std::cout << "\n=== EQ frequency response (dB gain vs input) ===" << std::endl;
+
+            for (auto freqHz : testFreqs)
+            {
+                std::cout << "  " << freqHz << "Hz:";
+                for (auto t : eqPositions)
+                {
+                    uni76::dsp::EqProcessor eq;
+                    eq.prepare (sr, blockSize, 1);
+                    const auto gainDb = eqGainDb (eq, sr, blockSize, freqHz, amplitude, t);
+                    std::cout << "  EQ" << (int) (t * 100.0f) << "%=" << gainDb << "dB";
+                    expect (std::isfinite (gainDb), "non-finite frequency response measurement");
+                }
+                std::cout << std::endl;
+            }
+
+            std::cout << "=== end EQ frequency response ===" << std::endl << std::endl;
+        }
+    }
+};
+
+static UNI76EqFrequencyResponseTests uni76EqFrequencyResponseTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

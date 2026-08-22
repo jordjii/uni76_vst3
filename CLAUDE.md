@@ -92,23 +92,42 @@ High Cut are **not** separate parameters - they are internal to
 `Source/DSP/PreampProcessor`, derived entirely from `preamp` (see
 [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
 
-## PREAMP DSP (the only module with real audio processing so far)
+## PREAMP + EQ DSP (the only modules with real audio processing so far)
+
+Chain order: `Input -> PREAMP -> EQ -> (future modules) -> Output` -
+`PluginProcessor::processBlock()` calls `preampProcessor.process()` then
+`eqProcessor.process()`, in that order.
 
 `Source/DSP/PreampProcessor.*` implements the `01 PREAMP / TRANSFORMER`
 module's full signal chain - see
 [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md) for the topology, curves,
 oversampling strategy, measured harmonic/frequency-response data, and
 known tradeoffs in full. In short: DC/infrasonic protection, a
-drive-dependent "transformer" coloration + asymmetric tanh waveshaper
+drive-dependent "transformer" coloration + asymmetric-gain tanh waveshaper
 (oversampled 4x at 44.1/48kHz, 2x at 88.2/96kHz, none at 176.4kHz+),
 drive-dependent soft Low Cut/High Cut, output compensation, and a
 latency-aligned enable/disable crossfade driven by `preampEnabled`
-(`Source/Core/ModuleEnableState.h`).
+(`Source/Core/ModuleEnableState.h`). **Frozen as of the sound-calibration
+pass** - do not change PREAMP's DSP, constants, or gain staging without
+a discovered objective regression.
 
-**EQ, Saturation, Pitch, Panorama, Reverb and Imager remain a strict
+`Source/DSP/EqProcessor.*` implements the `02 EQ / BAND SHAPER` module -
+see [docs/DSP_EQ.md](docs/DSP_EQ.md) for the full topology, morph curves,
+and measured frequency response. In short: one macro parameter (`eq`, the
+TONE knob) morphs a fixed five-stage minimum-phase filter network (HP ->
+low shelf -> bell/presence -> high shelf -> LP) continuously across two
+linked regions - `DARK (0%) -> PHONE (50%)` and `PHONE (50%) -> AIR
+(100%)` - sharing PHONE as a named centre, not a linear frequency sweep
+and not three switched presets. No oversampling (adds zero latency), no
+nonlinearity - PREAMP (and the future SAT module) own harmonic character;
+EQ only shapes frequency response. Same `eqEnabled`-driven crossfade
+bypass pattern as PREAMP, but without the delay-alignment PREAMP needs
+(EQ has no latency to align against).
+
+**Saturation, Pitch, Panorama, Reverb and Imager remain a strict
 passthrough** - do not add DSP to any of them without a separate,
-deliberate decision. `Source/DSP/Eq.h` / `Saturation.h` / `Pitch.h` /
-`Panorama.h` / `Reverb.h` / `Imager.h` are still empty placeholders.
+deliberate decision. `Source/DSP/Saturation.h` / `Pitch.h` / `Panorama.h`
+/ `Reverb.h` / `Imager.h` are still empty placeholders.
 
 ### Per-module enabled/disabled state (not a parameter)
 
@@ -167,47 +186,51 @@ particular:
 
 ## Current status (as of this entry)
 
-**Stage: technical foundation + production UI + PREAMP DSP. EQ, Saturation,
-Pitch, Panorama, Reverb, Imager remain deliberately passthrough.**
+**Stage: technical foundation + production UI + PREAMP DSP (frozen after
+sound calibration) + EQ DSP. Saturation, Pitch, Panorama, Reverb, Imager
+remain deliberately passthrough.**
 
 Verified on this machine (Windows, Visual Studio Community 2026 /
 MSVC 19.51):
 
 - Clean configure + build for both `windows-debug` and `windows-release`
-  presets, **zero compiler warnings**, including `juce_dsp` (newly linked
-  for PREAMP's oversampling).
+  presets, **zero compiler warnings**, including `juce_dsp` (linked for
+  PREAMP's oversampling; EQ itself needs no oversampling).
 - Real `.vst3` produced at
   `build/windows-release/Source/Plugin/UNI76_artefacts/Release/VST3/UNI 76.vst3`.
 - All `UNI76Tests` (JUCE `UnitTest`-based) pass in both Debug and Release,
   including the full PREAMP DSP suite (see
-  [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md) for the harmonic/frequency
-  measurements these tests generate): transparency near DRIVE=0%,
-  `preampEnabled=false` bypass, bypass-transition continuity, harmonic
-  growth 0%<50%<100% without hard clipping, DC-offset safety, Low
-  Cut/High Cut actually changing measured frequency response with DRIVE,
-  output-compensation bounding, mono, stereo channel independence, all 4
-  sample-rate/oversampling tiers, 5 block sizes, automation sweeps,
-  silence-stays-silence, NaN/Inf safety, and latency staying constant
-  regardless of DRIVE/enabled state.
+  [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)) and the full EQ DSP suite (see
+  [docs/DSP_EQ.md](docs/DSP_EQ.md)): PREAMP transparency near DRIVE=0%,
+  calibrated harmonic progression (single digits to low tens of percent,
+  never runaway/rectifying), level-dependent behaviour, Low/High Cut,
+  gain-staging within a few dB, aliasing suppression, null test; EQ
+  DARK/PHONE/AIR response shape, PHONE's voice-band suppression either
+  side of a readable mid, click-free automation through the 50% crossing,
+  zero-latency bypass, PREAMP+EQ integration (6 combinations, no
+  NaN/Inf/gain-explosion); both modules' mono/stereo (incl. no stereo
+  drift), all supported sample rates, multiple block sizes, NaN/Inf
+  safety, and state save/restore.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
-  parameters, drove PREAMP through 0/50/100% via real `processBlock()`
-  calls and confirmed the output is measurably different and stays
-  bounded/finite at every setting, ran an 0->100->0 automation sweep during
-  continuous audio, opened/closed/reopened the real WebView2 editor with
-  no crash, and round-tripped the PREAMP parameter through a real
-  `getStateInformation()`/`setStateInformation()` save+restore. Also
-  confirmed identical behaviour from a `.vst3` copy in a completely
-  isolated directory (no `Resources/Web` nearby), proving both the UI
-  resources and the PREAMP DSP code are genuinely self-contained in the
-  binary. `preampEnabled` bypass itself is verified at the C++ level
-  (`Tests/PluginTests.cpp`) rather than through this external harness -
-  like the editor's `IPlugView`, `ModuleEnableState` is deliberately not
-  VST3-visible (no parameter, no exposed state format), so an external
-  black-box host harness has no legitimate way to toggle it without going
-  through the WebView native bridge, which - as established in the prior
-  UI audit - such a harness cannot reach either.
+  parameters, drove PREAMP and EQ through real `processBlock()` calls at
+  their calibrated settings, confirmed EQ defaults to 50% (PHONE),
+  confirmed measurable/bounded/finite output and correct gain staging at
+  every setting, ran automation sweeps during continuous audio, confirmed
+  identical L/R output for identical stereo input, opened/closed/reopened
+  the real WebView2 editor with no crash, and round-tripped both
+  parameters through a real `getStateInformation()`/`setStateInformation()`
+  save+restore. Also confirmed identical behaviour from a `.vst3` copy in
+  a completely isolated directory (no `Resources/Web` nearby), proving the
+  UI resources and both DSP modules' code are genuinely self-contained in
+  the binary. `preampEnabled`/`eqEnabled` bypass are each verified at the
+  C++ level (`Tests/PluginTests.cpp`) rather than through this external
+  harness - like the editor's `IPlugView`, `ModuleEnableState` is
+  deliberately not VST3-visible (no parameter, no exposed state format),
+  so an external black-box host harness has no legitimate way to toggle it
+  without going through the WebView native bridge, which - as established
+  in the UI audit - such a harness cannot reach either.
 
 Not verified (say so plainly rather than guessing):
 
@@ -231,7 +254,8 @@ Not verified (say so plainly rather than guessing):
 
 ## Next steps (not started - waiting for a separate go-ahead)
 
-DSP for the remaining 6 modules (EQ, Saturation, Pitch, Panorama, Reverb,
-Imager - PREAMP is done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)),
-presets browser, copy protection, licensing system. See
-[docs/RELEASE.md](docs/RELEASE.md) for the pre-public-release checklist.
+DSP for the remaining 5 modules (Saturation, Pitch, Panorama, Reverb,
+Imager - PREAMP and EQ are done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)
+and [docs/DSP_EQ.md](docs/DSP_EQ.md)), presets browser, copy protection,
+licensing system. See [docs/RELEASE.md](docs/RELEASE.md) for the
+pre-public-release checklist.

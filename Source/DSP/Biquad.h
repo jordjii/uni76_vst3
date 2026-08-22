@@ -4,16 +4,17 @@
 #include <vector>
 
 /*
-    Small allocation-free DSP building blocks for Source/DSP/PreampProcessor.
+    Small allocation-free DSP building blocks shared by Source/DSP/
+    PreampProcessor and Source/DSP/EqProcessor.
 
     Deliberately NOT juce::dsp::IIR::Filter: that class stores coefficients
     behind a heap-allocated, reference-counted Coefficients object, and its
     makeLowPass()/makeHighPass()/... factories allocate a new one every
-    call. PreampProcessor recomputes its filter shapes every block (Low
-    Cut/High Cut/colour move continuously with PREAMP DRIVE), and doing
-    that on the audio thread would violate the project's no-allocation
-    rule - so these types hold their coefficients as plain floats that
-    setCoefficients() overwrites in place.
+    call. Both processors recompute their filter shapes every block (they
+    move continuously with a macro parameter), and doing that on the audio
+    thread would violate the project's no-allocation rule - so these types
+    hold their coefficients as plain floats that setCoefficients()
+    overwrites in place.
 */
 
 namespace uni76::dsp
@@ -185,6 +186,46 @@ namespace uni76::dsp
         const auto b2 =    A * ((A + 1.0) - (A - 1.0) * cosw0 - sqrtA2)     / a0;
         const auto a1 =   -2.0 * ((A - 1.0) + (A + 1.0) * cosw0)            / a0;
         const auto a2 =        ((A + 1.0) + (A - 1.0) * cosw0 - sqrtA2)     / a0;
+
+        biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
+    }
+
+    inline void makeHighShelf (Biquad& biquad, double sampleRate, float frequencyHz, float gainDb, float shelfSlope = 1.0f) noexcept
+    {
+        const auto A      = std::pow (10.0, (double) gainDb / 40.0);
+        const auto w0     = twoPi * (double) frequencyHz / sampleRate;
+        const auto cosw0  = std::cos (w0);
+        const auto sinw0  = std::sin (w0);
+        const auto alpha  = sinw0 / 2.0 * std::sqrt ((A + 1.0 / A) * (1.0 / (double) shelfSlope - 1.0) + 2.0);
+        const auto sqrtA2 = 2.0 * std::sqrt (A) * alpha;
+
+        const auto a0 =        (A + 1.0) - (A - 1.0) * cosw0 + sqrtA2;
+        const auto b0 =    A * ((A + 1.0) + (A - 1.0) * cosw0 + sqrtA2)     / a0;
+        const auto b1 = -2*A * ((A - 1.0) + (A + 1.0) * cosw0)              / a0;
+        const auto b2 =    A * ((A + 1.0) + (A - 1.0) * cosw0 - sqrtA2)     / a0;
+        const auto a1 =    2.0 * ((A - 1.0) - (A + 1.0) * cosw0)            / a0;
+        const auto a2 =        ((A + 1.0) - (A - 1.0) * cosw0 - sqrtA2)     / a0;
+
+        biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
+    }
+
+    /** Peaking/bell EQ - broad and low-Q by construction whenever callers
+        pass a modest Q (UNI 76's EQ module never uses a high-Q bell - see
+        Source/DSP/EqCurves.h). */
+    inline void makePeakingEq (Biquad& biquad, double sampleRate, float frequencyHz, float gainDb, float q) noexcept
+    {
+        const auto A     = std::pow (10.0, (double) gainDb / 40.0);
+        const auto w0    = twoPi * (double) frequencyHz / sampleRate;
+        const auto cosw0 = std::cos (w0);
+        const auto sinw0 = std::sin (w0);
+        const auto alpha = sinw0 / (2.0 * (double) q);
+
+        const auto a0 = 1.0 + alpha / A;
+        const auto b0 = (1.0 + alpha * A) / a0;
+        const auto b1 = (-2.0 * cosw0)    / a0;
+        const auto b2 = (1.0 - alpha * A) / a0;
+        const auto a1 = (-2.0 * cosw0)    / a0;
+        const auto a2 = (1.0 - alpha / A) / a0;
 
         biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
     }
