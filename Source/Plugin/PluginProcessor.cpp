@@ -89,6 +89,13 @@ void UNI76AudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     auto state = apvts.copyState();
     state.setProperty (uni76::stateSchemaVersionProperty, uni76::stateSchemaVersion, nullptr);
 
+    // Module-enabled flags live as plain properties on the same saved
+    // ValueTree as the APVTS parameters, but are NOT APVTS parameters
+    // themselves - see Core/ModuleEnableState.h for why.
+    for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+        state.setProperty (uni76::ModuleEnableState::propertyNames[(size_t) i],
+                            moduleEnableState.isEnabled (i), nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -102,10 +109,16 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
         if (! newState.isValid() || newState.getType() != apvts.state.getType())
             return;
 
-        // Future preset migrations branch on this property. Only schema
-        // version 1 exists today, so there is nothing to migrate yet.
+        // Future preset migrations branch on this property if needed.
         [[maybe_unused]] const int loadedSchemaVersion =
             newState.getProperty (uni76::stateSchemaVersionProperty, 1);
+
+        // A pre-v2 (or otherwise missing) flag defaults to enabled=true -
+        // that's the correct migration for state saved before this flag
+        // existed, with no separate branch needed.
+        for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+            moduleEnableState.setEnabled (i,
+                (bool) newState.getProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true));
 
         apvts.replaceState (newState);
     }

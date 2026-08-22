@@ -2,6 +2,7 @@
 
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Core/LevelMeter.h"
+#include "Core/ModuleEnableState.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -67,6 +68,9 @@ public:
     /** Peak measured at the bottom of processBlock(), after any future processing chain. */
     uni76::LevelMeter& getOutputLevelMeter() noexcept { return outputLevelMeter; }
 
+    /** Persistent (state-saved) but non-automatable per-module on/off flags - see Core/ModuleEnableState.h. */
+    uni76::ModuleEnableState& getModuleEnableState() noexcept { return moduleEnableState; }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
 
@@ -74,6 +78,11 @@ private:
     // never an APVTS parameter, never read back by the audio thread itself.
     uni76::LevelMeter inputLevelMeter;
     uni76::LevelMeter outputLevelMeter;
+
+    // Persisted as plain properties on the saved state ValueTree (see
+    // getStateInformation/setStateInformation) but deliberately not part
+    // of the APVTS parameter tree - see Core/ModuleEnableState.h.
+    uni76::ModuleEnableState moduleEnableState;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

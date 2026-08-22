@@ -39,19 +39,17 @@
   border-right: none;
 }
 
-/* Disabling a module is a front-end-only visual state (see module_power.js
-   for why) - redefining --module-accent and the ink-* tokens locally is
-   enough to drain the panel and the knob's ring to a neutral dark grey and
-   flip every "ink" coloured label to the light text-* palette instead, all
-   from the existing rules that already read those custom properties. */
+/* Disabling a module is persistent internal state, synced with the C++
+   side via Core/ModuleEnableState.h (see module_power.js) - but visually
+   it's only ever a mute, not a blackout: a plain CSS filter darkens and
+   desaturates the panel's own colour (background, knob ring, everything)
+   in place, uniformly enough that the original ink-on-panel contrast
+   survives - so the module stays legible, just visibly "off". (A filter
+   is used here rather than overriding --module-accent because that
+   custom property is set via an inline style on the element itself,
+   which would otherwise always win over a class-based override.) */
 .module.is-disabled {
-  --module-accent: var(--neutral-700);
-  --ink-strong: var(--text-primary);
-  --ink-mid: var(--text-secondary);
-  --ink-soft: var(--text-tertiary);
-  --ink-hairline: var(--line-hairline);
-  --ink-hairline-strong: var(--line-hairline-strong);
-  background: var(--neutral-850);
+  filter: saturate(0.5) brightness(0.8);
 }
 
 .module__power {

@@ -2,6 +2,7 @@
 #include "WebResourceProvider.h"
 #include "Plugin/PluginProcessor.h"
 #include "Parameters/ParameterIDs.h"
+#include "Core/MeterEnvelope.h"
 
 namespace
 {
@@ -25,9 +26,11 @@ namespace
         juce::WebSliderRelay& panorama,
         juce::WebSliderRelay& reverb,
         juce::WebSliderRelay& imager,
-        juce::WebControlParameterIndexReceiver& indexReceiver)
+        juce::WebControlParameterIndexReceiver& indexReceiver,
+        UNI76AudioProcessor& processor)
     {
         using Options = juce::WebBrowserComponent::Options;
+        using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
 
         // Requesting the webview2 backend is safe on every platform: JUCE
         // silently falls back to the platform default (WKWebView on macOS)
@@ -50,6 +53,30 @@ namespace
             .withOptionsFrom (reverb)
             .withOptionsFrom (imager)
             .withOptionsFrom (indexReceiver)
+            // The 7 module-enabled flags are persistent but NOT DAW
+            // automation parameters (see Core/ModuleEnableState.h), so
+            // they don't get a WebToggleRelay - this small pair of native
+            // functions is the whole bridge: the frontend calls the getter
+            // once at startup to sync its resting-enabled HTML with
+            // whatever was actually loaded, and calls the setter whenever
+            // the user clicks a module's power toggle.
+            .withNativeFunction ("uni76SetModuleEnabled",
+                [&processor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    if (args.size() >= 2)
+                        processor.getModuleEnableState().setEnabled ((int) args[0], (bool) args[1]);
+
+                    complete (juce::var());
+                })
+            .withNativeFunction ("uni76GetModuleEnabledStates",
+                [&processor] (const juce::Array<juce::var>&, Completion complete)
+                {
+                    juce::Array<juce::var> states;
+                    for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                        states.add (processor.getModuleEnableState().isEnabled (i));
+
+                    complete (juce::var (states));
+                })
             .withResourceProvider (&uni76::ui::getWebResource);
     }
 }
@@ -61,27 +88,12 @@ bool UNI76AudioProcessorEditor::SinglePageBrowser::pageAboutToLoad (const juce::
     return newURL == juce::WebBrowserComponent::getResourceProviderRoot();
 }
 
-namespace
-{
-    // Message-thread-only envelope follower: fast attack, slow release, so
-    // the meter reads as a smooth analogue needle rather than a flickering
-    // per-block value. Tuned for a 30 Hz timer (see startTimerHz below).
-    constexpr float meterAttackCoeff  = 0.6f;
-    constexpr float meterReleaseCoeff = 0.08f;
-
-    float applyMeterEnvelope (float previous, float target) noexcept
-    {
-        const auto coeff = target > previous ? meterAttackCoeff : meterReleaseCoeff;
-        return previous + (target - previous) * coeff;
-    }
-}
-
 UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
                                     panoramaRelay, reverbRelay, imagerRelay,
-                                    controlParameterIndexReceiver)),
+                                    controlParameterIndexReceiver, p)),
       preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
                              preampRelay, processor.getValueTreeState().undoManager),
       eqAttachment         (*processor.getValueTreeState().getParameter (uni76::ParamID::eq),
@@ -136,8 +148,8 @@ void UNI76AudioProcessorEditor::timerCallback()
     const auto inputPeak  = processor.getInputLevelMeter().readAndResetPeak();
     const auto outputPeak = processor.getOutputLevelMeter().readAndResetPeak();
 
-    inputMeterEnvelope  = applyMeterEnvelope (inputMeterEnvelope, inputPeak);
-    outputMeterEnvelope = applyMeterEnvelope (outputMeterEnvelope, outputPeak);
+    inputMeterEnvelope  = uni76::applyMeterEnvelope (inputMeterEnvelope, inputPeak);
+    outputMeterEnvelope = uni76::applyMeterEnvelope (outputMeterEnvelope, outputPeak);
 
     auto* payload = new juce::DynamicObject();
     payload->setProperty ("input", inputMeterEnvelope);

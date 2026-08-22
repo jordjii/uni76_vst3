@@ -4,9 +4,12 @@
 #include "Parameters/ParameterIDs.h"
 #include "Core/PluginIdentity.h"
 #include "Core/LevelMeter.h"
+#include "Core/MeterEnvelope.h"
+#include "Core/ModuleEnableState.h"
 
 #include <cmath>
 #include <cstring>
+#include <iostream>
 #include <limits>
 
 namespace
@@ -382,19 +385,170 @@ public:
             expectWithinAbsoluteError (processor.getInputLevelMeter().readAndResetPeak(), 0.8f, 0.0001f);
             expectWithinAbsoluteError (processor.getOutputLevelMeter().readAndResetPeak(), 0.8f, 0.0001f);
         }
+
+        beginTest ("Deterministic dB levels convert to the correct linear peak (-24/-12/-6/~0 dBFS)");
+        {
+            struct DbCase { const char* label; float dBFS; };
+
+            const DbCase cases[] {
+                { "-24 dBFS", -24.0f },
+                { "-12 dBFS", -12.0f },
+                { "-6 dBFS",   -6.0f },
+                { "~0 dBFS",   -0.1f },
+            };
+
+            for (const auto& c : cases)
+            {
+                uni76::LevelMeter meter;
+                const auto amplitude = std::pow (10.0f, c.dBFS / 20.0f);
+                auto buffer = makeConstantBuffer (2, 512, amplitude);
+
+                meter.pushBlock (buffer);
+
+                expectWithinAbsoluteError (meter.readAndResetPeak(), amplitude, 0.0005f, c.label);
+            }
+        }
+    }
+};
+
+class UNI76MeterEnvelopeTests final : public juce::UnitTest
+{
+public:
+    UNI76MeterEnvelopeTests() : juce::UnitTest ("uni76::applyMeterEnvelope", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Attack closes more of the gap per tick than release does");
+        {
+            // Compare the *fraction of the gap closed*, not the raw
+            // resulting values - attack and release start from opposite
+            // ends, so the raw outputs (0.6 vs 0.92) aren't comparable
+            // directly.
+            const auto attackGapClosed  = uni76::applyMeterEnvelope (0.0f, 1.0f) - 0.0f;
+            const auto releaseGapClosed = 1.0f - uni76::applyMeterEnvelope (1.0f, 0.0f);
+
+            expect (attackGapClosed > releaseGapClosed,
+                    "one attack tick should close more of the gap to the target than one release tick");
+        }
+
+        beginTest ("Silence eventually releases the envelope to (effectively) zero");
+        {
+            float envelope = 1.0f;
+
+            for (int tick = 0; tick < 500; ++tick)
+                envelope = uni76::applyMeterEnvelope (envelope, 0.0f);
+
+            expectWithinAbsoluteError (envelope, 0.0f, 0.0001f);
+        }
     }
 };
 
 static UNI76LevelMeterTests uni76LevelMeterTests; // NOLINT - self-registers with the UnitTestRunner
+static UNI76MeterEnvelopeTests uni76MeterEnvelopeTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76ModuleEnableStateTests final : public juce::UnitTest
+{
+public:
+    UNI76ModuleEnableStateTests() : juce::UnitTest ("uni76::ModuleEnableState", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("All 7 modules default to enabled");
+        {
+            uni76::ModuleEnableState state;
+
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                expect (state.isEnabled (i), uni76::ModuleEnableState::propertyNames[(size_t) i]);
+        }
+
+        beginTest ("Processor: module-enabled state survives serialize -> modify -> deserialize");
+        {
+            UNI76AudioProcessor processor;
+            auto& moduleState = processor.getModuleEnableState();
+
+            // Disable an arbitrary subset before saving.
+            moduleState.setEnabled (0, false); // preamp
+            moduleState.setEnabled (3, false); // pitch
+            moduleState.setEnabled (6, false); // imager
+
+            juce::MemoryBlock savedState;
+            processor.getStateInformation (savedState);
+
+            // Perturb every flag away from the saved state before reloading.
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                moduleState.setEnabled (i, true);
+
+            processor.setStateInformation (savedState.getData(), (int) savedState.getSize());
+
+            const bool expected[] { false, true, true, false, true, true, false };
+
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                expectEquals ((int) moduleState.isEnabled (i), (int) expected[i],
+                              uni76::ModuleEnableState::propertyNames[(size_t) i]);
+        }
+
+        beginTest ("Loading a pre-v2 state (no module-enabled properties at all) migrates to enabled=true");
+        {
+            // Deliberately hand-built to look like what v1 (before the
+            // module-enabled flags existed) actually saved: just the
+            // PARAMETERS tree and the schema version property - none of
+            // the *Enabled properties this test is checking migrate
+            // correctly when they're simply absent.
+            juce::ValueTree legacyState ("PARAMETERS");
+            legacyState.setProperty (uni76::stateSchemaVersionProperty, 1, nullptr);
+
+            for (const auto* id : uni76::ParamID::all)
+            {
+                juce::ValueTree param ("PARAM");
+                param.setProperty ("id", id, nullptr);
+                param.setProperty ("value", 50.0, nullptr);
+                legacyState.appendChild (param, nullptr);
+            }
+
+            juce::MemoryBlock legacyBlock;
+            if (auto xml = legacyState.createXml())
+                juce::AudioProcessor::copyXmlToBinary (*xml, legacyBlock);
+
+            UNI76AudioProcessor processor;
+            auto& moduleState = processor.getModuleEnableState();
+
+            // Perturb first, so a no-op load couldn't accidentally pass.
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                moduleState.setEnabled (i, false);
+
+            processor.setStateInformation (legacyBlock.getData(), (int) legacyBlock.getSize());
+
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                expect (moduleState.isEnabled (i),
+                        juce::String ("legacy state should migrate to enabled=true for ")
+                            + uni76::ModuleEnableState::propertyNames[(size_t) i]);
+        }
+    }
+};
+
+static UNI76ModuleEnableStateTests uni76ModuleEnableStateTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {
     juce::UnitTestRunner runner;
     runner.runAllTests();
 
-    for (int i = 0; i < runner.getNumResults(); ++i)
-        if (auto* result = runner.getResult (i); result != nullptr && result->failures > 0)
-            return 1;
+    bool anyFailures = false;
 
-    return 0;
+    for (int i = 0; i < runner.getNumResults(); ++i)
+    {
+        auto* result = runner.getResult (i);
+        if (result == nullptr || result->failures == 0)
+            continue;
+
+        anyFailures = true;
+
+        std::cout << "FAILED: " << result->unitTestName.toStdString()
+                   << " / " << result->subcategoryName.toStdString() << std::endl;
+
+        for (const auto& message : result->messages)
+            std::cout << "    " << message.toStdString() << std::endl;
+    }
+
+    return anyFailures ? 1 : 0;
 }

@@ -91,6 +91,23 @@ drive/saturation/pitch/width/space/image all start at zero). Low Cut /
 High Cut are **not** separate parameters - they will be internal to the
 future Preamp DSP module.
 
+### Per-module enabled/disabled state (not a parameter)
+
+Each module has a persistent on/off flag (`Source/Core/ModuleEnableState.h`)
+that survives editor close/reopen and host state save/reload - but it is
+**deliberately not an 8th-through-14th APVTS parameter**: it's not a DAW
+automation target. It's bridged to the frontend via two small native
+functions (`uni76SetModuleEnabled` / `uni76GetModuleEnabledStates`, see
+`Source/UI/WebUIEditor.cpp`) rather than a `WebToggleRelay`, and persisted
+as plain properties (`preampEnabled`, `eqEnabled`, ...) on the same saved
+ValueTree as the APVTS parameters, not inside the parameter tree itself.
+Defaults to enabled; a saved state from before this flag existed loads as
+enabled=true for every module (see `stateSchemaVersion` in
+`Source/Core/PluginIdentity.h`). Once a module's DSP exists, its
+`processBlock()` work should check this flag - today, with DSP still
+passthrough everywhere, disabling a module is a UI-only visual mute and
+has no audio effect, and the UI must not imply otherwise.
+
 ## Realtime audio-thread rules
 
 `AudioProcessor::processBlock()` must stay a strictly transparent

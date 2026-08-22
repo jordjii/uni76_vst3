@@ -29,6 +29,8 @@ target_sources(UNI76
 
         ../Core/PluginIdentity.h
         ../Core/LevelMeter.h
+        ../Core/ModuleEnableState.h
+        ../Core/MeterEnvelope.h
 
         ../Parameters/ParameterIDs.h
         ../Parameters/ParameterLayout.h
