@@ -72,6 +72,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/knob.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/aux_visuals.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/meters.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/module_power.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76

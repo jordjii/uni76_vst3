@@ -11,18 +11,32 @@ import { getSliderState } from "./juce_webview.js";
 import { ParameterKnob } from "./knob.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
 import { initMeters } from "./meters.js";
+import { initModulePower } from "./module_power.js";
+
+// One full octave down/up, matching the "-OCT ... 0 ... +OCT" scale label
+// printed under the PITCH knob - display only, the underlying parameter is
+// still the same plain 0..100% APVTS float as every other module.
+const PITCH_SEMITONE_RANGE = 12;
+
+function formatPitchSemitones(scaled) {
+  const semitones = Math.round((scaled / 100) * (PITCH_SEMITONE_RANGE * 2) - PITCH_SEMITONE_RANGE);
+  return semitones === 0 ? "0 ST" : `${semitones > 0 ? "+" : ""}${semitones} ST`;
+}
 
 const MODULES = [
-  { id: "preamp", control: "DRIVE", name: "Preamp" },
-  { id: "eq", control: "TONE", name: "EQ" },
-  { id: "saturation", control: "HEAT", name: "Saturation" },
-  { id: "pitch", control: "SHIFT", name: "Pitch" },
-  { id: "panorama", control: "WIDTH", name: "Panorama" },
-  { id: "reverb", control: "SPACE", name: "Reverb" },
-  { id: "imager", control: "IMAGE", name: "Imager" },
+  // EQ defaults to its centred/flat "PHONE" position (50%); every other
+  // module defaults to fully off (0%) - see ParameterLayout.cpp, which is
+  // the source of truth this must stay in sync with.
+  { id: "preamp", control: "DRIVE", name: "Preamp", defaultNormalised: 0 },
+  { id: "eq", control: "TONE", name: "EQ", defaultNormalised: 0.5 },
+  { id: "saturation", control: "HEAT", name: "Saturation", defaultNormalised: 0 },
+  { id: "pitch", control: "SHIFT", name: "Pitch", defaultNormalised: 0, formatValue: formatPitchSemitones },
+  { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0 },
+  { id: "reverb", control: "SPACE", name: "Reverb", defaultNormalised: 0 },
+  { id: "imager", control: "IMAGE", name: "Imager", defaultNormalised: 0 },
 ];
 
-function initModule({ id, control, name }) {
+function initModule({ id, control, name, defaultNormalised, formatValue }) {
   const section = document.querySelector(`.module[data-param="${id}"]`);
   if (!section) return;
 
@@ -43,6 +57,8 @@ function initModule({ id, control, name }) {
     sliderState: getSliderState(id),
     ariaLabel: `${name} ${control}`,
     valueElement,
+    defaultNormalised,
+    formatValue,
     onChange: (_normalised, scaled) => {
       if (auxUpdate) auxUpdate(scaled);
     },
@@ -51,3 +67,4 @@ function initModule({ id, control, name }) {
 
 MODULES.forEach(initModule);
 initMeters();
+initModulePower();

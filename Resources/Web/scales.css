@@ -20,8 +20,8 @@
   top: 50%;
   left: 0; /* overridden inline per tick */
   width: 1px;
-  height: 6px;
-  background: var(--ink-hairline-strong);
+  height: 7px;
+  background: var(--ink-mid);
   transform: translate(-50%, -50%);
 }
 
@@ -47,8 +47,8 @@
   left: var(--marker-pos, 50%);
   width: 2.5px;
   height: 12px;
-  background: var(--knob-pointer);
-  border: 1px solid var(--ink-strong);
+  background: var(--ink-strong);
+  border: 1px solid var(--knob-pointer);
   border-radius: 1px;
   transform: translate(-50%, -50%);
   transition: left 60ms linear;
@@ -118,8 +118,8 @@
   left: var(--pos, 50%);
   width: 2.5px;
   height: 12px;
-  background: var(--knob-pointer);
-  border: 1px solid var(--ink-strong);
+  background: var(--ink-strong);
+  border: 1px solid var(--knob-pointer);
   border-radius: 1px;
   transform: translate(-50%, -50%);
   transition: left 60ms linear;

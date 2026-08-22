@@ -39,6 +39,45 @@
   border-right: none;
 }
 
+/* Disabling a module is a front-end-only visual state (see module_power.js
+   for why) - redefining --module-accent and the ink-* tokens locally is
+   enough to drain the panel and the knob's ring to a neutral dark grey and
+   flip every "ink" coloured label to the light text-* palette instead, all
+   from the existing rules that already read those custom properties. */
+.module.is-disabled {
+  --module-accent: var(--neutral-700);
+  --ink-strong: var(--text-primary);
+  --ink-mid: var(--text-secondary);
+  --ink-soft: var(--text-tertiary);
+  --ink-hairline: var(--line-hairline);
+  --ink-hairline-strong: var(--line-hairline-strong);
+  background: var(--neutral-850);
+}
+
+.module__power {
+  position: absolute;
+  top: var(--space-xs);
+  right: var(--space-xs);
+  width: clamp(10px, 0.4rem + 0.7vw, 14px);
+  height: clamp(10px, 0.4rem + 0.7vw, 14px);
+  border-radius: 50%;
+  border: 1px solid var(--ink-hairline-strong);
+  background: var(--module-accent);
+  padding: 0;
+  cursor: pointer;
+  z-index: 1;
+}
+
+.module.is-disabled .module__power {
+  background: var(--neutral-950);
+  border-color: var(--line-hairline-strong);
+}
+
+.module__power:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
 /* Very soft inward edge-darkening so each panel reads as a slightly worn,
    lit-from-above surface rather than a flat poster-colour swatch. */
 .module::after {

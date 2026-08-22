@@ -22,12 +22,16 @@ function clamp01(value) {
   return Math.min(1, Math.max(0, value));
 }
 
+const defaultFormatValue = (scaled) => `${scaled}%`;
+
 export class ParameterKnob {
-  constructor({ element, sliderState, ariaLabel, valueElement, onChange }) {
+  constructor({ element, sliderState, ariaLabel, valueElement, onChange, defaultNormalised = 0.5, formatValue = defaultFormatValue }) {
     this.element = element;
     this.state = sliderState;
     this.valueElement = valueElement;
     this.onChange = onChange;
+    this.defaultNormalised = defaultNormalised;
+    this.formatValue = formatValue;
 
     this.dragging = false;
     this.dragStartY = 0;
@@ -53,9 +57,11 @@ export class ParameterKnob {
     // Deliberately do NOT call _render() here: this.state starts out with
     // placeholder properties (range 0..1, value 0) until the native side
     // answers the "requestInitialUpdate" event SliderState fires on
-    // construction. Rendering that placeholder would flash the knob to 0%
-    // for a frame. The HTML/CSS-authored resting state (50%, 0deg) is
-    // already the correct default, so we just wait for the first real
+    // construction. Rendering that placeholder would flash the knob to a
+    // wrong position for a frame. The HTML/CSS-authored resting state
+    // (see each knob's inline --knob-angle and its knob__value text in
+    // index.html, which must match defaultNormalised/the real APVTS
+    // default) is already correct, so we just wait for the first real
     // valueChangedEvent instead.
     this.state.valueChangedEvent.addListener(this._render);
   }
@@ -91,8 +97,9 @@ export class ParameterKnob {
     this.element.setAttribute("aria-valuemax", "100");
     // Matches the HTML/CSS-authored resting state until the first real
     // valueChangedEvent arrives - see the comment in the constructor.
-    this.element.setAttribute("aria-valuenow", "50");
-    this.element.setAttribute("aria-valuetext", "50%");
+    const restingScaled = Math.round(this.defaultNormalised * 100);
+    this.element.setAttribute("aria-valuenow", String(restingScaled));
+    this.element.setAttribute("aria-valuetext", this.formatValue(restingScaled));
     if (ariaLabel) this.element.setAttribute("aria-label", ariaLabel);
   }
 
@@ -170,7 +177,7 @@ export class ParameterKnob {
 
   _onDoubleClick() {
     this.state.sliderDragStarted();
-    this.state.setNormalisedValue(0.5);
+    this.state.setNormalisedValue(this.defaultNormalised);
     this.state.sliderDragEnded();
   }
 
@@ -215,12 +222,13 @@ export class ParameterKnob {
     const normalised = this.state.getNormalisedValue();
     const scaled = Math.round(this.state.getScaledValue());
     const angle = ROTATION_MIN_DEG + normalised * ROTATION_RANGE_DEG;
+    const formatted = this.formatValue(scaled);
 
     this.element.style.setProperty("--knob-angle", `${angle}deg`);
     this.element.setAttribute("aria-valuenow", String(scaled));
-    this.element.setAttribute("aria-valuetext", `${scaled}%`);
+    this.element.setAttribute("aria-valuetext", formatted);
 
-    if (this.valueElement) this.valueElement.textContent = `${scaled}%`;
+    if (this.valueElement) this.valueElement.textContent = formatted;
     if (this.onChange) this.onChange(normalised, scaled);
   }
 }

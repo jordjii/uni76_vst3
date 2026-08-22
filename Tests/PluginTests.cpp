@@ -51,7 +51,7 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 7 parameter IDs exist with 50% defaults");
+        beginTest ("All 7 parameter IDs exist with the correct defaults (EQ 50%, everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
@@ -63,8 +63,10 @@ public:
                 auto* param = apvts.getParameter (id);
                 expect (param != nullptr, juce::String ("missing parameter: ") + id);
 
+                const auto expectedDefault = std::strcmp (id, uni76::ParamID::eq) == 0 ? 50.0f : 0.0f;
+
                 if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
-                    expectWithinAbsoluteError (floatParam->get(), 50.0f, 0.001f, id);
+                    expectWithinAbsoluteError (floatParam->get(), expectedDefault, 0.001f, id);
             }
         }
 
@@ -95,8 +97,13 @@ public:
                 if (std::strcmp (id, uni76::ParamID::preamp) == 0)
                     continue;
 
+                // Every other parameter was never touched before the save,
+                // so it should restore to its own construction-time default
+                // (EQ 50%, everything else 0%) - not a single shared value.
+                const auto expectedDefault = std::strcmp (id, uni76::ParamID::eq) == 0 ? 0.5f : 0.0f;
+
                 if (auto* param = apvts.getParameter (id))
-                    expectWithinAbsoluteError (param->getValue(), 0.5f, 0.001f, id);
+                    expectWithinAbsoluteError (param->getValue(), expectedDefault, 0.001f, id);
             }
         }
 

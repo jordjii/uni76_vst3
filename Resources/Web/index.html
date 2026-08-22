@@ -41,6 +41,7 @@
     <main class="app__main">
       <!-- 01 PREAMP -->
       <section class="module" data-param="preamp" style="--module-accent: var(--color-preamp)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Preamp module"></button>
         <div class="module__header">
           <span class="module__index">01</span>
           <span class="module__name">PREAMP</span>
@@ -50,7 +51,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="preamp">
+              <div class="knob" data-param="preamp" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -64,7 +65,7 @@
                 <span class="is-max">100</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">0%</div>
             <div class="knob__label">DRIVE</div>
           </div>
         </div>
@@ -73,11 +74,11 @@
           <div class="filter-lines">
             <div class="filter-line" data-role="low-cut">
               <span class="filter-line__label">LOW CUT</span>
-              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 35%"></span></span>
+              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 10%"></span></span>
             </div>
             <div class="filter-line" data-role="high-cut">
               <span class="filter-line__label">HIGH CUT</span>
-              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 65%"></span></span>
+              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 90%"></span></span>
             </div>
             <div class="filter-lines__caption">SOFT FILTERS</div>
           </div>
@@ -86,6 +87,7 @@
 
       <!-- 02 EQ -->
       <section class="module" data-param="eq" style="--module-accent: var(--color-eq)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle EQ module"></button>
         <div class="module__header">
           <span class="module__index">02</span>
           <span class="module__name">EQ</span>
@@ -126,6 +128,7 @@
 
       <!-- 03 SAT -->
       <section class="module" data-param="saturation" style="--module-accent: var(--color-saturation)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Saturation module"></button>
         <div class="module__header">
           <span class="module__index">03</span>
           <span class="module__name">SAT</span>
@@ -135,7 +138,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="saturation">
+              <div class="knob" data-param="saturation" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -149,7 +152,7 @@
                 <span class="is-max">100</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">0%</div>
             <div class="knob__label">HEAT</div>
           </div>
         </div>
@@ -158,7 +161,7 @@
           <!-- Purely a derived, non-interactive read-out of the SAT value -
                no second parameter. -->
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
               <span>CLEAN</span><span>WARM</span><span>HOT</span>
             </div>
@@ -168,6 +171,7 @@
 
       <!-- 04 PITCH -->
       <section class="module" data-param="pitch" style="--module-accent: var(--color-pitch)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Pitch module"></button>
         <div class="module__header">
           <span class="module__index">04</span>
           <span class="module__name">PITCH</span>
@@ -177,7 +181,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="pitch">
+              <div class="knob" data-param="pitch" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -186,19 +190,19 @@
                 </div>
               </div>
               <div class="knob__scale-numbers" aria-hidden="true">
-                <span class="is-min">0</span>
-                <span class="is-mid">50</span>
-                <span class="is-max">100</span>
+                <span class="is-min">&minus;12</span>
+                <span class="is-mid">0</span>
+                <span class="is-max">+12</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">&minus;12 ST</div>
             <div class="knob__label">SHIFT</div>
           </div>
         </div>
 
         <div class="module__aux">
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
               <span>&minus; OCT</span><span>0</span><span>+ OCT</span>
             </div>
@@ -208,6 +212,7 @@
 
       <!-- 05 PAN -->
       <section class="module" data-param="panorama" style="--module-accent: var(--color-panorama)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Panorama module"></button>
         <div class="module__header">
           <span class="module__index">05</span>
           <span class="module__name">PAN</span>
@@ -217,7 +222,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="panorama">
+              <div class="knob" data-param="panorama" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -231,14 +236,14 @@
                 <span class="is-max">100</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">0%</div>
             <div class="knob__label">WIDTH</div>
           </div>
         </div>
 
         <div class="module__aux">
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
               <span>MONO</span><span>NATURAL</span><span>WIDE</span>
             </div>
@@ -248,6 +253,7 @@
 
       <!-- 06 VERB -->
       <section class="module" data-param="reverb" style="--module-accent: var(--color-reverb)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Reverb module"></button>
         <div class="module__header">
           <span class="module__index">06</span>
           <span class="module__name">VERB</span>
@@ -257,7 +263,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="reverb">
+              <div class="knob" data-param="reverb" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -271,14 +277,14 @@
                 <span class="is-max">100</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">0%</div>
             <div class="knob__label">SPACE</div>
           </div>
         </div>
 
         <div class="module__aux">
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
               <span>SPRING</span><span>PLATE</span><span>CHAMBER</span>
             </div>
@@ -288,6 +294,7 @@
 
       <!-- 07 IMAGE -->
       <section class="module" data-param="imager" style="--module-accent: var(--color-imager)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Imager module"></button>
         <div class="module__header">
           <span class="module__index">07</span>
           <span class="module__name">IMAGE</span>
@@ -297,7 +304,7 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="imager">
+              <div class="knob" data-param="imager" style="--knob-angle: -135deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -311,14 +318,14 @@
                 <span class="is-max">100</span>
               </div>
             </div>
-            <div class="knob__value">50%</div>
+            <div class="knob__value">0%</div>
             <div class="knob__label">IMAGE</div>
           </div>
         </div>
 
         <div class="module__aux">
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
               <span>NARROW</span><span>NATURAL</span><span>WIDE</span>
             </div>

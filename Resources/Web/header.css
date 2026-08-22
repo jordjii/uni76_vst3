@@ -7,7 +7,6 @@
   height: 100%;
   padding-inline: var(--space-lg);
   background: var(--bg-header);
-  border-bottom: var(--border-hairline) solid var(--line-hairline-strong);
 }
 
 .header__brand {
@@ -17,6 +16,13 @@
   letter-spacing: var(--tracking-wider);
   color: var(--text-secondary);
   white-space: nowrap;
+  /* .header__title is a two-line block (the UNI 76/deco-line row, then the
+     subtitle) that gets vertically centred as a whole - so its top row
+     (and the deco-lines on it) sits above the header's true centreline.
+     header__brand is single-line, so plain centring would land it lower
+     than the lines. Pushing its own centring margin down by one subtitle
+     line + the title's row gap moves its text up to match. */
+  margin-bottom: calc(var(--fs-subtitle) + 0.2em);
 }
 
 .header__title {

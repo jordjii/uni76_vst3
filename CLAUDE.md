@@ -85,8 +85,11 @@ constant.
 
 `preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager` -
 see [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
-All are `0..100%`, default `50%`. Low Cut / High Cut are **not** separate
-parameters - they will be internal to the future Preamp DSP module.
+All are `0..100%`. Default is `50%` for `eq` (its centred/flat "PHONE"
+position) and `0%` for the other six (fully off, matching a console where
+drive/saturation/pitch/width/space/image all start at zero). Low Cut /
+High Cut are **not** separate parameters - they will be internal to the
+future Preamp DSP module.
 
 ## Realtime audio-thread rules
 
