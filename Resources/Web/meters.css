@@ -1,13 +1,13 @@
 /*
   UNI 76 - footer: I/O meters + signal path.
 
-  No DSP/telemetry pipeline exists yet (see CLAUDE.md realtime rules), so
-  the meters are deliberately rendered in a static, honest idle state -
-  never a fake/random animation implying a live signal that isn't there.
-  The segmented LED-style look is drawn as a single CSS background (a
-  repeating gradient for the segment dividers, layered under a green-
-  amber-red spectrum gradient) rendered at low opacity to read as an
-  unlit faceplate, not a live reading.
+  The meters show real INPUT/OUTPUT signal telemetry (see
+  Source/Core/LevelMeter.h, WebUIEditor's timer, and meters.js) - never a
+  fake/random/CSS-driven animation. Each segment is its own DOM element
+  (built by meters.js); idle/unlit segments are always plain grey
+  (--meter-segment-off) regardless of position, and a lit segment's colour
+  comes from its zone on the -24..+3 dB scale (green/yellow/orange/red -
+  see the --meter-* colour tokens in tokens.css).
 */
 
 .footer {
@@ -43,22 +43,30 @@
 }
 
 .meter-bar {
-  position: relative;
+  display: flex;
+  align-items: stretch;
+  gap: var(--meter-segment-gap);
   width: var(--meter-width);
   height: var(--meter-height);
+  padding: 2px;
   border-radius: 2px;
-  background:
-    repeating-linear-gradient(
-      90deg,
-      rgba(0, 0, 0, 0.55) 0,
-      rgba(0, 0, 0, 0.55) 1.5px,
-      transparent 1.5px,
-      transparent calc(100% / var(--meter-segments))
-    ),
-    linear-gradient(90deg, #5c8a4a 0%, #5c8a4a 56%, #c2a23e 56%, #c2a23e 80%, #c2a23e 88%, #b0503a 88%, #b0503a 100%);
-  opacity: 0.45; /* idle: a static printed scale, not a live reading - see note above */
+  background: rgba(0, 0, 0, 0.2);
   border: 1px solid var(--line-hairline-strong);
 }
+
+.meter-bar__segment {
+  flex: 1 1 0;
+  min-width: 0;
+  border-radius: 1px;
+  background: var(--meter-segment-off);
+  border: 1px solid var(--meter-segment-off-border);
+  transition: background-color 55ms linear;
+}
+
+.meter-bar__segment.is-lit[data-zone="green"]  { background: var(--meter-green); }
+.meter-bar__segment.is-lit[data-zone="yellow"] { background: var(--meter-yellow); }
+.meter-bar__segment.is-lit[data-zone="orange"] { background: var(--meter-orange); }
+.meter-bar__segment.is-lit[data-zone="red"]    { background: var(--meter-red); }
 
 .meter__scale {
   display: flex;

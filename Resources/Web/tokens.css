@@ -139,8 +139,21 @@
   --knob-face-edge: #322c24;
   --knob-pointer: #f1e9da;
 
-  /* ---- Meters --------------------------------------------------------------- */
+  /* ---- Meters ---------------------------------------------------------------
+     Real INPUT/OUTPUT telemetry (see Source/Core/LevelMeter.h + meters.js) -
+     idle segments are always this grey; a lit segment's colour is picked
+     from the zone tokens below by its position on the -24..+3 dB scale. */
   --meter-height: 1.15rem;
   --meter-width: clamp(7rem, 5rem + 9vw, 13.5rem);
-  --meter-segments: 18;
+  --meter-segment-gap: 2px;
+  --meter-segment-off: rgba(236, 231, 220, 0.16);
+  --meter-segment-off-border: rgba(0, 0, 0, 0.3);
+  --meter-green: #5f9c4c;
+  --meter-yellow: #cdb03f;
+  --meter-orange: #d1812f;
+  --meter-red: #c4432f;
 }
+
+/* JS-only constant kept in sync with meters.js's SEGMENT_COUNT - see the
+   comment there. Not read by CSS; documented here so the two stay visible
+   to each other. */

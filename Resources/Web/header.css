@@ -16,8 +16,6 @@
   font-weight: 700;
   letter-spacing: var(--tracking-wider);
   color: var(--text-secondary);
-  padding-right: var(--space-md);
-  border-right: var(--border-hairline) solid var(--line-hairline);
   white-space: nowrap;
 }
 

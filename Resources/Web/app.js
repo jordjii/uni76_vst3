@@ -10,6 +10,7 @@
 import { getSliderState } from "./juce_webview.js";
 import { ParameterKnob } from "./knob.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
+import { initMeters } from "./meters.js";
 
 const MODULES = [
   { id: "preamp", control: "DRIVE", name: "Preamp" },
@@ -49,3 +50,4 @@ function initModule({ id, control, name }) {
 }
 
 MODULES.forEach(initModule);
+initMeters();

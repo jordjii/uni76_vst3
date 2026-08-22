@@ -17,8 +17,15 @@ class UNI76AudioProcessor;
         control.
 
     Resizable within a fixed 3:2 aspect ratio - see the constructor.
+
+    Also runs a message-thread Timer that polls the processor's lock-free
+    INPUT/OUTPUT LevelMeters, applies attack/release envelope smoothing,
+    and pushes the result to the WebView as a "meterLevels" JS event. The
+    audio thread itself never touches the WebView - see
+    Source/Core/LevelMeter.h and PluginProcessor::processBlock().
 */
-class UNI76AudioProcessorEditor final : public juce::AudioProcessorEditor
+class UNI76AudioProcessorEditor final : public juce::AudioProcessorEditor,
+                                         private juce::Timer
 {
 public:
     explicit UNI76AudioProcessorEditor (UNI76AudioProcessor&);
@@ -29,6 +36,7 @@ public:
     int getControlParameterIndex (Component&) override;
 
 private:
+    void timerCallback() override;
     // Only ever navigates to our own embedded resource root - the frontend
     // cannot be redirected to an external site.
     struct SinglePageBrowser final : juce::WebBrowserComponent
@@ -58,6 +66,13 @@ private:
     juce::WebSliderParameterAttachment panoramaAttachment;
     juce::WebSliderParameterAttachment reverbAttachment;
     juce::WebSliderParameterAttachment imagerAttachment;
+
+    // Message-thread-only envelope state for the meter telemetry timer -
+    // fast attack, slower release, applied here (not in JS, not on the
+    // audio thread) so the smoothing survives even when the browser is
+    // briefly not rendering.
+    float inputMeterEnvelope = 0.0f;
+    float outputMeterEnvelope = 0.0f;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessorEditor)
 };

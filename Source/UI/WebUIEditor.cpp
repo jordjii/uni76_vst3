@@ -61,6 +61,21 @@ bool UNI76AudioProcessorEditor::SinglePageBrowser::pageAboutToLoad (const juce::
     return newURL == juce::WebBrowserComponent::getResourceProviderRoot();
 }
 
+namespace
+{
+    // Message-thread-only envelope follower: fast attack, slow release, so
+    // the meter reads as a smooth analogue needle rather than a flickering
+    // per-block value. Tuned for a 30 Hz timer (see startTimerHz below).
+    constexpr float meterAttackCoeff  = 0.6f;
+    constexpr float meterReleaseCoeff = 0.08f;
+
+    float applyMeterEnvelope (float previous, float target) noexcept
+    {
+        const auto coeff = target > previous ? meterAttackCoeff : meterReleaseCoeff;
+        return previous + (target - previous) * coeff;
+    }
+}
+
 UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor (p),
@@ -97,6 +112,11 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
         editorConstrainer->setFixedAspectRatio (3.0 / 2.0);
 
     setSize (960, 640);
+
+    // Meter telemetry only - reads the processor's lock-free LevelMeters
+    // and forwards a smoothed value to the WebView. Purely a UI concern;
+    // the audio thread never waits on or calls into this.
+    startTimerHz (30);
 }
 
 UNI76AudioProcessorEditor::~UNI76AudioProcessorEditor() = default;
@@ -109,4 +129,19 @@ void UNI76AudioProcessorEditor::resized()
 int UNI76AudioProcessorEditor::getControlParameterIndex (Component&)
 {
     return controlParameterIndexReceiver.getControlParameterIndex();
+}
+
+void UNI76AudioProcessorEditor::timerCallback()
+{
+    const auto inputPeak  = processor.getInputLevelMeter().readAndResetPeak();
+    const auto outputPeak = processor.getOutputLevelMeter().readAndResetPeak();
+
+    inputMeterEnvelope  = applyMeterEnvelope (inputMeterEnvelope, inputPeak);
+    outputMeterEnvelope = applyMeterEnvelope (outputMeterEnvelope, outputPeak);
+
+    auto* payload = new juce::DynamicObject();
+    payload->setProperty ("input", inputMeterEnvelope);
+    payload->setProperty ("output", outputMeterEnvelope);
+
+    webView.emitEventIfBrowserIsVisible ("meterLevels", juce::var (payload));
 }

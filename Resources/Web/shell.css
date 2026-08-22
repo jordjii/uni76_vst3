@@ -62,3 +62,57 @@
   border-radius: var(--frame-radius);
   overflow: hidden;
 }
+
+/*
+  Four decorative chassis bolts, HTML/CSS only (no PNG/SVG) - fixed to the
+  four outer corners of the plugin shell itself, not the coloured module
+  group. Absolutely positioned against .app so resizing never moves them
+  off the corners and they never participate in the flex/grid layout of
+  anything else.
+*/
+.bolt {
+  position: absolute;
+  width: clamp(10px, 0.5rem + 0.9vw, 16px);
+  height: clamp(10px, 0.5rem + 0.9vw, 16px);
+  border-radius: 50%;
+  background: radial-gradient(circle at 34% 28%, #423c32 0%, #221e18 65%, #17140f 100%);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.55), 0 0 0 1px rgba(0, 0, 0, 0.4);
+  pointer-events: none;
+  z-index: 2;
+}
+
+.bolt::before,
+.bolt::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 60%;
+  height: 1.5px;
+  background: rgba(0, 0, 0, 0.6);
+  transform: translate(-50%, -50%);
+}
+
+.bolt::after {
+  transform: translate(-50%, -50%) rotate(90deg);
+}
+
+.bolt--top-left {
+  top: clamp(6px, 0.9vh, 12px);
+  left: clamp(6px, 0.9vh, 12px);
+}
+
+.bolt--top-right {
+  top: clamp(6px, 0.9vh, 12px);
+  right: clamp(6px, 0.9vh, 12px);
+}
+
+.bolt--bottom-left {
+  bottom: clamp(6px, 0.9vh, 12px);
+  left: clamp(6px, 0.9vh, 12px);
+}
+
+.bolt--bottom-right {
+  bottom: clamp(6px, 0.9vh, 12px);
+  right: clamp(6px, 0.9vh, 12px);
+}

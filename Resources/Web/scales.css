@@ -6,7 +6,24 @@
   parameter of their own. They sit directly on a coloured module panel, so
   every colour here is a dark "ink" token (see tokens.css), never the
   light text-*/line-hairline tokens used in the dark header/footer.
+
+  Deliberately styled as a printed panel scale, not a form control: a thin
+  baseline, a handful of static tick marks (added by aux_visuals.js), and
+  a small notch marker for the current position - never a round slider
+  thumb, never anything that reads as draggable.
 */
+
+/* Shared by both scale flavours below - a small tick crossing the
+   baseline, positioned via an inline `left` percentage. */
+.scale-tick {
+  position: absolute;
+  top: 50%;
+  left: 0; /* overridden inline per tick */
+  width: 1px;
+  height: 6px;
+  background: var(--ink-hairline-strong);
+  transform: translate(-50%, -50%);
+}
 
 /* ---- Generic 3-point scale (SAT / EQ / PITCH / PAN / VERB / IMAGE) ------- */
 
@@ -19,20 +36,20 @@
 
 .tri-scale__track {
   position: relative;
-  height: 2px;
-  border-radius: 2px;
+  height: 1.5px;
   background: var(--ink-hairline-strong);
+  margin-block: 4px; /* room for the ticks to cross the baseline */
 }
 
 .tri-scale__marker {
   position: absolute;
   top: 50%;
   left: var(--marker-pos, 50%);
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--ink-strong);
-  border: 1.5px solid var(--knob-pointer);
+  width: 2.5px;
+  height: 12px;
+  background: var(--knob-pointer);
+  border: 1px solid var(--ink-strong);
+  border-radius: 1px;
   transform: translate(-50%, -50%);
   transition: left 60ms linear;
 }
@@ -90,18 +107,19 @@
 
 .filter-line__track {
   position: relative;
-  height: 2px;
-  border-radius: 2px;
+  height: 1.5px;
   background: var(--ink-hairline-strong);
+  margin-block: 4px;
 }
 
 .filter-line__mark {
   position: absolute;
   top: 50%;
   left: var(--pos, 50%);
-  width: 3px;
-  height: 11px;
-  background: var(--ink-strong);
+  width: 2.5px;
+  height: 12px;
+  background: var(--knob-pointer);
+  border: 1px solid var(--ink-strong);
   border-radius: 1px;
   transform: translate(-50%, -50%);
   transition: left 60ms linear;

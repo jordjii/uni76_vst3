@@ -28,6 +28,7 @@ target_sources(UNI76
         PluginProcessor.h
 
         ../Core/PluginIdentity.h
+        ../Core/LevelMeter.h
 
         ../Parameters/ParameterIDs.h
         ../Parameters/ParameterLayout.h
@@ -70,6 +71,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/app.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/knob.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/aux_visuals.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/meters.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76

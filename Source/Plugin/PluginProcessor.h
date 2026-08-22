@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "Core/LevelMeter.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -12,6 +13,12 @@
         and no calls into the WebView/GUI layer.
       - The 7 public parameters exist and are DAW-automation compatible via
         APVTS, but none of them influence the audio signal yet.
+      - The one exception to "no calls into the WebView/GUI layer" is the
+        INPUT/OUTPUT level meters: processBlock() pushes the block's peak
+        into a lock-free uni76::LevelMeter (atomic, no allocation, no
+        locking - see Core/LevelMeter.h). The editor's UI timer, running on
+        the message thread, is what actually reads those meters and talks
+        to the WebView - the audio thread itself never touches the UI.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -55,8 +62,18 @@ public:
     //==============================================================================
     juce::AudioProcessorValueTreeState& getValueTreeState() noexcept { return apvts; }
 
+    /** Peak measured at the top of processBlock(), before any future processing chain. */
+    uni76::LevelMeter& getInputLevelMeter() noexcept { return inputLevelMeter; }
+    /** Peak measured at the bottom of processBlock(), after any future processing chain. */
+    uni76::LevelMeter& getOutputLevelMeter() noexcept { return outputLevelMeter; }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
+
+    // Telemetry only - never part of getStateInformation()/setStateInformation(),
+    // never an APVTS parameter, never read back by the audio thread itself.
+    uni76::LevelMeter inputLevelMeter;
+    uni76::LevelMeter outputLevelMeter;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

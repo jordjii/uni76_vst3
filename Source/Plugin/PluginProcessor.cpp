@@ -42,9 +42,16 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     juce::ScopedNoDenormals noDenormals;
     juce::ignoreUnused (midiMessages);
 
+    // Measured before the (currently nonexistent) processing chain.
+    inputLevelMeter.pushBlock (buffer);
+
     // Stage-1 foundation: strictly transparent passthrough. input == output,
     // no gain, no latency, no allocations, no locks, no DSP.
-    juce::ignoreUnused (buffer);
+
+    // Measured after the processing chain. With processing still a strict
+    // passthrough this naturally matches the input reading - that's
+    // correct, not a bug to paper over once real DSP lands here.
+    outputLevelMeter.pushBlock (buffer);
 }
 
 //==============================================================================

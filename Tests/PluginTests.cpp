@@ -3,8 +3,11 @@
 #include "Plugin/PluginProcessor.h"
 #include "Parameters/ParameterIDs.h"
 #include "Core/PluginIdentity.h"
+#include "Core/LevelMeter.h"
 
+#include <cmath>
 #include <cstring>
+#include <limits>
 
 namespace
 {
@@ -206,6 +209,176 @@ public:
 };
 
 static UNI76ProcessorTests uni76ProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+namespace
+{
+    juce::AudioBuffer<float> makeConstantBuffer (int numChannels, int numSamples, float value)
+    {
+        juce::AudioBuffer<float> buffer (numChannels, numSamples);
+
+        for (int ch = 0; ch < numChannels; ++ch)
+            for (int i = 0; i < numSamples; ++i)
+                buffer.setSample (ch, i, value);
+
+        return buffer;
+    }
+}
+
+class UNI76LevelMeterTests final : public juce::UnitTest
+{
+public:
+    UNI76LevelMeterTests() : juce::UnitTest ("uni76::LevelMeter", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Silence produces a silent (zero) meter reading");
+        {
+            uni76::LevelMeter meter;
+            auto silence = makeConstantBuffer (2, 512, 0.0f);
+
+            meter.pushBlock (silence);
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.0f, 0.0001f);
+        }
+
+        beginTest ("A known constant amplitude converts to the same peak level");
+        {
+            uni76::LevelMeter meter;
+            auto buffer = makeConstantBuffer (2, 512, 0.5f);
+
+            meter.pushBlock (buffer);
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.5f, 0.0001f);
+        }
+
+        beginTest ("The meter tracks the maximum peak across multiple pushes before it's read");
+        {
+            uni76::LevelMeter meter;
+            auto quiet = makeConstantBuffer (2, 256, 0.3f);
+            auto loud  = makeConstantBuffer (2, 256, 0.7f);
+
+            meter.pushBlock (quiet);
+            meter.pushBlock (loud);
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.7f, 0.0001f);
+        }
+
+        beginTest ("Reading resets the meter, ready for the next reporting interval");
+        {
+            uni76::LevelMeter meter;
+            auto buffer = makeConstantBuffer (1, 128, 0.9f);
+
+            meter.pushBlock (buffer);
+            meter.readAndResetPeak();
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.0f, 0.0001f);
+        }
+
+        beginTest ("NaN samples are ignored rather than poisoning the reading");
+        {
+            uni76::LevelMeter meter;
+            juce::AudioBuffer<float> buffer (2, 64);
+            buffer.clear();
+            buffer.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+
+            meter.pushBlock (buffer);
+            const auto result = meter.readAndResetPeak();
+
+            expect (std::isfinite (result), "NaN input produced a non-finite meter reading");
+            expectWithinAbsoluteError (result, 0.0f, 0.0001f);
+        }
+
+        beginTest ("Inf samples are ignored rather than poisoning the reading");
+        {
+            uni76::LevelMeter meter;
+            juce::AudioBuffer<float> buffer (2, 64);
+            buffer.clear();
+            buffer.setSample (1, 20, std::numeric_limits<float>::infinity());
+
+            meter.pushBlock (buffer);
+            const auto result = meter.readAndResetPeak();
+
+            expect (std::isfinite (result), "Inf input produced a non-finite meter reading");
+            expectWithinAbsoluteError (result, 0.0f, 0.0001f);
+        }
+
+        beginTest ("Mono buffers are measured correctly");
+        {
+            uni76::LevelMeter meter;
+            auto buffer = makeConstantBuffer (1, 300, 0.42f);
+
+            meter.pushBlock (buffer);
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.42f, 0.0001f);
+        }
+
+        beginTest ("Stereo buffers report the louder of the two channels");
+        {
+            uni76::LevelMeter meter;
+            juce::AudioBuffer<float> buffer (2, 200);
+            buffer.clear();
+
+            for (int i = 0; i < 200; ++i)
+            {
+                buffer.setSample (0, i, 0.2f);
+                buffer.setSample (1, i, 0.6f);
+            }
+
+            meter.pushBlock (buffer);
+
+            expectWithinAbsoluteError (meter.readAndResetPeak(), 0.6f, 0.0001f);
+        }
+
+        beginTest ("pushBlock never modifies the audio buffer it measures");
+        {
+            uni76::LevelMeter meter;
+            auto buffer = makeConstantBuffer (2, 256, 0.37f);
+
+            juce::AudioBuffer<float> reference;
+            reference.makeCopyOf (buffer);
+
+            meter.pushBlock (buffer);
+
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                const auto matches = std::memcmp (buffer.getReadPointer (ch),
+                                                   reference.getReadPointer (ch),
+                                                   sizeof (float) * (size_t) buffer.getNumSamples()) == 0;
+                expect (matches, "pushBlock modified the audio buffer");
+            }
+        }
+
+        beginTest ("Processor integration: processBlock() feeds both meters without disturbing passthrough or latency");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 256);
+
+            auto buffer = makeConstantBuffer (2, 256, 0.8f);
+
+            juce::AudioBuffer<float> reference;
+            reference.makeCopyOf (buffer);
+
+            juce::MidiBuffer midi;
+            processor.processBlock (buffer, midi);
+
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+            {
+                const auto matches = std::memcmp (buffer.getReadPointer (ch),
+                                                   reference.getReadPointer (ch),
+                                                   sizeof (float) * (size_t) buffer.getNumSamples()) == 0;
+                expect (matches, "processBlock modified the audio buffer while feeding the meters");
+            }
+
+            expectEquals (processor.getLatencySamples(), 0);
+
+            expectWithinAbsoluteError (processor.getInputLevelMeter().readAndResetPeak(), 0.8f, 0.0001f);
+            expectWithinAbsoluteError (processor.getOutputLevelMeter().readAndResetPeak(), 0.8f, 0.0001f);
+        }
+    }
+};
+
+static UNI76LevelMeterTests uni76LevelMeterTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

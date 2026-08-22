@@ -97,6 +97,18 @@ WebView/GUI layer**. When real DSP is eventually wired in, these rules
 still apply to whatever runs on the audio thread - allocate/lock/log on the
 message thread or in `prepareToPlay`, never in `processBlock`.
 
+**The one sanctioned exception is INPUT/OUTPUT meter telemetry**
+(`Source/Core/LevelMeter.h`). `processBlock()` pushes the block's peak
+magnitude into a lock-free `std::atomic<float>` (a compare-and-swap "keep
+the max" loop - no allocation, no lock, no WebView/JS call of any kind from
+the audio thread itself). A `juce::Timer` on the *editor*, running on the
+message thread, is the only thing that ever reads/resets that atomic,
+applies attack/release envelope smoothing, and forwards the result to the
+WebView as a `meterLevels` JS event. Meters are telemetry only - not an
+APVTS parameter, never part of `getStateInformation()`/`setStateInformation()`.
+Follow this same push-an-atomic / read-on-a-timer shape for any future
+audio-thread-to-UI data path; don't reach for anything heavier.
+
 ## Don't change working architecture without a reason
 
 If something here works and is documented, don't refactor it "for
