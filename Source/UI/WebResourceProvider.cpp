@@ -20,8 +20,20 @@ namespace uni76::ui
             static const std::unordered_map<juce::String, Entry> table
             {
                 { "index.html",      { BinaryData::index_html,      BinaryData::index_htmlSize,      "text/html" } },
-                { "style.css",       { BinaryData::style_css,       BinaryData::style_cssSize,       "text/css" } },
+
+                { "tokens.css",      { BinaryData::tokens_css,      BinaryData::tokens_cssSize,      "text/css" } },
+                { "reset.css",       { BinaryData::reset_css,       BinaryData::reset_cssSize,       "text/css" } },
+                { "shell.css",       { BinaryData::shell_css,       BinaryData::shell_cssSize,       "text/css" } },
+                { "header.css",      { BinaryData::header_css,      BinaryData::header_cssSize,      "text/css" } },
+                { "modules.css",     { BinaryData::modules_css,     BinaryData::modules_cssSize,     "text/css" } },
+                { "knobs.css",       { BinaryData::knobs_css,       BinaryData::knobs_cssSize,       "text/css" } },
+                { "scales.css",      { BinaryData::scales_css,      BinaryData::scales_cssSize,      "text/css" } },
+                { "meters.css",      { BinaryData::meters_css,      BinaryData::meters_cssSize,      "text/css" } },
+                { "responsive.css",  { BinaryData::responsive_css,  BinaryData::responsive_cssSize,  "text/css" } },
+
                 { "app.js",          { BinaryData::app_js,          BinaryData::app_jsSize,          "text/javascript" } },
+                { "knob.js",         { BinaryData::knob_js,         BinaryData::knob_jsSize,         "text/javascript" } },
+                { "aux_visuals.js",  { BinaryData::aux_visuals_js,  BinaryData::aux_visuals_jsSize,  "text/javascript" } },
                 { "juce_webview.js", { BinaryData::juce_webview_js, BinaryData::juce_webview_jsSize, "text/javascript" } },
             };
 

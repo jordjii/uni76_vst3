@@ -4,59 +4,280 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UNI 76</title>
-  <link rel="stylesheet" href="style.css" />
+  <link rel="stylesheet" href="tokens.css" />
+  <link rel="stylesheet" href="reset.css" />
+  <link rel="stylesheet" href="shell.css" />
+  <link rel="stylesheet" href="header.css" />
+  <link rel="stylesheet" href="modules.css" />
+  <link rel="stylesheet" href="knobs.css" />
+  <link rel="stylesheet" href="scales.css" />
+  <link rel="stylesheet" href="meters.css" />
+  <link rel="stylesheet" href="responsive.css" />
 </head>
 <body>
-  <main class="app">
-    <header class="app__header">
-      <div class="app__brand">NOSTALGIA AUDIO</div>
-      <div class="app__product">UNI 76</div>
-      <div class="app__tag">TECHNICAL UI PROTOTYPE</div>
+  <div class="app">
+    <header class="header">
+      <div class="header__brand">NOSTALGIA AUDIO</div>
+      <div class="header__title">
+        <span class="header__product">UNI 76</span>
+        <span class="header__subtitle">UNIVERSAL ANALOG PROCESSOR</span>
+      </div>
+      <div class="header__controls">
+        <button class="header__btn" type="button" disabled>A / B</button>
+        <button class="header__btn" type="button" disabled>PRESET</button>
+        <button class="header__btn" type="button" disabled>SETTINGS</button>
+      </div>
     </header>
 
-    <section class="controls">
-      <div class="control">
-        <label for="preamp">PREAMP</label>
-        <input type="range" id="preamp" min="0" max="100" step="1" value="50" />
-        <output for="preamp">50%</output>
-      </div>
-      <div class="control">
-        <label for="eq">EQ</label>
-        <input type="range" id="eq" min="0" max="100" step="1" value="50" />
-        <output for="eq">50%</output>
-      </div>
-      <div class="control">
-        <label for="saturation">SATURATION</label>
-        <input type="range" id="saturation" min="0" max="100" step="1" value="50" />
-        <output for="saturation">50%</output>
-      </div>
-      <div class="control">
-        <label for="pitch">PITCH</label>
-        <input type="range" id="pitch" min="0" max="100" step="1" value="50" />
-        <output for="pitch">50%</output>
-      </div>
-      <div class="control">
-        <label for="panorama">PANORAMA</label>
-        <input type="range" id="panorama" min="0" max="100" step="1" value="50" />
-        <output for="panorama">50%</output>
-      </div>
-      <div class="control">
-        <label for="reverb">REVERB</label>
-        <input type="range" id="reverb" min="0" max="100" step="1" value="50" />
-        <output for="reverb">50%</output>
-      </div>
-      <div class="control">
-        <label for="imager">IMAGER</label>
-        <input type="range" id="imager" min="0" max="100" step="1" value="50" />
-        <output for="imager">50%</output>
-      </div>
-    </section>
+    <main class="app__main">
+      <!-- 01 PREAMP -->
+      <section class="module" data-param="preamp" style="--module-accent: var(--color-preamp)">
+        <div class="module__header">
+          <span class="module__index">01</span>
+          <span class="module__name">PREAMP</span>
+          <span class="module__tag">TRANSFORMER</span>
+        </div>
 
-    <footer class="app__footer">
-      <span id="build-version">v0.0.0</span>
-      <span id="bridge-status" class="status status--pending">bridge: connecting&hellip;</span>
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="preamp">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">DRIVE</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="filter-lines">
+            <div class="filter-line" data-role="low-cut">
+              <span class="filter-line__label">LOW CUT</span>
+              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 35%"></span></span>
+            </div>
+            <div class="filter-line" data-role="high-cut">
+              <span class="filter-line__label">HIGH CUT</span>
+              <span class="filter-line__track"><span class="filter-line__mark" style="--pos: 65%"></span></span>
+            </div>
+            <div class="filter-lines__caption">SOFT FILTERS</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 02 EQ -->
+      <section class="module" data-param="eq" style="--module-accent: var(--color-eq)">
+        <div class="module__header">
+          <span class="module__index">02</span>
+          <span class="module__name">EQ</span>
+          <span class="module__tag">BAND SHAPER</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="eq">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">TONE</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>DARK</span><span>PHONE</span><span>AIR</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 03 SAT -->
+      <section class="module" data-param="saturation" style="--module-accent: var(--color-saturation)">
+        <div class="module__header">
+          <span class="module__index">03</span>
+          <span class="module__name">SAT</span>
+          <span class="module__tag">ANALOG DRIVE</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="saturation">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">HEAT</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 04 PITCH -->
+      <section class="module" data-param="pitch" style="--module-accent: var(--color-pitch)">
+        <div class="module__header">
+          <span class="module__index">04</span>
+          <span class="module__name">PITCH</span>
+          <span class="module__tag">VARISPEED</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="pitch">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">SHIFT</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>&minus; OCT</span><span>0</span><span>+ OCT</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 05 PAN -->
+      <section class="module" data-param="panorama" style="--module-accent: var(--color-panorama)">
+        <div class="module__header">
+          <span class="module__index">05</span>
+          <span class="module__name">PAN</span>
+          <span class="module__tag">STEREO FIELD</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="panorama">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">WIDTH</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>MONO</span><span>NATURAL</span><span>WIDE</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 06 VERB -->
+      <section class="module" data-param="reverb" style="--module-accent: var(--color-reverb)">
+        <div class="module__header">
+          <span class="module__index">06</span>
+          <span class="module__name">VERB</span>
+          <span class="module__tag">VINTAGE SPACE</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="reverb">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">SPACE</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>SPRING</span><span>PLATE</span><span>CHAMBER</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 07 IMAGE -->
+      <section class="module" data-param="imager" style="--module-accent: var(--color-imager)">
+        <div class="module__header">
+          <span class="module__index">07</span>
+          <span class="module__name">IMAGE</span>
+          <span class="module__tag">STEREO IMAGE</span>
+        </div>
+
+        <div class="module__knob-area">
+          <div class="knob-module">
+            <div class="knob" data-param="imager">
+              <div class="knob__ticks"></div>
+              <div class="knob__body">
+                <div class="knob__indicator"></div>
+                <div class="knob__center-dot"></div>
+              </div>
+            </div>
+            <div class="knob__value">50%</div>
+            <div class="knob__label">IMAGE</div>
+          </div>
+        </div>
+
+        <div class="module__aux">
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
+            <div class="tri-scale__labels">
+              <span>NARROW</span><span>NATURAL</span><span>WIDE</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <footer class="footer">
+      <div class="meter meter--input">
+        <span class="meter__label">INPUT</span>
+        <span class="meter-bar" aria-hidden="true"><span class="meter-bar__fill"></span></span>
+        <span class="meter__status">IDLE</span>
+      </div>
+
+      <div class="signal-path">
+        <ol class="signal-path__list">
+          <li>PREAMP</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>EQ</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>SAT</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>PITCH</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>PAN</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>VERB</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li>IMAGE</li>
+        </ol>
+        <div class="signal-path__caption">ANALOG SIGNAL PATH</div>
+      </div>
+
+      <div class="meter meter--output">
+        <span class="meter__status">IDLE</span>
+        <span class="meter-bar" aria-hidden="true"><span class="meter-bar__fill"></span></span>
+        <span class="meter__label">OUTPUT</span>
+      </div>
     </footer>
-  </main>
+  </div>
 
   <script type="module" src="app.js"></script>
 </body>

@@ -1,0 +1,100 @@
+/*
+  UNI 76 - design tokens.
+
+  Every colour, spacing, typography and knob-geometry value used anywhere
+  else in the stylesheet is defined here as a CSS custom property. Nothing
+  outside this file should hard-code a colour or a magic size - if a new
+  value is needed, add a token for it here first.
+
+  Sizes are expressed with clamp()/vw so the whole interface scales with
+  the editor window instead of being pinned to physical pixels - see
+  responsive.css for the min/default/max reasoning.
+*/
+
+:root {
+  color-scheme: dark;
+
+  /* ---- Neutrals (graphite console body) -------------------------------- */
+  --neutral-950: #17181a;
+  --neutral-900: #1d1e21;
+  --neutral-850: #232427;
+  --neutral-800: #2a2b2f;
+  --neutral-700: #3a3b40;
+  --neutral-600: #4c4d53;
+  --neutral-400: #8a8b90;
+  --neutral-200: #c7c8cc;
+  --neutral-100: #e9e9eb;
+
+  --bg-app: var(--neutral-950);
+  --bg-header: #1a1b1d;
+  --bg-footer: #1a1b1d;
+  --bg-module: var(--neutral-900);
+  --line-hairline: rgba(233, 233, 235, 0.08);
+  --line-hairline-strong: rgba(233, 233, 235, 0.14);
+
+  --text-primary: var(--neutral-100);
+  --text-secondary: var(--neutral-400);
+  --text-tertiary: rgba(199, 200, 204, 0.45);
+
+  /* ---- Module accent colours (muted, vintage, flat) --------------------- */
+  --color-preamp: #7c8360;      /* faded olive */
+  --color-eq: #b9975b;          /* muted mustard */
+  --color-saturation: #b1613c;  /* burnt orange */
+  --color-pitch: #7c4653;       /* dusty burgundy */
+  --color-panorama: #6c7f8c;    /* blue/grey */
+  --color-reverb: #8a7361;      /* warm taupe/brown */
+  --color-imager: #3f6864;      /* dark desaturated teal */
+
+  --focus-ring: rgba(233, 233, 235, 0.55);
+
+  /* ---- Typography --------------------------------------------------------
+     System font stack only - no external/CDN fonts. A grotesk-leaning
+     system stack reads closest to the console's utilitarian label style. */
+  --font-face: -apple-system, "Segoe UI", "Inter", "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Mono", "SFMono-Regular", Consolas, Menlo, monospace;
+
+  --tracking-wide: 0.14em;
+  --tracking-wider: 0.22em;
+
+  --fs-brand: clamp(0.6rem, 0.5rem + 0.35vw, 0.75rem);
+  --fs-product: clamp(1.35rem, 1rem + 1.6vw, 2.1rem);
+  --fs-subtitle: clamp(0.55rem, 0.48rem + 0.3vw, 0.68rem);
+  --fs-header-btn: clamp(0.55rem, 0.48rem + 0.28vw, 0.65rem);
+  --fs-module-index: clamp(0.6rem, 0.52rem + 0.3vw, 0.7rem);
+  --fs-module-name: clamp(0.72rem, 0.6rem + 0.5vw, 0.92rem);
+  --fs-module-tag: clamp(0.52rem, 0.46rem + 0.24vw, 0.62rem);
+  --fs-knob-value: clamp(0.78rem, 0.64rem + 0.5vw, 1rem);
+  --fs-knob-label: clamp(0.62rem, 0.54rem + 0.28vw, 0.75rem);
+  --fs-scale: clamp(0.48rem, 0.42rem + 0.22vw, 0.58rem);
+  --fs-footer: clamp(0.5rem, 0.44rem + 0.22vw, 0.6rem);
+
+  /* ---- Spacing ------------------------------------------------------------ */
+  --space-xs: clamp(0.25rem, 0.2rem + 0.2vw, 0.4rem);
+  --space-sm: clamp(0.4rem, 0.3rem + 0.35vw, 0.65rem);
+  --space-md: clamp(0.7rem, 0.55rem + 0.5vw, 1.1rem);
+  --space-lg: clamp(1rem, 0.8rem + 0.8vw, 1.6rem);
+  --space-xl: clamp(1.4rem, 1.1rem + 1.1vw, 2.2rem);
+
+  /* ---- Structural chrome --------------------------------------------------- */
+  --header-height: clamp(3.2rem, 2.6rem + 2vw, 4.6rem);
+  --footer-height: clamp(2.6rem, 2.2rem + 1.4vw, 3.4rem);
+  --border-hairline: 1px;
+  --border-module: 1px;
+  --radius-sm: 3px;
+  --radius-md: 6px;
+
+  /* ---- Knob geometry -------------------------------------------------------
+     A single scale so the knob, its tick ring and its indicator always
+     stay proportional to one another. */
+  --knob-size: clamp(3.6rem, 2.6rem + 4vw, 6.4rem);
+  --knob-ring-inset: 10%;
+  --knob-indicator-width: 6%;
+  --knob-indicator-length: 38%;
+  --knob-tick-length: 10%;
+  --knob-rotation-min: -135deg;
+  --knob-rotation-max: 135deg;
+
+  /* ---- Meters --------------------------------------------------------------- */
+  --meter-height: 0.4rem;
+  --meter-width: clamp(4.5rem, 3.5rem + 5vw, 8rem);
+}

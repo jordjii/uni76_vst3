@@ -136,6 +136,72 @@ public:
 
             expectEquals (processor.getLatencySamples(), 0);
         }
+
+        beginTest ("Saved state keeps the schema/shape contract the UI and future presets depend on");
+        {
+            // There's no serialized preset file committed anywhere to diff
+            // against (state is generated at runtime, never persisted in
+            // the repo) - what actually has to stay stable across commits
+            // is the contract: root ValueTree type, schema version
+            // property, and one <PARAM id="..." .../> per parameter ID.
+            // Source/Parameters and Source/Core were not touched by the UI
+            // rewrite this test was added alongside, so this is a
+            // regression guard against that contract silently drifting in
+            // the future, not just a restatement of the current output.
+            UNI76AudioProcessor processor;
+
+            juce::MemoryBlock savedState;
+            processor.getStateInformation (savedState);
+
+            auto xml = juce::AudioProcessor::getXmlFromBinary (savedState.getData(), (int) savedState.getSize());
+            expect (xml != nullptr, "saved state did not parse as XML");
+
+            if (xml != nullptr)
+            {
+                expectEquals (xml->getTagName(), juce::String ("PARAMETERS"));
+                expect (xml->hasAttribute (uni76::stateSchemaVersionProperty));
+                expectEquals (xml->getIntAttribute (uni76::stateSchemaVersionProperty), uni76::stateSchemaVersion);
+
+                for (const auto* id : uni76::ParamID::all)
+                {
+                    const auto* paramElement = xml->getChildByAttribute ("id", id);
+                    expect (paramElement != nullptr, juce::String ("no <PARAM id=\"") + id + "\"> in saved state");
+                }
+            }
+        }
+
+        beginTest ("UI-facing normalised <-> percent conversion is exact at 0%, 50%, and 100%");
+        {
+            // The web UI (Source/UI, Resources/Web/knob.js) reads/writes
+            // parameters exclusively as a 0..1 "normalised" value through
+            // the JUCE WebSliderRelay bridge, and displays
+            // round(normalised * 100) as the on-screen percentage. That
+            // mapping is only lossless if the underlying parameter range
+            // is exactly linear over 0..100 - assert that directly rather
+            // than trusting it implicitly.
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+
+            for (const auto* id : uni76::ParamID::all)
+            {
+                auto* param = apvts.getParameter (id);
+                expect (param != nullptr, id);
+                if (param == nullptr)
+                    continue;
+
+                param->setValueNotifyingHost (0.0f);
+                expectWithinAbsoluteError (param->getValue(), 0.0f, 0.0001f, id);
+
+                param->setValueNotifyingHost (0.5f);
+                expectWithinAbsoluteError (param->getValue(), 0.5f, 0.0001f, id);
+
+                if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
+                    expectWithinAbsoluteError (floatParam->get(), 50.0f, 0.01f, id);
+
+                param->setValueNotifyingHost (1.0f);
+                expectWithinAbsoluteError (param->getValue(), 1.0f, 0.0001f, id);
+            }
+        }
     }
 };
 

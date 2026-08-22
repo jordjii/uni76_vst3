@@ -6,7 +6,7 @@
 class UNI76AudioProcessor;
 
 /*
-    Diagnostic WebView editor for UNI 76.
+    UNI 76's WebView editor.
 
     Renders the embedded HTML/CSS/JS UI (Resources/Web) inside a
     WebBrowserComponent and binds each of the 7 parameters to it via JUCE's
@@ -16,7 +16,7 @@ class UNI76AudioProcessor;
       - automation or state changes from the DAW/host update the HTML
         control.
 
-    This is a technical prototype, not the final UNI 76 design.
+    Resizable within a fixed 3:2 aspect ratio - see the constructor.
 */
 class UNI76AudioProcessorEditor final : public juce::AudioProcessorEditor
 {

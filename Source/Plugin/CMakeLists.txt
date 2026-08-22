@@ -44,22 +44,32 @@ target_sources(UNI76
         ../UI/WebUIEditor.h
         ../UI/WebUIEditor.cpp
         ../UI/WebResourceProvider.h
-        ../UI/WebResourceProvider.cpp
-
-        ../Utils/BuildInfo.h)
+        ../UI/WebResourceProvider.cpp)
 
 target_include_directories(UNI76
     PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/..")
 
-# Embedded diagnostic web UI (Resources/Web/*) compiled into the binary via
-# JUCE's normal binary-data resource pipeline. The running plugin never
-# reads from the Resources/Web folder on disk.
+# Embedded web UI (Resources/Web/*) compiled into the binary via JUCE's
+# normal binary-data resource pipeline. The running plugin never reads from
+# the Resources/Web folder on disk.
 juce_add_binary_data(UNI76WebResources
     SOURCES
         "${CMAKE_SOURCE_DIR}/Resources/Web/index.html"
-        "${CMAKE_SOURCE_DIR}/Resources/Web/style.css"
+
+        "${CMAKE_SOURCE_DIR}/Resources/Web/tokens.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/reset.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/shell.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/header.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/modules.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/knobs.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/scales.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/meters.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/responsive.css"
+
         "${CMAKE_SOURCE_DIR}/Resources/Web/app.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/knob.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/aux_visuals.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76

@@ -1,0 +1,92 @@
+/*
+  UNI 76 - footer: I/O meters + signal path.
+
+  No DSP/telemetry pipeline exists yet (see CLAUDE.md realtime rules), so
+  the meters are deliberately rendered in a static, honest idle state -
+  never a fake/random animation implying a live signal that isn't there.
+*/
+
+.footer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: center;
+  gap: var(--space-md);
+  height: 100%;
+  padding-inline: var(--space-lg);
+  background: var(--bg-footer);
+}
+
+.meter {
+  display: flex;
+  align-items: center;
+  gap: var(--space-sm);
+  min-width: 0;
+}
+
+.meter--output {
+  justify-content: flex-end;
+}
+
+.meter--input {
+  justify-content: flex-start;
+}
+
+.meter__label {
+  font-size: var(--fs-footer);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-secondary);
+}
+
+.meter-bar {
+  position: relative;
+  width: var(--meter-width);
+  height: var(--meter-height);
+  border-radius: 999px;
+  background: var(--neutral-800);
+  border: 1px solid var(--line-hairline-strong);
+  overflow: hidden;
+}
+
+.meter-bar__fill {
+  position: absolute;
+  inset: 0;
+  width: 0%; /* idle: no live level data - see note above */
+  background: var(--neutral-600);
+}
+
+.meter__status {
+  font-size: var(--fs-footer);
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+}
+
+.signal-path {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.2em;
+  min-width: 0;
+}
+
+.signal-path__list {
+  display: flex;
+  align-items: center;
+  gap: 0.5em;
+  font-family: var(--font-mono);
+  font-size: var(--fs-footer);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.signal-path__arrow {
+  color: var(--text-tertiary);
+}
+
+.signal-path__caption {
+  font-size: var(--fs-footer);
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+}

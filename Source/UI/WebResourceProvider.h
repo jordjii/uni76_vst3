@@ -4,7 +4,7 @@
 #include <optional>
 
 /*
-    Serves the embedded diagnostic web UI (Resources/Web/*) to the plugin's
+    Serves the embedded web UI (Resources/Web/*) to the plugin's
     WebBrowserComponent via JUCE's resource-provider mechanism.
 
     The HTML/CSS/JS is compiled into the binary as BinaryData by CMake's

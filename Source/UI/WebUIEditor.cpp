@@ -2,7 +2,6 @@
 #include "WebResourceProvider.h"
 #include "Plugin/PluginProcessor.h"
 #include "Parameters/ParameterIDs.h"
-#include "Utils/BuildInfo.h"
 
 namespace
 {
@@ -51,7 +50,6 @@ namespace
             .withOptionsFrom (reverb)
             .withOptionsFrom (imager)
             .withOptionsFrom (indexReceiver)
-            .withInitialisationData ("uni76Version", uni76::BuildInfo::getVersionString())
             .withResourceProvider (&uni76::ui::getWebResource);
     }
 }
@@ -87,9 +85,18 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     addAndMakeVisible (webView);
     webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
 
+    // Fixed 3:2 aspect ratio across the whole resize range: 600x400 (min),
+    // 960x640 (default), 1350x900 (max). The UI itself is laid out in
+    // relative CSS units (see Resources/Web/tokens.css and responsive.css),
+    // so it reflows to fill whatever size the host allows within these
+    // limits rather than being pinned to a fixed pixel canvas.
     setResizable (true, true);
-    setResizeLimits (360, 480, 900, 1200);
-    setSize (480, 640);
+    setResizeLimits (600, 400, 1350, 900);
+
+    if (auto* editorConstrainer = getConstrainer())
+        editorConstrainer->setFixedAspectRatio (3.0 / 2.0);
+
+    setSize (960, 640);
 }
 
 UNI76AudioProcessorEditor::~UNI76AudioProcessorEditor() = default;

@@ -1,0 +1,43 @@
+/*
+  UNI 76 - app shell.
+
+  Three-row layout (header / modules / footer), sized entirely in relative
+  units so it reflows with the editor window rather than being pinned to a
+  fixed pixel canvas. See responsive.css for the extreme-size safety net.
+*/
+
+.app {
+  position: relative;
+  display: grid;
+  grid-template-rows: var(--header-height) 1fr var(--footer-height);
+  height: 100vh;
+  width: 100vw;
+  background: var(--bg-app);
+  overflow: hidden;
+}
+
+/*
+  Very soft CSS-only grain, purely to break up the flat graphite fields -
+  no raster texture, no filter that would read as 3D/photoreal. Two
+  offset repeating-linear-gradient layers at a very low opacity are enough
+  to suggest a worn console surface without becoming visual noise.
+*/
+.app::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0.035;
+  mix-blend-mode: overlay;
+  background-image:
+    repeating-linear-gradient(115deg, #fff 0, #fff 1px, transparent 1px, transparent 3px),
+    repeating-linear-gradient(25deg, #fff 0, #fff 1px, transparent 1px, transparent 4px);
+}
+
+.app__main {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  min-height: 0;
+  border-top: var(--border-hairline) solid var(--line-hairline);
+  border-bottom: var(--border-hairline) solid var(--line-hairline);
+}

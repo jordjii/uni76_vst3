@@ -1,0 +1,112 @@
+/*
+  UNI 76 - auxiliary scales.
+
+  These are read-outs only, derived visually from an existing parameter's
+  value in JS (see aux_visuals.js) - they never create or read a separate
+  parameter of their own.
+*/
+
+/* ---- Generic 3-point scale (EQ / PITCH / PAN / VERB / IMAGE) ------------- */
+
+.tri-scale {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.tri-scale__track {
+  position: relative;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-hairline-strong);
+}
+
+.tri-scale__marker {
+  position: absolute;
+  top: 50%;
+  left: var(--marker-pos, 50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--module-accent);
+  transform: translate(-50%, -50%);
+  transition: left 60ms linear;
+}
+
+.tri-scale__labels {
+  display: flex;
+  justify-content: space-between;
+  gap: 0.4em;
+  font-size: calc(var(--fs-scale) * 0.86);
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.tri-scale__labels span:first-child {
+  text-align: left;
+}
+
+.tri-scale__labels span:last-child {
+  text-align: right;
+}
+
+.tri-scale__labels span {
+  transition: color 80ms ease;
+}
+
+.tri-scale__labels span.is-active {
+  color: var(--module-accent);
+}
+
+/* ---- Preamp filter indicator lines --------------------------------------- */
+
+.filter-lines {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-xs);
+  width: 100%;
+}
+
+.filter-line {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: center;
+  gap: var(--space-sm);
+}
+
+.filter-line__label {
+  font-size: var(--fs-scale);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  white-space: nowrap;
+}
+
+.filter-line__track {
+  position: relative;
+  height: 2px;
+  border-radius: 2px;
+  background: var(--line-hairline-strong);
+}
+
+.filter-line__mark {
+  position: absolute;
+  top: 50%;
+  left: var(--pos, 50%);
+  width: 2px;
+  height: 8px;
+  background: var(--module-accent);
+  transform: translate(-50%, -50%);
+  transition: left 60ms linear;
+}
+
+.filter-lines__caption {
+  margin-top: 0.15em;
+  font-size: var(--fs-scale);
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+  text-align: center;
+}

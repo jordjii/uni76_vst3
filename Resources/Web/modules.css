@@ -1,0 +1,79 @@
+/*
+  UNI 76 - processor module panels.
+
+  Each <section class="module"> carries its accent colour as the
+  `--module-accent` custom property (set inline in index.html from the
+  tokens in tokens.css) - nothing here hard-codes a module's colour.
+*/
+
+.module {
+  --module-accent: var(--text-secondary); /* overridden per-module inline */
+
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: var(--space-md) var(--space-sm) var(--space-lg);
+  background: var(--bg-module);
+  border-right: var(--border-module) solid var(--line-hairline);
+  min-width: 0;
+  overflow: hidden; /* never let a module's content bleed into its neighbour */
+}
+
+.module:last-child {
+  border-right: none;
+}
+
+.module::before {
+  content: "";
+  position: absolute;
+  inset: 0 0 auto 0;
+  height: 3px;
+  background: var(--module-accent);
+  opacity: 0.75;
+}
+
+.module__header {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.3em;
+  text-align: center;
+  margin-block: var(--space-sm) var(--space-md);
+}
+
+.module__index {
+  font-family: var(--font-mono);
+  font-size: var(--fs-module-index);
+  letter-spacing: var(--tracking-wide);
+  color: var(--module-accent);
+}
+
+.module__name {
+  font-size: var(--fs-module-name);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-primary);
+}
+
+.module__tag {
+  font-size: var(--fs-module-tag);
+  font-weight: 500;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+}
+
+.module__knob-area {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--space-sm);
+  min-height: 0;
+}
+
+.module__aux {
+  width: 100%;
+  margin-top: var(--space-md);
+}

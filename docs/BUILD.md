@@ -126,10 +126,62 @@ This stage's build was verified by:
   its VST3 factory to generate `moduleinfo.json`, which is a real (if
   partial) load-and-initialise check outside of a full DAW.
 - All `UNI76Tests` checks passing in both Debug and Release.
+- **A real VST3 host load.** JUCE's own `AudioPluginHost` was built from
+  the exact pinned JUCE 9.0.1 source this project already fetches (via
+  `JUCE_BUILD_EXTRAS`/`extras/AudioPluginHost`, from a throwaway CMake
+  project outside this repo - not a downloaded binary), confirming the
+  official host builds cleanly against this JUCE pin. Beyond that, a small
+  purpose-built console harness (`UNI76HostValidator`, also built from the
+  same pinned source, not part of this repository) used JUCE's real
+  `AudioPluginFormatManager` / `VST3PluginFormat` hosting code - the same
+  code path a DAW uses - to:
+  - discover and instantiate the built `.vst3` (not `UNI76AudioProcessor`
+    directly - the actual VST3-wrapped instance),
+  - confirm passthrough audio + zero latency through that hosted instance,
+  - confirm the hosted instance exposes all 7 UNI 76 parameters (plus one
+    extra "Bypass" parameter that JUCE's VST3 wrapper adds automatically
+    for every plugin that doesn't supply its own - expected, not a bug),
+  - push new values through all 7 parameters via the host-facing
+    `AudioProcessorParameter` interface and read them back,
+  - save state, perturb every parameter, reload state, and confirm all 7
+    values round-tripped correctly through the hosted instance's real
+    `getStateInformation`/`setStateInformation`,
+  - create the real editor (`createEditorAndMakeActive()` - genuine
+    WebView2 control, not a stub), confirm it opens at the documented
+    default size (960x640) and that requesting an out-of-range resize is
+    clamped by the fixed-aspect-ratio constrainer to within the documented
+    maximum (1350x900),
+  - close and recreate the editor and confirm parameter values survive
+    that cycle,
+  - and hold the real, visible editor window open long enough for an
+    external OS-level screenshot (`PrintWindow` with
+    `PW_RENDERFULLCONTENT`, via a short PowerShell/.NET script - JUCE's own
+    `Component::createComponentSnapshot()` was tried first but can't see
+    WebView2's content, since it's a separately DWM-composited native
+    child window, not something JUCE's own paint() call draws).
 
-A full `pluginval` or JUCE `AudioPluginHost` pass was **NOT TESTED** -
-neither tool is installed on the machine this was built on, and installing
-an executable validator from the internet was out of scope for this stage
-(see the top-level report for the exact reasoning). Running one of these
-against the built `.vst3` above is a reasonable next step before relying on
-this build in a real DAW.
+  All of the above passed. The resulting screenshot
+  (`docs/screenshots/editor.png`) shows the real production UI running
+  inside a real VST3 host process, with the 7 knobs at the exact test
+  values (10/20/.../80%) the harness set through the host interface -
+  visual confirmation that the JS <-> JUCE parameter bridge works
+  end-to-end, not just that the C++ side compiles.
+
+  This harness is a one-off validation tool, not part of the reproducible
+  product build - it isn't checked into this repository.
+
+**Embedded resources, verified in isolation.** The built `.vst3` was copied
+to a location with no `Resources/Web` folder or source tree anywhere
+nearby (`C:\isolated_test\UNI 76.vst3`, well outside this repository), and
+the same host-validation harness ran against that copy with identical
+results - confirming the WebView UI really is compiled into the binary via
+`BinaryData` and the plugin has no runtime dependency on files sitting next
+to the `.vst3`.
+
+A full `pluginval` pass was **NOT TESTED** - it isn't installed on this
+machine, and installing a third-party executable validator from the
+internet was treated as out of scope. Given the AudioPluginHost-based
+validation above already exercises real VST3 hosting, parameter
+automation, state persistence, and the real editor, a `pluginval` pass is
+a reasonable next step but not expected to surface anything the above
+missed.

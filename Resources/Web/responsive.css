@@ -1,0 +1,45 @@
+/*
+  UNI 76 - responsive safety net.
+
+  The token clamp()s in tokens.css already do most of the work of scaling
+  the interface fluidly with the editor window. This file only adds a
+  small number of guards for the extreme ends of the configured resize
+  range (see Source/UI/WebUIEditor.cpp for the actual min/default/max the
+  host enforces) so nothing overlaps or overflows into a scrollbar.
+*/
+
+/* Near the minimum editor size: the header's placeholder controls and the
+   per-module tag line are the first things that can crowd a 7-column
+   layout - drop them before anything is allowed to wrap or overflow. */
+@media (max-width: 700px) {
+  .header__controls {
+    display: none;
+  }
+
+  .module__tag {
+    display: none;
+  }
+}
+
+@media (max-width: 620px) {
+  .header__subtitle {
+    display: none;
+  }
+
+  .meter__status {
+    display: none;
+  }
+
+  .signal-path__list {
+    gap: 0.3em;
+    font-size: calc(var(--fs-footer) * 0.85);
+  }
+}
+
+/* Very short windows: the footer's signal-path caption is the least
+   essential line on screen. */
+@media (max-height: 420px) {
+  .signal-path__caption {
+    display: none;
+  }
+}
