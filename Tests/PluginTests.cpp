@@ -973,6 +973,49 @@ public:
                                         "an independently-stateful right channel fed silence must stay silent regardless of left-channel content");
         }
 
+        beginTest ("Stereo: an identical signal in L and R stays numerically identical after PREAMP (no stereo drift)");
+        {
+            uni76::dsp::PreampProcessor preamp;
+            preamp.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = blockSize * 20;
+            juce::AudioBuffer<float> result (2, totalSamples);
+            int done = 0;
+            float phase = 0.0f;
+            const auto increment = juce::MathConstants<float>::twoPi * 300.0f / (float) sr;
+
+            while (done < totalSamples)
+            {
+                const auto n = juce::jmin (blockSize, totalSamples - done);
+                juce::AudioBuffer<float> block (2, n);
+
+                auto p = phase;
+                for (int i = 0; i < n; ++i)
+                {
+                    const auto s = 0.6f * std::sin (p);
+                    block.setSample (0, i, s);
+                    block.setSample (1, i, s); // identical to left
+                    p += increment;
+                }
+                phase += increment * (float) n;
+
+                preamp.process (block, 0.85f, true);
+
+                result.copyFrom (0, done, block, 0, 0, n);
+                result.copyFrom (1, done, block, 1, 0, n);
+                done += n;
+            }
+
+            expect (bufferIsFinite (result), "stereo processing produced non-finite samples");
+
+            float maxDrift = 0.0f;
+            for (int i = 0; i < totalSamples; ++i)
+                maxDrift = juce::jmax (maxDrift, std::abs (result.getSample (0, i) - result.getSample (1, i)));
+
+            expectWithinAbsoluteError (maxDrift, 0.0f, 1.0e-6f,
+                                        "identical L/R input must produce numerically identical L/R output - no randomness/modulation anywhere in the chain");
+        }
+
         beginTest ("Sample rates 44.1/48/96/192kHz all process finite audio with the expected latency architecture");
         {
             struct Config { double sr; bool expectLatency; };
@@ -1261,10 +1304,249 @@ public:
                 expect (results[i].thdPercent >= results[i - 1].thdPercent - 0.05f,
                         "THD should not meaningfully decrease as DRIVE increases");
 
-            // At DRIVE=100%, harmonic content must be clearly present but
-            // still "musical", not a wall of noise.
+            // Calibrated per the sound-calibration pass: DRIVE=100% at
+            // -18dBFS must produce clearly measurable but *musical* (not
+            // fuzz-range) harmonic content - single digits to low tens of
+            // percent, not the >400% THD an earlier, unbounded asymmetric
+            // model produced at hot input levels (see docs/DSP_PREAMP.md).
             expect (results.back().thdPercent > 0.5f, "DRIVE=100% should produce clearly measurable harmonic content");
-            expect (results.back().thdPercent < 60.0f, "DRIVE=100% THD should stay in a musical range, not explode");
+            expect (results.back().thdPercent < 15.0f, "DRIVE=100% THD at -18dBFS should stay in a musical, non-fuzz range");
+        }
+
+        beginTest ("Input level x DRIVE matrix (-30/-18/-12/-6 dBFS x 25/50/75/100%) - level-dependent, bounded, no runaway THD");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            constexpr float fundamentalHz = 1000.0f;
+
+            const float levelsDb[] { -30.0f, -18.0f, -12.0f, -6.0f };
+            const float drives[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+
+            std::cout << "=== PREAMP level x DRIVE matrix (1kHz) ===" << std::endl;
+            std::cout << "  level_dBFS  drive%   THD%     H2dB     H3dB     H5dB   deltaRMSdB" << std::endl;
+
+            for (auto levelDb : levelsDb)
+            {
+                const auto amplitude = juce::Decibels::decibelsToGain (levelDb);
+                float baseRms = -1.0f;
+
+                for (auto drive : drives)
+                {
+                    uni76::dsp::PreampProcessor preamp;
+                    preamp.prepare (sr, blockSize, 1);
+
+                    const auto totalSamples = blockSize * 60;
+                    auto processed = runPreampSine (preamp, 1, blockSize, totalSamples, sr, fundamentalHz, amplitude, drive, true);
+
+                    const auto m = measure (processed, 0, sr, fundamentalHz);
+
+                    const auto settle = preamp.getLatencySamples() + blockSize * 4;
+                    const auto rms = bufferRms (processed, 0, settle, totalSamples - settle - blockSize);
+                    if (drive == 0.0f) baseRms = rms;
+                    const auto deltaDb = baseRms > 1.0e-9f ? juce::Decibels::gainToDecibels (rms / baseRms) : 0.0f;
+
+                    std::cout << "  " << levelDb << "\t     " << (int) (drive * 100.0f)
+                               << "\t " << m.thdPercent << "\t " << m.harmonicDb[0] << "\t " << m.harmonicDb[1]
+                               << "\t " << m.harmonicDb[3] << "\t " << deltaDb << std::endl;
+
+                    expect (std::isfinite (m.thdPercent) && std::isfinite (rms), "non-finite measurement in level x DRIVE matrix");
+
+                    // The catastrophic failure mode this test exists to
+                    // catch: an earlier unbounded asymmetric term measured
+                    // >400% THD at -6dBFS/100% drive - unmistakably fuzz,
+                    // not analogue character. However hard a hot signal is
+                    // driven, THD must stay bounded.
+                    expect (m.thdPercent < 100.0f, "THD exceeded 100% - runaway/rectifying distortion, not musical saturation");
+                }
+            }
+
+            std::cout << "=== end level x DRIVE matrix ===" << std::endl << std::endl;
+        }
+
+        beginTest ("DRIVE=0% null test: magnitude (gain) deviation from unity at 100Hz/1kHz/10kHz/broadband");
+        {
+            // A naive time-domain sample subtraction was tried first and
+            // discarded: near the fixed 20Hz/20kHz filter boundaries
+            // (Low Cut/High Cut at DRIVE=0%, plus the rounding filter),
+            // any real filter's own group delay causes a fractional-sample
+            // phase shift that a pure integer-latency-aligned subtraction
+            // reads as a huge "residual", even though the actual
+            // *coloration* (gain/loudness at that frequency) barely
+            // changes - 100Hz measured -9.6dB and 10kHz -4.9dB "residual"
+            // that way, purely from phase, not level. What "practically
+            // transparent, no unexpected coloration" actually means is a
+            // magnitude/gain question, so this measures exactly that via
+            // Goertzel: |wet magnitude| vs the fed amplitude, in dB.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            constexpr float amplitude = 0.25f;
+
+            auto nullTestAt = [&] (float freqHz, const char* label, float toleranceDb)
+            {
+                uni76::dsp::PreampProcessor preamp;
+                preamp.prepare (sr, blockSize, 1);
+
+                const auto totalSamples = blockSize * 60;
+                auto processed = runPreampSine (preamp, 1, blockSize, totalSamples, sr, freqHz, amplitude, 0.0f, true);
+
+                // Fewer cycles for low frequencies so the analysis window
+                // (periodicAnalysisLength) stays comfortably inside
+                // totalSamples - 100 cycles of 100Hz alone would need
+                // 44100 samples.
+                const auto cycles = freqHz < 200.0f ? 20 : 100;
+                const auto win = periodicAnalysisLength (sr, freqHz, cycles);
+                const auto wetMag = goertzelMagnitude (processed, 0, totalSamples - win, win, sr, freqHz);
+                const auto gainDb = 20.0f * std::log10 (wetMag / amplitude);
+
+                std::cout << "  null test " << label << ": gain deviation = " << gainDb << " dB" << std::endl;
+                expect (std::abs (gainDb) < toleranceDb,
+                        juce::String ("DRIVE=0% gain deviation at ") + label + " should stay within " + juce::String (toleranceDb, 1) + "dB");
+            };
+
+            std::cout << "=== PREAMP DRIVE=0% null test ===" << std::endl;
+            // Comfortably mid-band frequencies get a tight tolerance; 100Hz
+            // and 10kHz sit within about an octave of the soft 20Hz/20kHz
+            // boundaries the product brief explicitly allows some
+            // coloration near, so they get a slightly looser (still small)
+            // tolerance.
+            nullTestAt (100.0f, "100Hz", 0.5f);
+            nullTestAt (1000.0f, "1kHz", 0.2f);
+            nullTestAt (10000.0f, "10kHz", 0.75f);
+
+            // Broadband: a deterministic multi-tone sum spanning the
+            // audible range, checking each tone's own magnitude deviation.
+            {
+                uni76::dsp::PreampProcessor preamp;
+                preamp.prepare (sr, blockSize, 1);
+                const auto totalSamples = blockSize * 60;
+
+                const float tones[] { 80.0f, 400.0f, 1200.0f, 4000.0f, 9000.0f };
+                juce::AudioBuffer<float> dry (1, totalSamples);
+                dry.clear();
+                for (auto freqHz : tones)
+                {
+                    const auto inc = juce::MathConstants<double>::twoPi * (double) freqHz / sr;
+                    double phase = 0.0;
+                    for (int i = 0; i < totalSamples; ++i) { dry.addSample (0, i, (amplitude / 5.0f) * (float) std::sin (phase)); phase += inc; }
+                }
+
+                juce::AudioBuffer<float> wet;
+                wet.makeCopyOf (dry);
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto n = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (1, n);
+                    block.copyFrom (0, 0, wet, 0, done, n);
+                    preamp.process (block, 0.0f, true);
+                    wet.copyFrom (0, done, block, 0, 0, n);
+                    done += n;
+                }
+
+                for (auto freqHz : tones)
+                {
+                    const auto cycles = freqHz < 200.0f ? 20 : 100;
+                    const auto win = periodicAnalysisLength (sr, freqHz, cycles);
+                    const auto mag = goertzelMagnitude (wet, 0, totalSamples - win, win, sr, freqHz);
+                    const auto gainDb = 20.0f * std::log10 (mag / (amplitude / 5.0f));
+                    const auto toleranceDb = (freqHz <= 100.0f || freqHz >= 9000.0f) ? 0.75f : 0.3f;
+
+                    std::cout << "  null test broadband @ " << freqHz << "Hz: gain deviation = " << gainDb << " dB" << std::endl;
+                    expect (std::abs (gainDb) < toleranceDb,
+                            "DRIVE=0% broadband gain deviation at " + juce::String (freqHz, 0) + "Hz should stay small");
+                }
+            }
+
+            std::cout << "=== end null test ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Aliasing: production oversampled path suppresses fold-back energy vs a non-oversampled reference");
+        {
+            // Production never gets a runtime oversampling on/off switch
+            // (see Source/DSP/PreampProcessor.cpp) - this reference path
+            // exists only in this test, replicating the identical
+            // coloration+waveshaper math directly at the base rate, with
+            // no up/downsampling, purely to measure how much the real
+            // oversampled production path is actually suppressing.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            constexpr float amplitude = 0.3f;
+            constexpr float drive = 1.0f; // worst case - most harmonic energy generated
+
+            auto referenceNoOversampling = [&] (float freqHz)
+            {
+                uni76::dsp::OnePoleLowPass rounding;
+                uni76::dsp::Biquad shelf;
+                const auto t = drive;
+                rounding.setCutoffHz (sr, uni76::dsp::preampRoundingCutoffHz (t));
+                uni76::dsp::makeLowShelf (shelf, sr, uni76::dsp::preampColorShelfFreqHz, uni76::dsp::preampColorShelfGainDb (t));
+
+                const auto driveGain = uni76::dsp::preampDriveGainLinear (t);
+                const auto asym = uni76::dsp::preampAsymmetryAmount (t);
+                const auto norm = std::tanh (driveGain);
+
+                const int totalSamples = blockSize * 40;
+                juce::AudioBuffer<float> out (1, totalSamples);
+                const auto inc = juce::MathConstants<double>::twoPi * (double) freqHz / sr;
+                double phase = 0.0;
+
+                for (int i = 0; i < totalSamples; ++i)
+                {
+                    auto x = amplitude * (float) std::sin (phase);
+                    x = rounding.processSample (x);
+                    x = shelf.processSample (x);
+                    const auto xd = x * driveGain;
+                    const auto shaped = xd >= 0.0f ? std::tanh (xd) : std::tanh (xd * (1.0f - asym));
+                    out.setSample (0, i, norm > 1.0e-6f ? shaped / norm : shaped);
+                    phase += inc;
+                }
+                return out;
+            };
+
+            auto productionOversampled = [&] (float freqHz)
+            {
+                uni76::dsp::PreampProcessor preamp;
+                preamp.prepare (sr, blockSize, 1);
+                const int totalSamples = blockSize * 40;
+                return runPreampSine (preamp, 1, blockSize, totalSamples, sr, freqHz, amplitude, drive, true);
+            };
+
+            std::cout << "=== PREAMP aliasing measurement (44.1kHz, DRIVE=100%) ===" << std::endl;
+
+            for (float testToneHz : { 4000.0f, 8000.0f, 12000.0f })
+            {
+                auto reference = referenceNoOversampling (testToneHz);
+                auto production = productionOversampled (testToneHz);
+
+                const auto totalSamples = reference.getNumSamples();
+                const auto win = periodicAnalysisLength (sr, testToneHz, 100);
+                const auto start = totalSamples - win;
+
+                // Any energy found *below* the fundamental (outside the
+                // Low Cut's own shaping region) can only be aliasing or
+                // filter-shaping artifact for a signal whose real harmonic
+                // content only exists at/above its own frequency - probe
+                // a representative band well below the tone.
+                const auto probeHz = juce::jmax (500.0f, testToneHz * 0.5f);
+                const auto refAlias = goertzelMagnitude (reference, 0, start, win, sr, probeHz);
+                const auto prodAlias = goertzelMagnitude (production, 0, start, win, sr, probeHz);
+
+                const auto suppressionDb = refAlias > 1.0e-9f
+                    ? juce::Decibels::gainToDecibels (prodAlias / refAlias)
+                    : 0.0f;
+
+                std::cout << "  tone=" << testToneHz << "Hz probe=" << probeHz << "Hz: "
+                           << "reference(no oversampling)=" << juce::Decibels::gainToDecibels (refAlias + 1.0e-9f) << "dB  "
+                           << "production(oversampled)=" << juce::Decibels::gainToDecibels (prodAlias + 1.0e-9f) << "dB  "
+                           << "suppression=" << suppressionDb << "dB"
+                           << std::endl;
+
+                expect (std::isfinite (refAlias) && std::isfinite (prodAlias), "non-finite aliasing measurement");
+                expect (prodAlias <= refAlias + 1.0e-6f,
+                        "the oversampled production path should never show *more* fold-back energy than the non-oversampled reference");
+            }
+
+            std::cout << "=== end aliasing measurement ===" << std::endl << std::endl;
         }
 
         beginTest ("Low Cut / High Cut frequency response - measured attenuation at DRIVE 0/25/50/75/100");

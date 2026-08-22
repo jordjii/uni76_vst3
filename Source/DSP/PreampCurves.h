@@ -37,7 +37,7 @@ namespace uni76::dsp
     // driveGainMax (~+26 dB) is where tanh(driveGain) has already
     // saturated to ~1, giving a firm but soft ceiling at DRIVE=100.
     inline constexpr float preampDriveGainMin = 0.05f;
-    inline constexpr float preampDriveGainMax = 20.0f;
+    inline constexpr float preampDriveGainMax = 10.0f;
     inline constexpr float preampDriveShapeExponent = 1.3f;
 
     inline float preampDriveGainLinear (float driveNormalised01) noexcept
@@ -47,11 +47,13 @@ namespace uni76::dsp
         return preampDriveGainMin * std::pow (preampDriveGainMax / preampDriveGainMin, tt);
     }
 
-    // Quadratic (even-harmonic) asymmetry mixed into the waveshaper's
-    // argument, scaled by drive so H2 is negligible near DRIVE=0 and a
-    // clear part of the character by DRIVE=100, without ever dominating
-    // the (dominant) odd-order content from tanh() itself.
-    inline constexpr float preampAsymmetryMax = 0.18f;
+    // Fractional gain reduction applied to the waveshaper's negative half
+    // only (see PreampProcessor.cpp) - a milder tanh() on one side of the
+    // wave than the other, which is what actually produces even-harmonic
+    // (H2) content from a per-half-bounded tanh(). Scaled by drive so H2
+    // is negligible near DRIVE=0 and a clear part of the character by
+    // DRIVE=100, without ever dominating the (dominant) odd-order content.
+    inline constexpr float preampAsymmetryMax = 0.20f;
 
     inline float preampAsymmetryAmount (float driveNormalised01) noexcept
     {
@@ -60,20 +62,26 @@ namespace uni76::dsp
 
     // Output trim on top of the waveshaper's own tanh-normalisation.
     // Dividing by tanh(driveGain) keeps small signals close to unity gain
-    // only while driveGain*x stays small - at DRIVE=100 with a typical
-    // program-level input, driveGain*x is deep in the saturating region,
-    // and tanh-normalisation alone measured ~+16 dB of RMS growth from
-    // DRIVE=0 to DRIVE=100 (see docs/DSP_PREAMP.md). This trim uses the
-    // same shaping exponent as the drive curve itself so it tracks (and
-    // largely cancels) that growth, keeping DRIVE=100 from reading as
-    // simply "a lot louder" than DRIVE=0 without fully loudness-
-    // normalising every setting.
+    // only while driveGain*x stays small - measured raw (untrimmed) RMS
+    // growth at -18dBFS is close to flat through DRIVE=50% (0, -0.2, 0.1
+    // dB) and then rises sharply toward DRIVE=100% (+5.2dB at 75%,
+    // +16.8dB at 100% - see docs/DSP_PREAMP.md). A trim sharing the
+    // drive curve's own (much gentler) exponent used to badly mismatch
+    // that shape - it over-trimmed the already-near-flat 25-50% region
+    // (measured -6dB dip there) while barely denting the real growth up
+    // top. This curve's own steep exponent instead stays close to 0dB
+    // until deep into the top of the range, then cancels most (not all)
+    // of the measured growth - net RMS change at -18dBFS stays within
+    // roughly +/-2dB through DRIVE=75% and about +2dB at DRIVE=100%,
+    // deliberately leaving a little natural growth rather than acting as
+    // a hard loudness normaliser.
     inline constexpr float preampOutputTrimMaxDb = -15.0f;
+    inline constexpr float preampOutputTrimExponent = 4.0f;
 
     inline float preampOutputCompensationDb (float driveNormalised01) noexcept
     {
         const auto t = clamp01 (driveNormalised01);
-        return preampOutputTrimMaxDb * std::pow (t, preampDriveShapeExponent);
+        return preampOutputTrimMaxDb * std::pow (t, preampOutputTrimExponent);
     }
 
     // ---- Transformer coloration (pre-nonlinearity) -----------------------
@@ -82,7 +90,13 @@ namespace uni76::dsp
     // cutoff softens/rounds transients and reduces alias-prone HF energy
     // reaching the nonlinearity. Fixed-frequency low-shelf adds low-mid
     // density, magnitude scaled by drive.
-    inline constexpr float preampRoundingCutoffMaxHz = 20000.0f;
+    // Max (DRIVE=0%) cutoff is deliberately far above the audible band,
+    // not just "20kHz" - a one-pole filter's magnitude response is still
+    // measurably down almost an octave below its nominal cutoff (a real
+    // -1dB null-test deviation was measured at 10kHz with a 20kHz
+    // cutoff), and this filter is meant to be a *drive-dependent*
+    // character effect, negligible at DRIVE=0%, not a fixed top-end trim.
+    inline constexpr float preampRoundingCutoffMaxHz = 40000.0f;
     inline constexpr float preampRoundingCutoffMinHz = 9000.0f;
     inline constexpr float preampRoundingExponent = 0.85f;
 
