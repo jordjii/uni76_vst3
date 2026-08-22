@@ -1,0 +1,63 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>UNI 76</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="app">
+    <header class="app__header">
+      <div class="app__brand">NOSTALGIA AUDIO</div>
+      <div class="app__product">UNI 76</div>
+      <div class="app__tag">TECHNICAL UI PROTOTYPE</div>
+    </header>
+
+    <section class="controls">
+      <div class="control">
+        <label for="preamp">PREAMP</label>
+        <input type="range" id="preamp" min="0" max="100" step="1" value="50" />
+        <output for="preamp">50%</output>
+      </div>
+      <div class="control">
+        <label for="eq">EQ</label>
+        <input type="range" id="eq" min="0" max="100" step="1" value="50" />
+        <output for="eq">50%</output>
+      </div>
+      <div class="control">
+        <label for="saturation">SATURATION</label>
+        <input type="range" id="saturation" min="0" max="100" step="1" value="50" />
+        <output for="saturation">50%</output>
+      </div>
+      <div class="control">
+        <label for="pitch">PITCH</label>
+        <input type="range" id="pitch" min="0" max="100" step="1" value="50" />
+        <output for="pitch">50%</output>
+      </div>
+      <div class="control">
+        <label for="panorama">PANORAMA</label>
+        <input type="range" id="panorama" min="0" max="100" step="1" value="50" />
+        <output for="panorama">50%</output>
+      </div>
+      <div class="control">
+        <label for="reverb">REVERB</label>
+        <input type="range" id="reverb" min="0" max="100" step="1" value="50" />
+        <output for="reverb">50%</output>
+      </div>
+      <div class="control">
+        <label for="imager">IMAGER</label>
+        <input type="range" id="imager" min="0" max="100" step="1" value="50" />
+        <output for="imager">50%</output>
+      </div>
+    </section>
+
+    <footer class="app__footer">
+      <span id="build-version">v0.0.0</span>
+      <span id="bridge-status" class="status status--pending">bridge: connecting&hellip;</span>
+    </footer>
+  </main>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>

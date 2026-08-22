@@ -1,0 +1,40 @@
+# Build / generated directories - never part of the repository structure.
+/build/
+/build-*/
+/out/
+/cmake-build-*/
+
+# CMake
+CMakeCache.txt
+CMakeFiles/
+CMakeScripts/
+cmake_install.cmake
+CTestTestfile.cmake
+compile_commands.json
+_deps/
+
+# IDE
+.vs/
+.vscode/
+*.sln
+*.vcxproj
+*.vcxproj.filters
+*.vcxproj.user
+.idea/
+*.xcodeproj/
+*.xcworkspace/
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Packaging outputs (built artefacts, not source)
+Packaging/Windows/Output/
+Packaging/macOS/build/
+*.pkg
+*.dmg
+*.exe
+
+# Local developer overrides
+CMakeUserPresets.json

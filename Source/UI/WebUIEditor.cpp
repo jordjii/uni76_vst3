@@ -1,0 +1,105 @@
+#include "WebUIEditor.h"
+#include "WebResourceProvider.h"
+#include "Plugin/PluginProcessor.h"
+#include "Parameters/ParameterIDs.h"
+#include "Utils/BuildInfo.h"
+
+namespace
+{
+    // WebView2 must never write its user-data cache into the plugin's own
+    // install directory (that location may not be writable, and multiple
+    // plugin copies/instances would collide). Use the per-user app-data
+    // area instead.
+    juce::File getWebView2UserDataFolder()
+    {
+        return juce::File::getSpecialLocation (juce::File::SpecialLocationType::userApplicationDataDirectory)
+                   .getChildFile ("Nostalgia Audio")
+                   .getChildFile ("UNI 76")
+                   .getChildFile ("WebView2");
+    }
+
+    juce::WebBrowserComponent::Options makeWebViewOptions (
+        juce::WebSliderRelay& preamp,
+        juce::WebSliderRelay& eq,
+        juce::WebSliderRelay& saturation,
+        juce::WebSliderRelay& pitch,
+        juce::WebSliderRelay& panorama,
+        juce::WebSliderRelay& reverb,
+        juce::WebSliderRelay& imager,
+        juce::WebControlParameterIndexReceiver& indexReceiver)
+    {
+        using Options = juce::WebBrowserComponent::Options;
+
+        // Requesting the webview2 backend is safe on every platform: JUCE
+        // silently falls back to the platform default (WKWebView on macOS)
+        // when webview2 isn't applicable. WebView2Loader is statically
+        // linked (see Source/Plugin/CMakeLists.txt), so there is no loader
+        // DLL to locate at runtime - only the user-data folder needs to be
+        // redirected away from the plugin's own (possibly read-only) install
+        // directory.
+        return Options{}
+            .withBackend (Options::Backend::webview2)
+            .withWinWebView2Options (Options::WinWebView2{}
+                                          .withUserDataFolder (getWebView2UserDataFolder())
+                                          .withBackgroundColour (juce::Colour { 0xff141414 }))
+            .withNativeIntegrationEnabled()
+            .withOptionsFrom (preamp)
+            .withOptionsFrom (eq)
+            .withOptionsFrom (saturation)
+            .withOptionsFrom (pitch)
+            .withOptionsFrom (panorama)
+            .withOptionsFrom (reverb)
+            .withOptionsFrom (imager)
+            .withOptionsFrom (indexReceiver)
+            .withInitialisationData ("uni76Version", uni76::BuildInfo::getVersionString())
+            .withResourceProvider (&uni76::ui::getWebResource);
+    }
+}
+
+bool UNI76AudioProcessorEditor::SinglePageBrowser::pageAboutToLoad (const juce::String& newURL)
+{
+    // Only our own embedded resource root may ever be loaded - block any
+    // attempt to navigate the frontend to a third-party site.
+    return newURL == juce::WebBrowserComponent::getResourceProviderRoot();
+}
+
+UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
+    : AudioProcessorEditor (&p),
+      processor (p),
+      webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
+                                    panoramaRelay, reverbRelay, imagerRelay,
+                                    controlParameterIndexReceiver)),
+      preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
+                             preampRelay, processor.getValueTreeState().undoManager),
+      eqAttachment         (*processor.getValueTreeState().getParameter (uni76::ParamID::eq),
+                             eqRelay, processor.getValueTreeState().undoManager),
+      saturationAttachment (*processor.getValueTreeState().getParameter (uni76::ParamID::saturation),
+                             saturationRelay, processor.getValueTreeState().undoManager),
+      pitchAttachment      (*processor.getValueTreeState().getParameter (uni76::ParamID::pitch),
+                             pitchRelay, processor.getValueTreeState().undoManager),
+      panoramaAttachment   (*processor.getValueTreeState().getParameter (uni76::ParamID::panorama),
+                             panoramaRelay, processor.getValueTreeState().undoManager),
+      reverbAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::reverb),
+                             reverbRelay, processor.getValueTreeState().undoManager),
+      imagerAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::imager),
+                             imagerRelay, processor.getValueTreeState().undoManager)
+{
+    addAndMakeVisible (webView);
+    webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
+
+    setResizable (true, true);
+    setResizeLimits (360, 480, 900, 1200);
+    setSize (480, 640);
+}
+
+UNI76AudioProcessorEditor::~UNI76AudioProcessorEditor() = default;
+
+void UNI76AudioProcessorEditor::resized()
+{
+    webView.setBounds (getLocalBounds());
+}
+
+int UNI76AudioProcessorEditor::getControlParameterIndex (Component&)
+{
+    return controlParameterIndexReceiver.getControlParameterIndex();
+}
