@@ -26,9 +26,10 @@ function formatPitchSemitones(scaled) {
 }
 
 const MODULES = [
-  // EQ defaults to its centred/flat "PHONE" position (50%); every other
-  // module defaults to fully off (0%) - see ParameterLayout.cpp, which is
-  // the source of truth this must stay in sync with.
+  // EQ and PAN both default to their centred/neutral position (50%) -
+  // EQ's flat "PHONE" and PAN's "NATURAL" (original stereo image); every
+  // other module defaults to fully off (0%) - see ParameterLayout.cpp,
+  // which is the source of truth this must stay in sync with.
   { id: "preamp", control: "DRIVE", name: "Preamp", defaultNormalised: 0 },
   { id: "eq", control: "TONE", name: "EQ", defaultNormalised: 0.5 },
   { id: "saturation", control: "HEAT", name: "Saturation", defaultNormalised: 0 },
@@ -40,7 +41,13 @@ const MODULES = [
     id: "pitch", control: "SHIFT", name: "Pitch", defaultNormalised: 0.5, formatValue: formatPitchSemitones,
     discrete: { steps: PITCH_STEPS, ariaMin: -PITCH_SEMITONE_RANGE, ariaMax: PITCH_SEMITONE_RANGE, ariaStep: 1 },
   },
-  { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0 },
+  // PAN is a stereo-*width* control (MONO/NATURAL/WIDE), not an L/R
+  // balance pan, despite the `panorama` parameter ID (kept only for
+  // compatibility) - NATURAL (50%) is the identity/neutral position, not
+  // 0%, so it defaults to centre like EQ rather than fully off. See
+  // Source/Parameters/ParameterLayout.cpp, the source of truth this must
+  // stay in sync with, and docs/DSP_PAN.md.
+  { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0.5 },
   { id: "reverb", control: "SPACE", name: "Reverb", defaultNormalised: 0 },
   { id: "imager", control: "IMAGE", name: "Imager", defaultNormalised: 0 },
 ];

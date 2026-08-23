@@ -29,8 +29,19 @@ namespace uni76
             default (0 ST) whenever loadedSchemaVersion < 3, rather than
             letting APVTS reinterpret that old raw number as a semitone
             offset (which would silently clamp/misread it).
+        v4: `panorama`'s default changed from 0% to 50% now that real
+            PAN/STEREO FIELD DSP exists (see docs/DSP_PAN.md) - 0% now
+            means MONO, and the old 0% default predates any DSP reading
+            it, so it never meant "mono" to begin with. A pre-v4 state's
+            saved `panorama` value is forced to 50% (NATURAL) whenever
+            loadedSchemaVersion < 4, for the same reason PITCH's v3
+            migration forces old values to its new default: an old
+            project that never touched PAN must not suddenly play in
+            mono after this update. Unlike PITCH, `panorama` stays the
+            same AudioParameterFloat type/range (0..100%) - only the
+            *meaning* of a stored value changed, not the C++ type.
     */
-    inline constexpr int stateSchemaVersion = 3;
+    inline constexpr int stateSchemaVersion = 4;
 
     /** Property name under which stateSchemaVersion is stored in the saved
         ValueTree, so setStateInformation can detect old presets.
@@ -44,4 +55,13 @@ namespace uni76
         branch in setStateInformation() for states that are already v3+.
     */
     inline constexpr int pitchDiscreteSchemaVersion = 3;
+
+    /** The schema version at which `panorama`'s default became 50%
+        (NATURAL) instead of 0% (see stateSchemaVersion's v4 entry above).
+        Fixed at 4 regardless of any later bump to stateSchemaVersion -
+        a future unrelated migration must not re-trigger the panorama-
+        value-stripping branch in setStateInformation() for states that
+        are already v4+.
+    */
+    inline constexpr int panoramaNaturalSchemaVersion = 4;
 }

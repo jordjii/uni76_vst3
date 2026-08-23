@@ -18,6 +18,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     eqParameter = apvts.getRawParameterValue (uni76::ParamID::eq);
     saturationParameter = apvts.getRawParameterValue (uni76::ParamID::saturation);
     pitchParameter = apvts.getRawParameterValue (uni76::ParamID::pitch);
+    panoramaParameter = apvts.getRawParameterValue (uni76::ParamID::panorama);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -31,16 +32,20 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     eqProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     satProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     pitchProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    panoramaProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ adds no algorithmic latency (getLatencySamples() == 0). PREAMP,
-    // SAT and PITCH each own independent processing with their own real
-    // latency - the plugin's total declared latency is their sum, since
-    // all four run in series in the signal chain and a host's plugin-
-    // delay-compensation needs the combined delay, not just one stage's.
+    // EQ and PAN both add no algorithmic latency (getLatencySamples() ==
+    // 0 for each - PAN is a pure gain/filter morph, no oversampling, no
+    // lookahead, no delay-based widening). PREAMP, SAT and PITCH each own
+    // independent processing with their own real latency - the plugin's
+    // total declared latency is their sum, since all five run in series
+    // in the signal chain and a host's plugin-delay-compensation needs
+    // the combined delay, not just one stage's.
     setLatencySamples (preampProcessor.getLatencySamples()
                         + eqProcessor.getLatencySamples()
                         + satProcessor.getLatencySamples()
-                        + pitchProcessor.getLatencySamples());
+                        + pitchProcessor.getLatencySamples()
+                        + panoramaProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
@@ -49,6 +54,7 @@ void UNI76AudioProcessor::releaseResources()
     eqProcessor.reset();
     satProcessor.reset();
     pitchProcessor.reset();
+    panoramaProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -95,8 +101,17 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     pitchProcessor.process (buffer, pitchSemitones, pitchEnabled);
 
-    // Panorama/Reverb/Imager remain a strict passthrough at this stage -
-    // see CLAUDE.md.
+    // PAN/STEREO FIELD reads the raw `panorama` value as a plain 0..1
+    // normalised width (not semitones/percent-of-something-else like
+    // PITCH) - 0.5 (NATURAL) is both the parameter's own default and the
+    // module's identity point, see docs/DSP_PAN.md.
+    const auto panoramaWidth = panoramaParameter != nullptr ? panoramaParameter->load() / 100.0f : 0.5f;
+    const auto panoramaEnabled = moduleEnableState.isEnabled (4); // index 4 = panorama, see ModuleEnableState::propertyNames
+
+    panoramaProcessor.process (buffer, panoramaWidth, panoramaEnabled);
+
+    // Reverb/Imager remain a strict passthrough at this stage - see
+    // CLAUDE.md.
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.
@@ -184,6 +199,25 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
             auto pitchParam = newState.getChildWithProperty ("id", juce::var (uni76::ParamID::pitch));
             if (pitchParam.isValid())
                 pitchParam.setProperty ("value", 0.0, nullptr);
+        }
+
+        // Pre-v4 states saved `panorama` under its old 0%-default
+        // AudioParameterFloat, from before any DSP read it - that old
+        // value (typically 0.0, or whatever a user happened to leave the
+        // then-inert knob at) never meant "mono" and must not suddenly be
+        // interpreted as MONO now that 0% genuinely collapses the stereo
+        // image. Same deliberate breaking-migration reasoning as PITCH's
+        // v3 bump above: force every pre-v4 state to the new default
+        // (50%, NATURAL) rather than "best-effort" preserving a number
+        // that was never sound-meaningful, so an old project that never
+        // touched PAN can't suddenly play in mono after this update.
+        // `panorama`'s parameter ID and C++ type are unchanged - only the
+        // stored value is forced, same mechanism as PITCH's migration.
+        if (loadedSchemaVersion < uni76::panoramaNaturalSchemaVersion)
+        {
+            auto panoramaParam = newState.getChildWithProperty ("id", juce::var (uni76::ParamID::panorama));
+            if (panoramaParam.isValid())
+                panoramaParam.setProperty ("value", 50.0, nullptr);
         }
 
         // A pre-v2 (or otherwise missing) flag defaults to enabled=true -

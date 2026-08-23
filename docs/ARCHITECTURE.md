@@ -4,9 +4,10 @@ Status: technical foundation + production UI + PREAMP DSP (frozen after a
 sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
 (see [docs/DSP_EQ.md](DSP_EQ.md)) + SAT DSP (see
 [docs/DSP_SAT.md](DSP_SAT.md)) + PITCH DSP (see
-[docs/DSP_PITCH.md](DSP_PITCH.md)). Panorama, Reverb and Imager remain a
-strict passthrough. See root [CLAUDE.md](../CLAUDE.md) for the living
-project log and the rules this architecture exists to enforce.
+[docs/DSP_PITCH.md](DSP_PITCH.md)) + PAN DSP (see
+[docs/DSP_PAN.md](DSP_PAN.md)). Reverb and Imager remain a strict
+passthrough. See root [CLAUDE.md](../CLAUDE.md) for the living project
+log and the rules this architecture exists to enforce.
 
 ## Layers
 
@@ -20,10 +21,11 @@ Source/
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
   DSP/          PreampProcessor + EqProcessor + SatProcessor + PitchProcessor
-                (real DSP, chained in that order - see docs/DSP_PREAMP.md /
-                docs/DSP_EQ.md / docs/DSP_SAT.md / docs/DSP_PITCH.md) plus
-                architectural placeholders for the other 3 processing
-                modules (Panorama, Reverb, Imager). See "DSP modules" below.
+                + PanoramaProcessor (real DSP, chained in that order - see
+                docs/DSP_PREAMP.md / docs/DSP_EQ.md / docs/DSP_SAT.md /
+                docs/DSP_PITCH.md / docs/DSP_PAN.md) plus architectural
+                placeholders for the other 2 processing modules (Reverb,
+                Imager). See "DSP modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -77,12 +79,16 @@ these values. See CLAUDE.md for the current fixed values.
 Exactly 7 public parameters, IDs centralised in
 [`Source/Parameters/ParameterIDs.h`](../Source/Parameters/ParameterIDs.h).
 Six are `AudioParameterFloat` in a `0..100` (%) range (`50%` default for
-`eq`, `0%` for the rest); `pitch` is the one exception - a discrete
-`AudioParameterInt` (`-12..+12` semitones, step 1, default 0) rather than a
-percentage, since PITCH's musically meaningful values are integer
-semitones, not a continuous 0-100% range (see
+`eq` and `panorama`, `0%` for the rest); `pitch` is the one exception - a
+discrete `AudioParameterInt` (`-12..+12` semitones, step 1, default 0)
+rather than a percentage, since PITCH's musically meaningful values are
+integer semitones, not a continuous 0-100% range (see
 [docs/DSP_PITCH.md](DSP_PITCH.md)'s "Parameter and state migration"
 section for why, and how the old percent-based `pitch` state migrates).
+`panorama`'s default changed from `0%` to `50%` when its real DSP landed
+(see [docs/DSP_PAN.md](DSP_PAN.md)'s "Parameter and state migration"
+section) - its ID is a naming holdover from before the module's actual
+behaviour (a stereo *width* control, not an L/R pan) was decided.
 `Low Cut` / `High Cut` are deliberately *not* separate parameters - they
 are internal implementation details of PreampProcessor, controlled
 indirectly (if at all) rather than exposed as their own automation lanes.
@@ -150,10 +156,27 @@ just the tuned STFT block/interval constants (seconds, not samples - see
 `IntegerDelayLine` for the same latency-aligned bypass crossfade pattern
 PREAMP/SAT use.
 
-`Source/DSP/Panorama.h`/`Reverb.h`/`Imager.h` remain deliberately empty
-placeholder classes - no `prepare`/`process` methods, no fake processing -
-and are not referenced from `PluginProcessor`. Wiring one in means giving
-it real behaviour like PREAMP/EQ/SAT/PITCH got, not just calling an empty
+`Source/DSP/PanoramaProcessor.h`/`.cpp` is the fifth - see
+[docs/DSP_PAN.md](DSP_PAN.md) for the full topology and measured data.
+Chained after PITCH. Despite the `panorama` parameter ID (a naming
+holdover, never renamed), it's a Mid/Side stereo-*width* control, not an
+L/R balance pan. Built from `PanoramaCurves.h` (the width-gain curve,
+sharing EqCurves.h's two-smoothstepped-segments-sharing-a-named-centre
+shape) and `PanoramaProcessor.h`/`.cpp` (the Mid/Side matrix + a single
+`Biquad.h` lowpass splitting Side into low/high bands with independently
+tunable width ceilings). Unlike PREAMP/EQ/SAT/PITCH, needs no
+oversampling and adds no latency - a pure per-sample gain/filter morph.
+Two properties are provable from the topology rather than just measured:
+mono fold-down is bit-identical to the input's own mono sum at every
+width (Mid is read once and never modified), and NATURAL (50%) is a true
+identity transform even with the crossover filter always running (its
+low/high gains are both exactly 1.0 there, so the split's own output
+recombines back to the unfiltered Side signal algebraically).
+
+`Source/DSP/Reverb.h`/`Imager.h` remain deliberately empty placeholder
+classes - no `prepare`/`process` methods, no fake processing - and are
+not referenced from `PluginProcessor`. Wiring one in means giving it real
+behaviour like PREAMP/EQ/SAT/PITCH/PAN got, not just calling an empty
 stub.
 
 ## Web UI / native bridge
@@ -246,23 +269,27 @@ continuous behaviour unchanged.
 
 ### Derived (non-parameter) visual indicators
 
-The tri-point scales on Panorama/Reverb/Imager (`aux_visuals.js`) are
-illustrative read-outs computed from the *existing* parameter's value -
-those 3 modules are still passthrough, so these don't imply DSP behaviour
-that isn't implemented. They do not create, read, or write any additional
+The tri-point scales on Reverb/Imager (`aux_visuals.js`) are illustrative
+read-outs computed from the *existing* parameter's value - those 2
+modules are still passthrough, so these don't imply DSP behaviour that
+isn't implemented. They do not create, read, or write any additional
 APVTS parameter.
 
-EQ's, SAT's and PITCH's tri-point scales are different in status (all
-three are now real DSP) but not in implementation: `DARK`/`PHONE`/`AIR`,
-`CLEAN`/`WARM`/`HOT` and `- OCT`/`0`/`+ OCT` are each the three genuinely
-correct named positions at 0%/50%/100% already, so the existing generic
-marker binding (`bindTriScale` - a plain 0..100% position, no per-module
-formula) needed no change when any of the three modules' DSP landed,
-unlike Preamp's filter-line indicators below. PITCH's `onChange` callback
-does pass a converted value though: `bindTriScale` expects a 0..100
-percent, so `app.js` always forwards `normalised * 100` (the knob's
-position within its own range) rather than the module's real-units
-`scaled` value, which for PITCH is semitones, not a percentage.
+EQ's, SAT's, PITCH's and PAN's tri-point scales are different in status
+(all four are now real DSP) but not in implementation: `DARK`/`PHONE`/
+`AIR`, `CLEAN`/`WARM`/`HOT`, `- OCT`/`0`/`+ OCT` and `MONO`/`NATURAL`/
+`WIDE` are each the three genuinely correct named positions at 0%/50%/
+100% already, so the existing generic marker binding (`bindTriScale` - a
+plain 0..100% position, no per-module formula) needed no change when any
+of the four modules' DSP landed, unlike Preamp's filter-line indicators
+below. PITCH's `onChange` callback does pass a converted value though:
+`bindTriScale` expects a 0..100 percent, so `app.js` always forwards
+`normalised * 100` (the knob's position within its own range) rather
+than the module's real-units `scaled` value, which for PITCH is
+semitones, not a percentage. PAN needed no such conversion - it stayed a
+plain `AudioParameterFloat` (only its *default* changed, from 0% to 50%
+- see "Parameters" above), so `scaled` and `normalised*100` are already
+numerically identical for it, same as every other non-PITCH module.
 
 The Preamp module's "LOW CUT" / "HIGH CUT" lines are different: they now
 track the *real* drive-dependent filters `Source/DSP/PreampProcessor`

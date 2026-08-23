@@ -15,6 +15,8 @@
 #include "DSP/SatCurves.h"
 #include "DSP/PitchProcessor.h"
 #include "DSP/PitchCurves.h"
+#include "DSP/PanoramaProcessor.h"
+#include "DSP/PanoramaCurves.h"
 
 #include <array>
 #include <cmath>
@@ -65,7 +67,7 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 7 parameter IDs exist with the correct defaults (EQ 50%, everything else 0%)");
+        beginTest ("All 7 parameter IDs exist with the correct defaults (EQ/PAN 50%, everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
@@ -77,7 +79,9 @@ public:
                 auto* param = apvts.getParameter (id);
                 expect (param != nullptr, juce::String ("missing parameter: ") + id);
 
-                const auto expectedDefault = std::strcmp (id, uni76::ParamID::eq) == 0 ? 50.0f : 0.0f;
+                const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
+                                             || std::strcmp (id, uni76::ParamID::panorama) == 0;
+                const auto expectedDefault = isMidpointDefault ? 50.0f : 0.0f;
 
                 if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
                     expectWithinAbsoluteError (floatParam->get(), expectedDefault, 0.001f, id);
@@ -113,12 +117,14 @@ public:
 
                 // Every other parameter was never touched before the save,
                 // so it should restore to its own construction-time default
-                // (EQ 50%, everything else 0%) - not a single shared value.
-                // PITCH is special-cased to 0.5f too: its default (0 ST)
-                // sits at the *normalised* midpoint of its -12..+12 range,
-                // same as EQ's PHONE default sits at the midpoint of 0..100.
+                // (EQ/PAN 50%, everything else 0%) - not a single shared
+                // value. PITCH is special-cased to 0.5f too: its default
+                // (0 ST) sits at the *normalised* midpoint of its -12..+12
+                // range, same as EQ's PHONE and PAN's NATURAL defaults sit
+                // at the midpoint of 0..100.
                 const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
-                                             || std::strcmp (id, uni76::ParamID::pitch) == 0;
+                                             || std::strcmp (id, uni76::ParamID::pitch) == 0
+                                             || std::strcmp (id, uni76::ParamID::panorama) == 0;
                 const auto expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
 
                 if (auto* param = apvts.getParameter (id))
@@ -920,6 +926,190 @@ namespace
         const std::vector<float> freqs { 40.0f, 80.0f, 150.0f, 300.0f, 600.0f, 1200.0f, 2500.0f, 5000.0f, 9000.0f, 14000.0f };
         std::vector<float> amps (freqs.size(), 0.09f);
         return generateChord (totalSamples, sampleRate, freqs, amps);
+    }
+
+    // ---- PAN test helpers -----------------------------------------------
+
+    /** Feeds an already-built stereo buffer through `pan` in fixed-size
+        blocks, mirroring exactly how PluginProcessor::processBlock() calls
+        PanoramaProcessor::process(). */
+    juce::AudioBuffer<float> runPanoramaProcessor (uni76::dsp::PanoramaProcessor& pan, const juce::AudioBuffer<float>& input,
+                                                    int blockSize, float widthNormalised01, bool enabled)
+    {
+        const auto numChannels = input.getNumChannels();
+        const auto totalSamples = input.getNumSamples();
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+
+        int done = 0;
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                block.copyFrom (ch, 0, input, ch, done, thisBlock);
+
+            pan.process (block, widthNormalised01, enabled);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+
+            done += thisBlock;
+        }
+        return result;
+    }
+
+    struct StereoStats
+    {
+        double rmsL = 0.0, rmsR = 0.0, rmsMid = 0.0, rmsSide = 0.0;
+        double sideMidRatio = 0.0, correlation = 0.0, peak = 0.0;
+    };
+
+    StereoStats measureStereo (const juce::AudioBuffer<float>& buffer, int startSample, int numSamples)
+    {
+        double sumL2 = 0.0, sumR2 = 0.0, sumMid2 = 0.0, sumSide2 = 0.0, sumLR = 0.0, peak = 0.0;
+
+        for (int i = startSample; i < startSample + numSamples; ++i)
+        {
+            const auto l = (double) buffer.getSample (0, i);
+            const auto r = (double) buffer.getSample (1, i);
+            const auto mid = 0.5 * (l + r);
+            const auto side = 0.5 * (l - r);
+
+            sumL2 += l * l; sumR2 += r * r;
+            sumMid2 += mid * mid; sumSide2 += side * side;
+            sumLR += l * r;
+            peak = juce::jmax (peak, std::abs (l), std::abs (r));
+        }
+
+        StereoStats s;
+        const auto n = (double) numSamples;
+        s.rmsL = std::sqrt (sumL2 / n);
+        s.rmsR = std::sqrt (sumR2 / n);
+        s.rmsMid = std::sqrt (sumMid2 / n);
+        s.rmsSide = std::sqrt (sumSide2 / n);
+        s.sideMidRatio = s.rmsMid > 1.0e-9 ? s.rmsSide / s.rmsMid : 0.0;
+        s.correlation = (sumL2 > 1.0e-12 && sumR2 > 1.0e-12) ? sumLR / std::sqrt (sumL2 * sumR2) : 0.0;
+        s.peak = peak;
+        return s;
+    }
+
+    juce::AudioBuffer<float> generateIdenticalStereo (int totalSamples, double sampleRate, float freqHz, float amplitude)
+    {
+        auto mono = generateSine (1, totalSamples, sampleRate, freqHz, amplitude);
+        juce::AudioBuffer<float> stereo (2, totalSamples);
+        stereo.copyFrom (0, 0, mono, 0, 0, totalSamples);
+        stereo.copyFrom (1, 0, mono, 0, 0, totalSamples);
+        return stereo;
+    }
+
+    /** hardLeft=true -> signal in channel 0 only; false -> channel 1 only. */
+    juce::AudioBuffer<float> generateHardPanned (int totalSamples, double sampleRate, float freqHz, float amplitude, bool hardLeft)
+    {
+        auto mono = generateSine (1, totalSamples, sampleRate, freqHz, amplitude);
+        juce::AudioBuffer<float> stereo (2, totalSamples);
+        stereo.clear();
+        stereo.copyFrom (hardLeft ? 0 : 1, 0, mono, 0, 0, totalSamples);
+        return stereo;
+    }
+
+    juce::AudioBuffer<float> generateAntiPhase (int totalSamples, double sampleRate, float freqHz, float amplitude)
+    {
+        auto mono = generateSine (1, totalSamples, sampleRate, freqHz, amplitude);
+        juce::AudioBuffer<float> stereo (2, totalSamples);
+        stereo.copyFrom (0, 0, mono, 0, 0, totalSamples);
+        stereo.copyFrom (1, 0, mono, 0, 0, totalSamples);
+        stereo.applyGain (1, 0, totalSamples, -1.0f);
+        return stereo;
+    }
+
+    /** Centre bass (identical L/R) plus decorrelated "stereo highs" (a
+        different high tone per channel) - the classic "bass mono, highs
+        wide" real-world mix shape. */
+    juce::AudioBuffer<float> generateCenterBassStereoHighs (int totalSamples, double sampleRate)
+    {
+        auto bass = generateIdenticalStereo (totalSamples, sampleRate, 80.0f, 0.3f);
+        auto highL = generateSine (1, totalSamples, sampleRate, 4000.0f, 0.15f);
+        auto highR = generateSine (1, totalSamples, sampleRate, 5500.0f, 0.15f);
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.copyFrom (0, 0, bass, 0, 0, totalSamples);
+        out.copyFrom (1, 0, bass, 1, 0, totalSamples);
+        out.addFrom (0, 0, highL, 0, 0, totalSamples);
+        out.addFrom (1, 0, highR, 0, 0, totalSamples);
+        return out;
+    }
+
+    /** Same chord content on both channels but with a different per-note
+        amplitude balance L vs R (fully correlated - no independent
+        content, no phase difference, just a static level tilt). */
+    juce::AudioBuffer<float> generateCorrelatedChord (int totalSamples, double sampleRate)
+    {
+        const std::vector<float> freqs { 220.0f, 277.18f, 329.63f };
+        auto left  = generateChord (totalSamples, sampleRate, freqs, { 0.2f, 0.15f, 0.18f });
+        auto right = generateChord (totalSamples, sampleRate, freqs, { 0.15f, 0.2f, 0.14f });
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.copyFrom (0, 0, left, 0, 0, totalSamples);
+        out.copyFrom (1, 0, right, 0, 0, totalSamples);
+        return out;
+    }
+
+    /** Genuinely independent content per channel (not a level tilt of the
+        same chord) - decorrelated stereo material. */
+    juce::AudioBuffer<float> generateDecorrelatedStereo (int totalSamples, double sampleRate)
+    {
+        auto left  = generateChord (totalSamples, sampleRate, { 300.0f, 700.0f, 1300.0f }, { 0.2f, 0.15f, 0.1f });
+        auto right = generateChord (totalSamples, sampleRate, { 450.0f, 950.0f, 1800.0f }, { 0.18f, 0.12f, 0.14f });
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.copyFrom (0, 0, left, 0, 0, totalSamples);
+        out.copyFrom (1, 0, right, 0, 0, totalSamples);
+        return out;
+    }
+
+    /** Mostly-Side synthetic passage: a strong anti-phase component plus
+        a small correlated component, so it's Side-heavy but not pure
+        cancellation. */
+    juce::AudioBuffer<float> generateSideHeavy (int totalSamples, double sampleRate)
+    {
+        auto anti = generateAntiPhase (totalSamples, sampleRate, 700.0f, 0.25f);
+        auto correlated = generateIdenticalStereo (totalSamples, sampleRate, 200.0f, 0.08f);
+
+        juce::AudioBuffer<float> out (2, totalSamples);
+        out.copyFrom (0, 0, anti, 0, 0, totalSamples);
+        out.copyFrom (1, 0, anti, 1, 0, totalSamples);
+        out.addFrom (0, 0, correlated, 0, 0, totalSamples);
+        out.addFrom (1, 0, correlated, 1, 0, totalSamples);
+        return out;
+    }
+
+    /** Measures the actual Side-channel gain a stereo tone-pair experiences
+        through PAN, at a chosen width, via Goertzel on the Side signal
+        (input Side vs output Side, both computed from L/R). The tone is
+        placed identically-but-opposite-weighted on L/R so it has a known,
+        nonzero Side component (anti-phase - the cleanest way to put all of
+        a single tone's energy into Side, none into Mid). */
+    double measurePanSideGain (uni76::dsp::PanoramaProcessor& pan, int blockSize, double sampleRate,
+                                float freqHz, float widthNormalised01, int settleSamples, int measureSamples)
+    {
+        const auto totalSamples = settleSamples + measureSamples;
+        auto input = generateAntiPhase (totalSamples, sampleRate, freqHz, 0.3f);
+        auto output = runPanoramaProcessor (pan, input, blockSize, widthNormalised01, true);
+
+        // Side = 0.5*(L-R); for this anti-phase source Side == L exactly.
+        juce::AudioBuffer<float> inputSide (1, totalSamples), outputSide (1, totalSamples);
+        for (int i = 0; i < totalSamples; ++i)
+        {
+            inputSide.setSample (0, i, 0.5f * (input.getSample (0, i) - input.getSample (1, i)));
+            outputSide.setSample (0, i, 0.5f * (output.getSample (0, i) - output.getSample (1, i)));
+        }
+
+        const auto win = juce::jmin (measureSamples, periodicAnalysisLength (sampleRate, freqHz, 20));
+        const auto inMag  = goertzelMagnitude (inputSide,  0, totalSamples - win, win, sampleRate, freqHz);
+        const auto outMag = goertzelMagnitude (outputSide, 0, totalSamples - win, win, sampleRate, freqHz);
+
+        return inMag > 1.0e-9f ? (double) outMag / (double) inMag : 0.0;
     }
 }
 
@@ -3137,7 +3327,7 @@ public:
             expect (peak < 1.2f, "EQ PHONE + SAT HOT should stay bounded/musical, not spike into fuzz");
         }
 
-        beginTest ("Total plugin latency is the sum of PREAMP's, SAT's and PITCH's own latencies (EQ adds none)");
+        beginTest ("Total plugin latency is the sum of PREAMP's, SAT's, PITCH's and PAN's own latencies (EQ and PAN add none)");
         {
             UNI76AudioProcessor processor;
             processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
@@ -3149,9 +3339,12 @@ public:
             referenceSat.prepare (44100.0, 512, 2);
             uni76::dsp::PitchProcessor referencePitch;
             referencePitch.prepare (44100.0, 512, 2);
+            uni76::dsp::PanoramaProcessor referencePan;
+            referencePan.prepare (44100.0, 512, 2);
 
             expectEquals (processor.getLatencySamples(),
-                           referencePreamp.getLatencySamples() + referenceSat.getLatencySamples() + referencePitch.getLatencySamples());
+                           referencePreamp.getLatencySamples() + referenceSat.getLatencySamples()
+                           + referencePitch.getLatencySamples() + referencePan.getLatencySamples());
         }
 
         beginTest ("SAT value round-trips through a real getStateInformation()/setStateInformation() save+restore (0/50/100)");
@@ -4411,6 +4604,829 @@ public:
 };
 
 static UNI76PitchPolyphonicTests uni76PitchPolyphonicTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// PAN / STEREO FIELD - see Source/DSP/PanoramaProcessor.h and
+// docs/DSP_PAN.md. NOT an L/R balance pan despite the `panorama`
+// parameter ID - a Mid/Side stereo *width* control: MONO (0%) <- NATURAL
+// (50%) -> WIDE (100%), with the Mid channel always passed through
+// untouched (provably correct mono fold-down at every setting) and
+// frequency-dependent Side gain (bass widens far less than mid/high).
+class UNI76PanoramaProcessorTests final : public juce::UnitTest
+{
+public:
+    UNI76PanoramaProcessorTests() : juce::UnitTest ("uni76::dsp::PanoramaProcessor", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Construct/prepare/reset does not crash; latency is always exactly 0");
+        {
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (44100.0, 512, 2);
+            expectEquals (pan.getLatencySamples(), 0, "PAN must add zero latency - pure gain/filter morph, no delay-based widening");
+            pan.reset();
+
+            juce::AudioBuffer<float> buffer (2, 512);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 512; ++i)
+                    buffer.setSample (ch, i, 0.2f * std::sin (0.1f * (float) i));
+
+            pan.process (buffer, 0.5f, true);
+            expect (bufferIsFinite (buffer), "process() produced non-finite output right after prepare()");
+        }
+
+        beginTest ("Latency is always 0 regardless of width, enabled state, sample rate, or block size");
+        {
+            const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+            const int blockSizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+
+            for (auto sr : rates)
+                for (auto blockSize : blockSizes)
+                {
+                    uni76::dsp::PanoramaProcessor pan;
+                    pan.prepare (sr, blockSize, 2);
+                    expectEquals (pan.getLatencySamples(), 0);
+                }
+
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (44100.0, 512, 2);
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+                for (auto enabled : { true, false })
+                {
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    buffer.clear();
+                    pan.process (buffer, width, enabled);
+                    expectEquals (pan.getLatencySamples(), 0);
+                }
+        }
+
+        beginTest ("Width mapping at 0/25/50/75/100% matches the product brief's target curve (high band)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float freqHz = 1000.0f; // well above the 180Hz crossover - reads the high-band ceiling
+            const int settle = (int) (0.1 * sr);
+            const int measure = (int) (0.5 * sr);
+
+            std::cout << "\n=== PAN width mapping (1kHz, high band) ===" << std::endl;
+
+            struct Case { float widthPct; float expectedGain; };
+            const Case cases[] {
+                { 0.0f, 0.0f }, { 0.25f, 0.5f }, { 0.5f, 1.0f }, { 0.75f, 1.4f }, { 1.0f, 1.8f },
+            };
+
+            for (const auto& c : cases)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                const auto measuredGain = measurePanSideGain (pan, blockSize, sr, freqHz, c.widthPct, settle, measure);
+
+                std::cout << "  " << (c.widthPct * 100.0f) << "%: expected~" << c.expectedGain << " measured=" << measuredGain << std::endl;
+                expect (std::abs (measuredGain - c.expectedGain) < 0.1, "width mapping deviates from the target curve at "
+                        + juce::String (c.widthPct * 100.0f) + "%");
+            }
+            std::cout << "=== end width mapping ===" << std::endl << std::endl;
+        }
+
+        beginTest ("NATURAL (50%) is a near-identity transform (numerical null test)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) sr;
+            auto input = generateCorrelatedChord (totalSamples, sr);
+            auto output = runPanoramaProcessor (pan, input, blockSize, 0.5f, true);
+
+            const auto settle = (int) (0.1 * sr);
+            double sumSq = 0.0, maxAbs = 0.0;
+            int count = 0;
+            for (int i = settle; i < totalSamples; ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const auto diff = (double) output.getSample (ch, i) - (double) input.getSample (ch, i);
+                    sumSq += diff * diff;
+                    maxAbs = juce::jmax (maxAbs, std::abs (diff));
+                    ++count;
+                }
+            const auto rmsDiff = std::sqrt (sumSq / (double) count);
+
+            std::cout << "\n=== PAN NATURAL null test === RMS diff=" << rmsDiff << " max diff=" << maxAbs << std::endl << std::endl;
+            expect (rmsDiff < 1.0e-4, "NATURAL should be a near-identity transform, RMS diff=" + juce::String (rmsDiff));
+            expect (maxAbs < 1.0e-3, "NATURAL should be a near-identity transform, max diff=" + juce::String (maxAbs));
+        }
+
+        beginTest ("MONO (0%) produces a correct mono sum (L == R == (Lin+Rin)/2)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) sr;
+            auto input = generateDecorrelatedStereo (totalSamples, sr);
+            auto output = runPanoramaProcessor (pan, input, blockSize, 0.0f, true);
+
+            const auto settle = (int) (0.1 * sr);
+            double maxLRDiff = 0.0, maxMonoDiff = 0.0;
+            for (int i = settle; i < totalSamples; ++i)
+            {
+                const auto l = output.getSample (0, i), r = output.getSample (1, i);
+                maxLRDiff = juce::jmax (maxLRDiff, (double) std::abs (l - r));
+
+                const auto expectedMono = 0.5f * (input.getSample (0, i) + input.getSample (1, i));
+                maxMonoDiff = juce::jmax (maxMonoDiff, (double) std::abs (l - expectedMono));
+            }
+
+            expect (maxLRDiff < 1.0e-4, "MONO should give L == R, maxDiff=" + juce::String (maxLRDiff));
+            expect (maxMonoDiff < 1.0e-4, "MONO should equal (Lin+Rin)/2, maxDiff=" + juce::String (maxMonoDiff));
+        }
+
+        beginTest ("WIDE (100%) is measurably wider than NATURAL (50%) - Side/Mid ratio grows");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PanoramaProcessor pan50, pan100;
+            pan50.prepare (sr, blockSize, 2);
+            pan100.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) sr;
+            auto input = generateDecorrelatedStereo (totalSamples, sr);
+            auto out50 = runPanoramaProcessor (pan50, input, blockSize, 0.5f, true);
+            auto out100 = runPanoramaProcessor (pan100, input, blockSize, 1.0f, true);
+
+            const auto settle = (int) (0.1 * sr);
+            const auto stats50 = measureStereo (out50, settle, totalSamples - settle);
+            const auto stats100 = measureStereo (out100, settle, totalSamples - settle);
+
+            std::cout << "\n=== PAN 50 vs 100 === Side/Mid: 50%=" << stats50.sideMidRatio << " 100%=" << stats100.sideMidRatio << std::endl << std::endl;
+            expect (stats100.sideMidRatio > stats50.sideMidRatio, "100% should have a higher Side/Mid ratio than 50%");
+        }
+
+        beginTest ("Side/Mid ratio falls monotonically from 50% down to 0%");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const float widths[] { 0.5f, 0.375f, 0.25f, 0.125f, 0.0f };
+
+            double previousRatio = std::numeric_limits<double>::infinity();
+            for (auto width : widths)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = (int) sr;
+                auto input = generateDecorrelatedStereo (totalSamples, sr);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+
+                const auto settle = (int) (0.1 * sr);
+                const auto stats = measureStereo (output, settle, totalSamples - settle);
+
+                expect (stats.sideMidRatio <= previousRatio + 1.0e-6, "Side/Mid ratio should not increase as width decreases toward 0%");
+                previousRatio = stats.sideMidRatio;
+            }
+            expect (previousRatio < 1.0e-4, "Side/Mid ratio should reach ~0 at 0% width");
+        }
+
+        beginTest ("Frequency-dependent width: low frequencies widen far less than mid/high at WIDE");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const float freqs[] { 60.0f, 100.0f, 200.0f, 500.0f, 1000.0f, 5000.0f, 10000.0f };
+            const int settle = (int) (0.1 * sr);
+            const int measure = (int) (0.5 * sr);
+
+            std::cout << "\n=== PAN frequency-dependent Side gain (WIDE=100%) ===" << std::endl;
+
+            double gain60Hz = 0.0, gain5kHz = 0.0;
+            for (auto freqHz : freqs)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                const auto gain = measurePanSideGain (pan, blockSize, sr, freqHz, 1.0f, settle, measure);
+                std::cout << "  " << freqHz << "Hz: Side gain = " << gain << std::endl;
+
+                if (freqHz == 60.0f) gain60Hz = gain;
+                if (freqHz == 5000.0f) gain5kHz = gain;
+
+                // Every frequency should still be a *widening* (>= 1.0,
+                // roughly - allow a hair under for filter transition
+                // ripple), never a narrowing, at 100% width.
+                expect (gain > 0.9, "unexpected narrowing at " + juce::String (freqHz) + "Hz at WIDE");
+            }
+            std::cout << "=== end frequency-dependent Side gain ===" << std::endl << std::endl;
+
+            expect (gain60Hz < gain5kHz, "60Hz should widen noticeably less than 5kHz at WIDE");
+            expect (gain60Hz < 1.3, "60Hz should stay close to its low-band ceiling (~1.15) at WIDE, not the high-band one");
+            expect (gain5kHz > 1.6, "5kHz should reach close to the high-band ceiling (~1.8) at WIDE");
+        }
+
+        beginTest ("Low-end safety: 40/60/80/100/120Hz identical L/R stays centred and stable at WIDE");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const float bassFreqs[] { 40.0f, 60.0f, 80.0f, 100.0f, 120.0f };
+
+            for (auto freqHz : bassFreqs)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = (int) sr;
+                auto input = generateIdenticalStereo (totalSamples, sr, freqHz, 0.35f);
+                auto output = runPanoramaProcessor (pan, input, blockSize, 1.0f, true);
+
+                const auto settle = (int) (0.1 * sr);
+                double maxLRDiff = 0.0;
+                bool finite = true;
+                for (int i = settle; i < totalSamples; ++i)
+                {
+                    maxLRDiff = juce::jmax (maxLRDiff, (double) std::abs (output.getSample (0, i) - output.getSample (1, i)));
+                    if (! std::isfinite (output.getSample (0, i)) || ! std::isfinite (output.getSample (1, i))) finite = false;
+                }
+
+                expect (finite, juce::String (freqHz) + "Hz: non-finite output at WIDE");
+                // Identical-L/R input has zero Side to begin with - MONO
+                // INPUT / no-fabrication principle: WIDE must not invent
+                // Side content out of nothing, at any frequency.
+                expect (maxLRDiff < 1.0e-4, juce::String (freqHz) + "Hz: a centred bass tone must stay centred at WIDE (no fabricated Side), maxLRDiff=" + juce::String (maxLRDiff));
+            }
+        }
+
+        beginTest ("Centred bass under stereo highs stays centred at WIDE (100%)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) sr;
+            auto input = generateCenterBassStereoHighs (totalSamples, sr);
+            auto output = runPanoramaProcessor (pan, input, blockSize, 1.0f, true);
+
+            const auto settle = (int) (0.1 * sr);
+            const auto win = juce::jmin (totalSamples - settle, periodicAnalysisLength (sr, 80.0f, 20));
+            const auto bassL = goertzelMagnitude (output, 0, totalSamples - win, win, sr, 80.0f);
+            const auto bassR = goertzelMagnitude (output, 1, totalSamples - win, win, sr, 80.0f);
+
+            expect (bufferIsFinite (output), "centre-bass+stereo-highs source produced non-finite output");
+            const auto bassLRDb = 20.0f * std::log10 (juce::jmax (bassL, 1.0e-9f) / juce::jmax (bassR, 1.0e-9f));
+            expect (std::abs (bassLRDb) < 0.5f, "centred 80Hz bass should stay centred (L~=R) even with WIDE stereo highs present, L/R=" + juce::String (bassLRDb) + "dB");
+        }
+
+        beginTest ("Hard-left and hard-right tones stay finite and bounded at every width");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            for (auto hardLeft : { true, false })
+            {
+                for (auto width : { 0.0f, 0.5f, 1.0f })
+                {
+                    uni76::dsp::PanoramaProcessor pan;
+                    pan.prepare (sr, blockSize, 2);
+
+                    const auto totalSamples = (int) sr;
+                    auto input = generateHardPanned (totalSamples, sr, 500.0f, 0.4f, hardLeft);
+                    auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+
+                    expect (bufferIsFinite (output), "hard-panned source produced non-finite output");
+                    float peak = 0.0f;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < totalSamples; ++i)
+                            peak = juce::jmax (peak, std::abs (output.getSample (ch, i)));
+                    expect (peak < 2.0f, "hard-panned source should not blow up");
+                }
+            }
+        }
+
+        beginTest ("Correlated and decorrelated stereo material stay finite across all widths");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor panA, panB;
+                panA.prepare (sr, blockSize, 2);
+                panB.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = (int) sr;
+                auto correlated = generateCorrelatedChord (totalSamples, sr);
+                auto decorrelated = generateDecorrelatedStereo (totalSamples, sr);
+
+                auto outA = runPanoramaProcessor (panA, correlated, blockSize, width, true);
+                auto outB = runPanoramaProcessor (panB, decorrelated, blockSize, width, true);
+
+                expect (bufferIsFinite (outA), "correlated chord produced non-finite output at " + juce::String (width));
+                expect (bufferIsFinite (outB), "decorrelated stereo produced non-finite output at " + juce::String (width));
+            }
+        }
+
+        beginTest ("Anti-phase safety: L=sine/R=-sine stays finite at every width; MONO cancels as expected");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = (int) sr;
+                auto input = generateAntiPhase (totalSamples, sr, 300.0f, 0.4f);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+
+                expect (bufferIsFinite (output), "anti-phase source produced non-finite output at width " + juce::String (width));
+                float peak = 0.0f;
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < totalSamples; ++i)
+                        peak = juce::jmax (peak, std::abs (output.getSample (ch, i)));
+                expect (peak < 3.0f, "anti-phase source should not explode, width=" + juce::String (width));
+
+                if (width == 0.0f)
+                {
+                    // MONO of a pure anti-phase signal is correctly total
+                    // cancellation - not "fixed" by generating fake content.
+                    const auto settle = (int) (0.1 * sr);
+                    float maxAbs = 0.0f;
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = settle; i < totalSamples; ++i)
+                            maxAbs = juce::jmax (maxAbs, std::abs (output.getSample (ch, i)));
+                    expect (maxAbs < 1.0e-4f, "MONO of a pure anti-phase signal should cancel to (near) silence, as expected physically");
+                }
+            }
+        }
+
+        beginTest ("Mono fold-down ((L+R)/2) is unchanged by width, at 0/25/50/75/100%");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            const auto totalSamples = (int) sr;
+            auto input = generateDecorrelatedStereo (totalSamples, sr);
+
+            double inSumSq = 0.0;
+            const auto settle = (int) (0.1 * sr);
+            for (int i = settle; i < totalSamples; ++i)
+            {
+                const auto m = 0.5 * ((double) input.getSample (0, i) + (double) input.getSample (1, i));
+                inSumSq += m * m;
+            }
+            const auto inputMonoRms = std::sqrt (inSumSq / (double) (totalSamples - settle));
+
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+
+                double maxFoldDiff = 0.0, outSumSq = 0.0;
+                for (int i = settle; i < totalSamples; ++i)
+                {
+                    const auto inMono = 0.5 * ((double) input.getSample (0, i) + (double) input.getSample (1, i));
+                    const auto outMono = 0.5 * ((double) output.getSample (0, i) + (double) output.getSample (1, i));
+                    maxFoldDiff = juce::jmax (maxFoldDiff, std::abs (outMono - inMono));
+                    outSumSq += outMono * outMono;
+                }
+                const auto outputMonoRms = std::sqrt (outSumSq / (double) (totalSamples - settle));
+
+                expect (maxFoldDiff < 1.0e-4, "mono fold-down changed at width " + juce::String (width) + ", maxDiff=" + juce::String (maxFoldDiff));
+                expect (std::abs (outputMonoRms - inputMonoRms) < 1.0e-4, "mono fold-down RMS changed at width " + juce::String (width));
+            }
+        }
+
+        beginTest ("Correlation behaviour: 50% matches input, 75/100% may drop but not aggressively negative on normal material");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            const auto totalSamples = (int) sr;
+            auto input = generateCorrelatedChord (totalSamples, sr);
+            const auto settle = (int) (0.1 * sr);
+            const auto inputStats = measureStereo (input, settle, totalSamples - settle);
+
+            std::cout << "\n=== PAN correlation ===" << std::endl;
+            std::cout << "  input correlation = " << inputStats.correlation << std::endl;
+
+            for (auto width : { 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+                const auto stats = measureStereo (output, settle, totalSamples - settle);
+
+                std::cout << "  width=" << (width * 100.0f) << "%: correlation=" << stats.correlation << std::endl;
+
+                if (width == 0.5f)
+                    expect (std::abs (stats.correlation - inputStats.correlation) < 0.02, "50% correlation should match the input's own correlation");
+                else
+                    expect (stats.correlation > -0.3, "correlation should not go aggressively negative on normal correlated material at " + juce::String (width * 100.0f) + "%");
+            }
+            std::cout << "=== end correlation ===" << std::endl << std::endl;
+        }
+
+        beginTest ("No runaway gain: peak/RMS stay moderate across 0/25/50/75/100% on a broadband stereo source");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            const auto totalSamples = (int) sr;
+            auto input = generateSideHeavy (totalSamples, sr);
+            const auto settle = (int) (0.1 * sr);
+
+            std::cout << "\n=== PAN gain/headroom (Side-heavy source) ===" << std::endl;
+
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+                const auto stats = measureStereo (output, settle, totalSamples - settle);
+
+                std::cout << "  width=" << (width * 100.0f) << "%: peak=" << stats.peak
+                           << " rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl;
+
+                expect (stats.peak < 1.5, "PAN should not create a large peak/gain boost at " + juce::String (width * 100.0f) + "%");
+            }
+            std::cout << "=== end gain/headroom ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Automation is click-free across 0->100, 100->0, 0->50, 50->100");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            struct Transition { float from, to; };
+            const Transition transitions[] { { 0.0f, 1.0f }, { 1.0f, 0.0f }, { 0.0f, 0.5f }, { 0.5f, 1.0f } };
+
+            for (const auto& t : transitions)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+
+                const auto preSwitch = (int) (0.2 * sr);
+                const auto postSwitch = (int) (0.3 * sr);
+                const auto totalSamples = preSwitch + postSwitch;
+
+                auto input = generateDecorrelatedStereo (totalSamples, sr);
+                juce::AudioBuffer<float> output (2, totalSamples);
+
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    block.copyFrom (0, 0, input, 0, done, thisBlock);
+                    block.copyFrom (1, 0, input, 1, done, thisBlock);
+
+                    const auto width = done < preSwitch ? t.from : t.to;
+                    pan.process (block, width, true);
+
+                    output.copyFrom (0, done, block, 0, 0, thisBlock);
+                    output.copyFrom (1, done, block, 1, 0, thisBlock);
+                    done += thisBlock;
+                }
+
+                expect (bufferIsFinite (output), "automation transition produced non-finite output");
+
+                float maxJump = 0.0f;
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 1; i < totalSamples; ++i)
+                        maxJump = juce::jmax (maxJump, std::abs (output.getSample (ch, i) - output.getSample (ch, i - 1)));
+
+                expect (maxJump < 0.3f, juce::String (t.from) + "->" + juce::String (t.to) + ": transition produced a click (maxJump=" + juce::String (maxJump) + ")");
+            }
+        }
+
+        beginTest ("Bypass (enabled=false) crossfades to an exact dry passthrough, click-free");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) sr;
+            auto input = generateDecorrelatedStereo (totalSamples, sr);
+            auto output = runPanoramaProcessor (pan, input, blockSize, 1.0f, false);
+
+            const auto settle = (int) (0.1 * sr);
+            double maxDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = settle; i < totalSamples; ++i)
+                    maxDiff = juce::jmax (maxDiff, (double) std::abs (output.getSample (ch, i) - input.getSample (ch, i)));
+
+            expect (maxDiff < 1.0e-4, "disabled PAN should be an exact (undelayed) passthrough, maxDiff=" + juce::String (maxDiff));
+        }
+
+        beginTest ("All 6 supported sample rates and required block sizes process finite audio");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+            const int blockSizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+
+            for (auto sr : rates)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, 2048, 2);
+
+                for (auto blockSize : blockSizes)
+                {
+                    auto input = generateDecorrelatedStereo ((int) (0.2 * sr), sr);
+                    auto output = runPanoramaProcessor (pan, input, blockSize, 1.0f, true);
+                    expect (bufferIsFinite (output), juce::String ("non-finite output at ") + juce::String (sr) + "Hz, block " + juce::String (blockSize));
+                }
+            }
+        }
+
+        beginTest ("Mono input (numChannels=1) stays mono (untouched) at every width setting");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            for (auto width : { 0.0f, 0.5f, 1.0f })
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 1);
+
+                auto mono = generateSine (1, (int) sr, sr, 300.0f, 0.3f);
+                auto original = mono;
+                auto output = runPanoramaProcessor (pan, mono, blockSize, width, true);
+
+                double maxDiff = 0.0;
+                for (int i = 0; i < output.getNumSamples(); ++i)
+                    maxDiff = juce::jmax (maxDiff, (double) std::abs (output.getSample (0, i) - original.getSample (0, i)));
+
+                expect (maxDiff < 1.0e-6, "mono bus must be left completely untouched at width " + juce::String (width));
+            }
+        }
+
+        beginTest ("Silence produces silence; NaN/Inf input is sanitized and doesn't poison state");
+        {
+            uni76::dsp::PanoramaProcessor pan;
+            pan.prepare (44100.0, 512, 2);
+
+            juce::AudioBuffer<float> silence (2, 44100);
+            silence.clear();
+            auto output = runPanoramaProcessor (pan, silence, 512, 1.0f, true);
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < output.getNumSamples(); ++i)
+                    peak = juce::jmax (peak, std::abs (output.getSample (ch, i)));
+            expect (peak < 1.0e-6f, "silent input should produce silent output");
+
+            juce::AudioBuffer<float> poisoned (2, 256);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 256; ++i)
+                    poisoned.setSample (ch, i, (i % 2 == 0) ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN());
+            pan.process (poisoned, 1.0f, true);
+            expect (bufferIsFinite (poisoned), "NaN/Inf input leaked through to the output");
+
+            auto clean = generateDecorrelatedStereo (44100, 44100.0);
+            auto cleanOutput = runPanoramaProcessor (pan, clean, 512, 1.0f, true);
+            expect (bufferIsFinite (cleanOutput), "state remained poisoned after a NaN/Inf block");
+        }
+    }
+};
+
+static UNI76PanoramaProcessorTests uni76PanoramaProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Full-chain / APVTS-level PAN coverage: default/migration, PITCH+PAN
+// interaction (PITCH's stereo-coherence guarantees must survive PAN
+// running after it), and full-chain integration.
+class UNI76PanoramaIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76PanoramaIntegrationTests() : juce::UnitTest ("UNI76AudioProcessor + PAN", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Fresh instance: panorama defaults to 50% (NATURAL)");
+        {
+            UNI76AudioProcessor processor;
+            auto* param = processor.getValueTreeState().getParameter (uni76::ParamID::panorama);
+            expect (param != nullptr);
+            if (param != nullptr)
+                expectWithinAbsoluteError (param->getValue(), 0.5f, 0.001f);
+        }
+
+        beginTest ("Legacy (pre-v4) saved state migrates panorama to 50% regardless of its old raw value");
+        {
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+
+            auto legacyState = apvts.copyState();
+            legacyState.setProperty (uni76::stateSchemaVersionProperty, 3, nullptr); // pre-v4
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                legacyState.setProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true, nullptr);
+
+            auto legacyPanoramaParam = legacyState.getChildWithProperty ("id", juce::var (uni76::ParamID::panorama));
+            expect (legacyPanoramaParam.isValid());
+            legacyPanoramaParam.setProperty ("value", 0.0, nullptr); // old meaningless pre-DSP default
+
+            if (auto xml = legacyState.createXml())
+            {
+                juce::MemoryBlock data;
+                juce::AudioProcessor::copyXmlToBinary (*xml, data);
+                processor.setStateInformation (data.getData(), (int) data.getSize());
+            }
+
+            auto* param = apvts.getParameter (uni76::ParamID::panorama);
+            expect (param != nullptr);
+            if (param != nullptr)
+                expectWithinAbsoluteError (param->getValue(), 0.5f, 0.001f);
+        }
+
+        beginTest ("New-schema state round-trips panorama exactly at 0/50/100%");
+        {
+            for (float pct : { 0.0f, 50.0f, 100.0f })
+            {
+                UNI76AudioProcessor processor;
+                auto& apvts = processor.getValueTreeState();
+                auto* param = apvts.getParameter (uni76::ParamID::panorama);
+                expect (param != nullptr);
+                if (param == nullptr) continue;
+
+                param->setValueNotifyingHost (pct / 100.0f);
+
+                juce::MemoryBlock saved;
+                processor.getStateInformation (saved);
+
+                UNI76AudioProcessor reloaded;
+                reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+                auto* reloadedParam = reloaded.getValueTreeState().getParameter (uni76::ParamID::panorama);
+                expect (reloadedParam != nullptr);
+                if (reloadedParam != nullptr)
+                    expectWithinAbsoluteError (reloadedParam->getValue(), pct / 100.0f, 0.001f);
+            }
+        }
+
+        beginTest ("panoramaEnabled=false gives a real bypass through the full processor, and persists across save/restore");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 512);
+            processor.getModuleEnableState().setEnabled (4, false);
+            processor.getValueTreeState().getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (1.0f); // WIDE
+
+            juce::MidiBuffer midi;
+            juce::AudioBuffer<float> buffer (2, 512);
+            for (int i = 0; i < 512; ++i)
+            {
+                buffer.setSample (0, i, 0.3f * std::sin (juce::MathConstants<float>::twoPi * 300.0f * (float) i / 44100.0f));
+                buffer.setSample (1, i, 0.3f * std::sin (juce::MathConstants<float>::twoPi * 450.0f * (float) i / 44100.0f));
+            }
+            for (int b = 0; b < 20; ++b) processor.processBlock (buffer, midi);
+            expect (bufferIsFinite (buffer), "bypassed PAN should still produce finite output");
+
+            juce::MemoryBlock saved;
+            processor.getStateInformation (saved);
+            UNI76AudioProcessor reloaded;
+            reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+            expect (! reloaded.getModuleEnableState().isEnabled (4), "panoramaEnabled=false should survive save/restore");
+        }
+
+        beginTest ("PITCH+PAN integration: PITCH's stereo coherence survives PAN running after it");
+        {
+            struct Case { int pitchSt; float panWidth; };
+            const Case cases[] { { 0, 0.5f }, { 0, 1.0f }, { -12, 1.0f }, { 7, 1.0f }, { 12, 1.0f } };
+
+            for (const auto& c : cases)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (44100.0, 512);
+
+                auto* pitchParam = dynamic_cast<juce::AudioParameterInt*> (processor.getValueTreeState().getParameter (uni76::ParamID::pitch));
+                expect (pitchParam != nullptr);
+                if (pitchParam != nullptr)
+                    pitchParam->setValueNotifyingHost (pitchParam->convertTo0to1 ((float) c.pitchSt));
+                processor.getValueTreeState().getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (c.panWidth);
+
+                juce::MidiBuffer midi;
+                juce::AudioBuffer<float> buffer (2, 512);
+                bool finite = true;
+
+                // Identical L/R input into PITCH (two independent mono
+                // engines, guaranteed bit-identical output per
+                // docs/DSP_PITCH.md) then into PAN - the combination must
+                // not introduce wandering/mismatch beyond what PAN's own
+                // width setting deliberately adds.
+                for (int b = 0; b < 60; ++b)
+                {
+                    for (int i = 0; i < 512; ++i)
+                    {
+                        const auto s = 0.3f * std::sin (juce::MathConstants<float>::twoPi * 220.0f * (float) (b * 512 + i) / 44100.0f);
+                        buffer.setSample (0, i, s);
+                        buffer.setSample (1, i, s);
+                    }
+                    processor.processBlock (buffer, midi);
+                    if (! bufferIsFinite (buffer)) finite = false;
+                }
+
+                const juce::String label = "PITCH=" + juce::String (c.pitchSt) + "ST PAN=" + juce::String (c.panWidth * 100.0f) + "%";
+                expect (finite, "non-finite output for " + label);
+
+                if (c.panWidth == 0.5f)
+                {
+                    // Identical-L/R through PITCH (bit-identical by its own
+                    // guarantee) then PAN at NATURAL (near-identity) should
+                    // still be very close to L==R - no wandering centre.
+                    double maxLRDiff = 0.0;
+                    for (int i = 0; i < 512; ++i)
+                        maxLRDiff = juce::jmax (maxLRDiff, (double) std::abs (buffer.getSample (0, i) - buffer.getSample (1, i)));
+                    expect (maxLRDiff < 0.01, "PITCH+PAN(NATURAL) should keep identical-L/R content nearly identical, for " + label);
+                }
+            }
+        }
+
+        beginTest ("Full chain PREAMP+EQ+SAT+PITCH+PAN stays finite/stable for representative combinations");
+        {
+            struct Combo { float preamp, eq, sat; int pitchSt; float pan; };
+            const Combo combos[] {
+                { 0.5f, 0.5f, 0.5f, 7, 1.0f },
+                { 0.75f, 1.0f, 1.0f, -12, 1.0f },
+            };
+
+            for (const auto& combo : combos)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (44100.0, 512);
+
+                processor.getValueTreeState().getParameter (uni76::ParamID::preamp)->setValueNotifyingHost (combo.preamp);
+                processor.getValueTreeState().getParameter (uni76::ParamID::eq)->setValueNotifyingHost (combo.eq);
+                processor.getValueTreeState().getParameter (uni76::ParamID::saturation)->setValueNotifyingHost (combo.sat);
+                processor.getValueTreeState().getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (combo.pan);
+
+                auto* pitchParam = dynamic_cast<juce::AudioParameterInt*> (processor.getValueTreeState().getParameter (uni76::ParamID::pitch));
+                expect (pitchParam != nullptr);
+                if (pitchParam != nullptr)
+                    pitchParam->setValueNotifyingHost (pitchParam->convertTo0to1 ((float) combo.pitchSt));
+
+                juce::MidiBuffer midi;
+                juce::AudioBuffer<float> buffer (2, 512);
+                bool finite = true;
+                float peak = 0.0f;
+
+                for (int b = 0; b < 25; ++b)
+                {
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int s = 0; s < 512; ++s)
+                            buffer.setSample (ch, s, 0.35f * std::sin (juce::MathConstants<float>::twoPi * (500.0f + (float) ch * 150.0f)
+                                                                        * (float) (b * 512 + s) / 44100.0f));
+                    processor.processBlock (buffer, midi);
+                    if (! bufferIsFinite (buffer)) finite = false;
+                }
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+                const juce::String label = "PREAMP=" + juce::String (combo.preamp) + " EQ=" + juce::String (combo.eq)
+                                          + " SAT=" + juce::String (combo.sat) + " PITCH=" + juce::String (combo.pitchSt)
+                                          + "ST PAN=" + juce::String (combo.pan * 100.0f) + "%";
+                expect (finite, "non-finite output for " + label);
+                expect (peak < 4.0f, "unexpected gain explosion for " + label);
+            }
+        }
+
+        beginTest ("Total plugin latency is unchanged by PAN (still PREAMP+EQ+SAT+PITCH, PAN adds 0)");
+        {
+            const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+
+            for (auto sr : rates)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 512);
+
+                uni76::dsp::PreampProcessor preamp;
+                preamp.prepare (sr, 512, 2);
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (sr, 512, 2);
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, 512, 2);
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, 512, 2);
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, 512, 2);
+
+                expectEquals (pan.getLatencySamples(), 0);
+                expectEquals (processor.getLatencySamples(),
+                               preamp.getLatencySamples() + eq.getLatencySamples() + sat.getLatencySamples()
+                               + pitch.getLatencySamples() + pan.getLatencySamples());
+            }
+        }
+    }
+};
+
+static UNI76PanoramaIntegrationTests uni76PanoramaIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

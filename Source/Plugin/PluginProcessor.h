@@ -7,6 +7,7 @@
 #include "DSP/EqProcessor.h"
 #include "DSP/SatProcessor.h"
 #include "DSP/PitchProcessor.h"
+#include "DSP/PanoramaProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -20,12 +21,13 @@
         timer, running on the message thread, is what actually reads those
         meters and talks to the WebView - the audio thread itself never
         touches the UI.
-      - PREAMP, EQ, SAT and PITCH are the only modules with real DSP so far
-        (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
+      - PREAMP, EQ, SAT, PITCH and PAN are the only modules with real DSP
+        so far (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
         Source/DSP/EqProcessor.h + docs/DSP_EQ.md,
-        Source/DSP/SatProcessor.h + docs/DSP_SAT.md, and
-        Source/DSP/PitchProcessor.h + docs/DSP_PITCH.md). Panorama, Reverb
-        and Imager remain a strict passthrough - their parameters exist and
+        Source/DSP/SatProcessor.h + docs/DSP_SAT.md,
+        Source/DSP/PitchProcessor.h + docs/DSP_PITCH.md, and
+        Source/DSP/PanoramaProcessor.h + docs/DSP_PAN.md). Reverb and
+        Imager remain a strict passthrough - their parameters exist and
         are DAW-automation compatible via APVTS, but do not yet influence
         the audio signal.
 */
@@ -96,6 +98,7 @@ private:
     uni76::dsp::EqProcessor eqProcessor;
     uni76::dsp::SatProcessor satProcessor;
     uni76::dsp::PitchProcessor pitchProcessor;
+    uni76::dsp::PanoramaProcessor panoramaProcessor;
 
     // Cached raw parameter pointers (juce::AudioProcessorValueTreeState's
     // documented realtime-safe way to read a parameter's current value
@@ -104,6 +107,7 @@ private:
     std::atomic<float>* eqParameter = nullptr;
     std::atomic<float>* saturationParameter = nullptr;
     std::atomic<float>* pitchParameter = nullptr;
+    std::atomic<float>* panoramaParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

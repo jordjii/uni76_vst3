@@ -49,7 +49,9 @@ target_sources(UNI76
         ../DSP/PitchCurves.h
         ../DSP/PitchProcessor.h
         ../DSP/PitchProcessor.cpp
-        ../DSP/Panorama.h
+        ../DSP/PanoramaCurves.h
+        ../DSP/PanoramaProcessor.h
+        ../DSP/PanoramaProcessor.cpp
         ../DSP/Reverb.h
         ../DSP/Imager.h
 
