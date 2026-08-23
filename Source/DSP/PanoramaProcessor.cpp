@@ -12,7 +12,9 @@ namespace uni76::dsp
         numChannels = juce::jlimit (1, 2, numChannelsToUse);
 
         makeAllpass (midAllpass, sampleRate, panAllpassHz, panAllpassQ);
-        inducedLowpass.setCutoffHz (sampleRate, panCrossoverHz);
+        makeHighPassButterworth (inducedHighpass, sampleRate, panInducedHighpassHz);
+        makeHighPassButterworth (inducedHighpass2, sampleRate, panInducedHighpassHz);
+        makeHighPassButterworth (inducedHighpass3, sampleRate, panInducedHighpassHz);
 
         dryScratch.setSize (2, maximumBlockSize, false, false, true);
 
@@ -31,7 +33,9 @@ namespace uni76::dsp
     void PanoramaProcessor::reset() noexcept
     {
         midAllpass.reset();
-        inducedLowpass.reset();
+        inducedHighpass.reset();
+        inducedHighpass2.reset();
+        inducedHighpass3.reset();
         shelfL.reset();
         shelfR.reset();
         lfoPhase = 0.0;
@@ -110,10 +114,16 @@ namespace uni76::dsp
             // energy would leak into the low band and get width/motion-
             // processed there too (even though the low-band ceilings are
             // small), moving bass that was never really stereo to begin
-            // with. `inducedHigh` is what's left after subtracting the
-            // induced signal's own low band.
-            const auto inducedLow  = inducedLowpass.processSample (induced);
-            const auto inducedHigh = induced - inducedLow;
+            // with. A *proper* 2nd-order Butterworth highpass, not a
+            // complementary subtraction (`induced - LP(induced)`, which
+            // an earlier round used and found had its own vector-sum-
+            // style hump right at the corner - see docs/DSP_PAN.md's
+            // "Centre-bass isolation" section) - `inducedHigh` never
+            // needs to sum with anything to reconstruct `induced`, so
+            // there is no complementary-pair identity to preserve here,
+            // and a real, independently-designed highpass suppresses
+            // bass properly instead of merely attenuating it.
+            const auto inducedHigh = inducedHighpass3.processSample (inducedHighpass2.processSample (inducedHighpass.processSample (induced)));
 
             // t=0 (ORIGINAL) forces panInducedBlend(0)==0.0 exactly, so
             // spatialRaw == side exactly here regardless of `induced`'s

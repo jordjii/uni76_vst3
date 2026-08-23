@@ -5165,20 +5165,87 @@ public:
             }
 
             // High-frequency content should move noticeably more than the
-            // lowest bass frequency tested.
+            // lowest bass frequency tested. Also sweeps the rest of the
+            // frequency-dependent-motion table (200/500/1000/3000/10000Hz)
+            // for docs/DSP_PAN.md - a smooth progression from "almost
+            // nothing" at bass through "clearly obvious" at mid/high is
+            // the expected shape, not a hard per-frequency assertion here
+            // (that belongs to the bass frequencies above and the
+            // dedicated CenteredBassMotionIsolation test below).
             {
-                uni76::dsp::PanoramaProcessor panHigh;
-                panHigh.prepare (sr, blockSize, 2);
-                const auto totalSamples = (int) (4.0 * sr);
-                auto monoInStereo = generateIdenticalStereo (totalSamples, sr, 3000.0f, 0.3f);
-                auto output = runPanoramaProcessor (panHigh, monoInStereo, blockSize, 1.0f, true);
-                const auto settle = (int) (0.3 * sr);
-                const auto series = centroidSeries (output, settle, totalSamples - settle, windowLen);
-                const auto stats = analyzeSeries (series);
-                std::cout << "  3000Hz: centroid rmsExcursion=" << stats.rmsExcursion << std::endl;
-                expect (stats.rmsExcursion > excursion40 * 2.0, "high-frequency content should move noticeably more than 40Hz bass at MOTION");
+                const float highFreqs[] { 200.0f, 500.0f, 1000.0f, 3000.0f, 10000.0f };
+                double excursion3000 = 0.0;
+                for (auto freqHz : highFreqs)
+                {
+                    uni76::dsp::PanoramaProcessor panHigh;
+                    panHigh.prepare (sr, blockSize, 2);
+                    const auto totalSamples = (int) (4.0 * sr);
+                    auto monoInStereo = generateIdenticalStereo (totalSamples, sr, freqHz, 0.3f);
+                    auto output = runPanoramaProcessor (panHigh, monoInStereo, blockSize, 1.0f, true);
+                    const auto settle = (int) (0.3 * sr);
+                    const auto series = centroidSeries (output, settle, totalSamples - settle, windowLen);
+                    const auto stats = analyzeSeries (series);
+                    std::cout << "  " << freqHz << "Hz: centroid rmsExcursion=" << stats.rmsExcursion << std::endl;
+                    if (freqHz == 3000.0f) excursion3000 = stats.rmsExcursion;
+                }
+                expect (excursion3000 > excursion40 * 2.0, "high-frequency content should move noticeably more than 40Hz bass at MOTION");
             }
             std::cout << "=== end low-end motion/stability ===" << std::endl << std::endl;
+        }
+
+        beginTest ("40-120Hz magnitude/centroid table across width 0/25/50/75/100% (docs/DSP_PAN.md source data)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float windowSeconds = 0.05f;
+            const auto windowLen = (int) (windowSeconds * sr);
+            const float bassFreqs[] { 40.0f, 60.0f, 80.0f, 100.0f, 120.0f };
+            const float widths[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+
+            std::cout << "\n=== PAN 40-120Hz magnitude delta (dB vs 0%) / centroid rmsExcursion, mono bass ===" << std::endl;
+            for (auto freqHz : bassFreqs)
+            {
+                const auto totalSamples = (int) (4.0 * sr);
+                auto monoInStereo = generateIdenticalStereo (totalSamples, sr, freqHz, 0.35f);
+                const auto settle = (int) (0.3 * sr);
+                const auto win = juce::jmin (totalSamples - settle, periodicAnalysisLength (sr, freqHz, 20));
+
+                double magAt0Percent = 0.0;
+                std::cout << "  " << freqHz << "Hz:";
+                for (auto width : widths)
+                {
+                    uni76::dsp::PanoramaProcessor pan;
+                    pan.prepare (sr, blockSize, 2);
+                    auto output = runPanoramaProcessor (pan, monoInStereo, blockSize, width, true);
+                    expect (bufferIsFinite (output), juce::String (freqHz) + "Hz at " + juce::String (width * 100.0f) + "%: non-finite");
+
+                    const auto magL = goertzelMagnitude (output, 0, totalSamples - win, win, sr, freqHz);
+                    if (width == 0.0f) magAt0Percent = magL;
+                    const auto deltaDb = 20.0 * std::log10 (juce::jmax ((double) magL, 1.0e-9) / juce::jmax (magAt0Percent, 1.0e-9));
+
+                    const auto series = centroidSeries (output, settle, totalSamples - settle, windowLen);
+                    const auto stats = analyzeSeries (series);
+
+                    std::cout << " [" << (width * 100.0f) << "%: delta=" << deltaDb << "dB centroidExc=" << stats.rmsExcursion << "]";
+
+                    // Acceptance bounds at 100% width only (the worst
+                    // case) - unintended magnitude change from just
+                    // turning PAN up, on a source with zero real Side
+                    // content so every bit of it comes from the induced-
+                    // signal path. 40-80Hz tightest, loosening slightly
+                    // by 120Hz (closest to the induced-highpass's own
+                    // corner, where attenuation is weakest) - matches
+                    // the product brief's own "80/100/120Hz gets a
+                    // little" guidance.
+                    if (width == 1.0f)
+                    {
+                        const auto bound = freqHz <= 80.0f ? 0.25 : (freqHz <= 100.0f ? 0.5 : 0.75);
+                        expect (std::abs (deltaDb) < bound, juce::String (freqHz) + "Hz: unintended magnitude change at 100% width too large: " + juce::String (deltaDb) + "dB (bound " + juce::String (bound) + "dB)");
+                    }
+                }
+                std::cout << std::endl;
+            }
+            std::cout << "=== end 40-120Hz table ===" << std::endl << std::endl;
         }
 
         beginTest ("Centre core stability: centred bass under stereo highs barely moves at MOTION even though the highs do");
@@ -5208,13 +5275,92 @@ public:
             // documented (see docs/DSP_PAN.md) - the low-band width/
             // motion ceilings are deliberately nonzero (matching the
             // product brief's "80/100Hz gets a little" guidance, not
-            // "zero"), and a first-order filter's transition band isn't a
-            // brick wall, so a little energy right around the crossover
-            // does still get a little movement. What matters is that it
-            // stays *far* smaller than a fully mid/high-band signal's
-            // movement, not that it is literally zero.
-            expect (std::abs (bassLRDb) < 3.0f, "centred 80Hz bass should stay close to centred (L~=R) even under MOTION with stereo highs present, L/R=" + juce::String (bassLRDb) + "dB");
+            // "zero"). Tightened from an earlier <3.0dB bound after this
+            // round's fix (a cascaded, purpose-built highpass isolating
+            // the *induced* signal's own bass, replacing a complementary-
+            // subtraction construction that had its own vector-sum-style
+            // hump - see docs/DSP_PAN.md's "Centre-bass isolation"
+            // section) brought the measured residual down to ~0.2dB.
+            expect (std::abs (bassLRDb) < 0.5f, "centred 80Hz bass should stay close to centred (L~=R) even under MOTION with stereo highs present, L/R=" + juce::String (bassLRDb) + "dB");
             juce::ignoreUnused (windowLen);
+        }
+
+        beginTest ("CenteredBassMotionIsolation: centred bass stays stable (level+L/R+centroid) while high-frequency spatial content clearly moves, at MOTION");
+        {
+            // Dedicated regression test for this round's fix, isolating
+            // four independent measurements on the same centre-bass +
+            // stereo-highs source (see docs/DSP_PAN.md's "Centre-bass
+            // isolation" section for the full write-up):
+            //   1. bass L/R RMS difference at MOTION (should be tiny);
+            //   2. bass magnitude change vs ORIGINAL (0%) - does the bass
+            //      level itself shift just from turning PAN up;
+            //   3. bass-only centroid trajectory (Goertzel-windowed, not
+            //      broadband - broadband centroid on this source is
+            //      dominated by the much louder highs) - should stay
+            //      close to 0 throughout, unlike the highs;
+            //   4. high-frequency (broadband) centroid excursion - should
+            //      stay clearly, obviously large, confirming the fix
+            //      didn't weaken motion generally.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float bassFreqHz = 80.0f;
+
+            const auto totalSamples = (int) (4.0 * sr);
+            auto input = generateCenterBassStereoHighs (totalSamples, sr);
+            const auto settle = (int) (0.3 * sr);
+
+            uni76::dsp::PanoramaProcessor panOriginal;
+            panOriginal.prepare (sr, blockSize, 2);
+            auto outputOriginal = runPanoramaProcessor (panOriginal, input, blockSize, 0.0f, true);
+
+            uni76::dsp::PanoramaProcessor panMotion;
+            panMotion.prepare (sr, blockSize, 2);
+            auto outputMotion = runPanoramaProcessor (panMotion, input, blockSize, 1.0f, true);
+
+            expect (bufferIsFinite (outputMotion), "non-finite output at MOTION");
+
+            // ---- 1: bass L/R RMS difference at MOTION ----
+            const auto win = juce::jmin (totalSamples - settle, periodicAnalysisLength (sr, bassFreqHz, 20));
+            const auto bassL = goertzelMagnitude (outputMotion, 0, totalSamples - win, win, sr, bassFreqHz);
+            const auto bassR = goertzelMagnitude (outputMotion, 1, totalSamples - win, win, sr, bassFreqHz);
+            const auto bassLRDb = 20.0f * std::log10 (juce::jmax (bassL, 1.0e-9f) / juce::jmax (bassR, 1.0e-9f));
+
+            // ---- 2: bass magnitude change, ORIGINAL vs MOTION ----
+            const auto bassOriginalL = goertzelMagnitude (outputOriginal, 0, totalSamples - win, win, sr, bassFreqHz);
+            const auto bassMagnitudeChangeDb = 20.0f * std::log10 (juce::jmax (bassL, 1.0e-9f) / juce::jmax (bassOriginalL, 1.0e-9f));
+
+            // ---- 3: bass-only centroid trajectory (Goertzel-windowed) ----
+            constexpr float bassWindowSeconds = 0.1f;
+            const auto bassWindowLen = (int) (bassWindowSeconds * sr);
+            std::vector<double> bassCentroid;
+            for (int pos = settle; pos + bassWindowLen <= totalSamples; pos += bassWindowLen)
+            {
+                const auto l = goertzelMagnitude (outputMotion, 0, pos, bassWindowLen, sr, bassFreqHz);
+                const auto r = goertzelMagnitude (outputMotion, 1, pos, bassWindowLen, sr, bassFreqHz);
+                const auto lE = (double) l * (double) l, rE = (double) r * (double) r;
+                bassCentroid.push_back ((lE + rE) > 1.0e-12 ? (rE - lE) / (lE + rE) : 0.0);
+            }
+            const auto bassCentroidStats = analyzeSeries (bassCentroid);
+
+            // ---- 4: high-frequency (broadband) centroid excursion ----
+            constexpr float highWindowSeconds = 0.05f;
+            const auto highWindowLen = (int) (highWindowSeconds * sr);
+            const auto highSeries = centroidSeries (outputMotion, settle, totalSamples - settle, highWindowLen);
+            const auto highStats = analyzeSeries (highSeries);
+
+            std::cout << "\n=== PAN CenteredBassMotionIsolation ===" << std::endl;
+            std::cout << "  bass L/R = " << bassLRDb << "dB" << std::endl;
+            std::cout << "  bass magnitude change (ORIGINAL->MOTION) = " << bassMagnitudeChangeDb << "dB" << std::endl;
+            std::cout << "  bass-only centroid: min=" << bassCentroidStats.minV << " max=" << bassCentroidStats.maxV
+                       << " rmsExcursion=" << bassCentroidStats.rmsExcursion << std::endl;
+            std::cout << "  high-frequency centroid rmsExcursion=" << highStats.rmsExcursion << std::endl;
+            std::cout << "=== end CenteredBassMotionIsolation ===" << std::endl << std::endl;
+
+            expect (std::abs (bassLRDb) < 0.5f, "bass L/R difference too large at MOTION: " + juce::String (bassLRDb) + "dB");
+            expect (std::abs (bassMagnitudeChangeDb) < 0.5f, "bass magnitude changed too much from ORIGINAL to MOTION: " + juce::String (bassMagnitudeChangeDb) + "dB");
+            expect (bassCentroidStats.rmsExcursion < 0.02, "bass-only centroid should stay close to centre, rmsExcursion=" + juce::String (bassCentroidStats.rmsExcursion));
+            expect (highStats.rmsExcursion > bassCentroidStats.rmsExcursion * 3.0, "high-frequency content should move far more than the bass at MOTION");
+            expect (highStats.rmsExcursion > 0.1, "high-frequency motion should stay clearly audible/obvious, not weakened by the bass-isolation fix");
         }
 
         beginTest ("Crossover-region frequency response has no unexpected bump/dip (no vector-sum overshoot beyond the shelf's own asymptotes)");

@@ -17,25 +17,37 @@
         50%  = WIDE       - moderate static width, moderate slow motion.
         100% = MOTION      - wide, with an obvious slow L<->R swing.
 
-    Architecture: Mid (0.5*(L+R)) is always the stable "core" - every
-    watt of width/motion comes from a separately-processed "spatial"
-    signal (built from the real Side content plus, for mono/near-mono
-    sources, a phase-decorrelated "induced" component derived from Mid via
-    an allpass - no delay, so no comb filtering, no wow/flutter, no pitch
-    drift), reshaped into L and R contributions by two independent
-    low-shelf filters (one per output channel) rather than a crossover
-    split - see "Crossover artifact" in docs/DSP_PAN.md for why: splitting
-    the spatial signal into low/high *bands* and then multiplying each
-    band by a *different real gain* before summing is a textbook source of
-    a frequency-response bump right at the crossover (the two bands are
-    phase-shifted relative to each other, so unequal-gain summing is a
-    vector sum, not a linear interpolation). A single monotonic shelf per
-    channel has no second, differently-gained path to sum against, so no
-    bump is possible by construction, not just by tuning. Both shelves'
-    low/high asymptote gains already encode that channel's own width AND
-    motion-rotation ceiling for that frequency region, driven by a slow
-    (~0.3Hz), free-running, deterministic LFO - a stable centre with the
-    *surrounding* space moving, not a global auto-pan of the whole signal.
+    Architecture: Mid (0.5*(L+R)) is the stable "core" - read exactly
+    once, never filtered, rotated, or otherwise touched anywhere in this
+    file. Every watt of width/motion comes from a *separate* "spatial"
+    signal built from two distinct kinds of content, kept conceptually
+    distinct throughout process():
+      - real Side content (0.5*(L-R)) - part of the actual input, so it
+        IS required for an exact reconstruction at width=0 (see below);
+      - a synthesised "induced" component (mono/near-mono sources' only
+        source of spatial content, a phase-decorrelated version of Mid
+        via an allpass - no delay, so no comb filtering/wow/flutter/pitch
+        drift) - purely ADDITIVE, never required for reconstruction at
+        any setting (its own contribution is exactly 0 at width=0 via
+        `panInducedBlend(0)==0`, regardless of how it's filtered), so its
+        own bass content can be (and is) suppressed far more aggressively
+        than real Side content ever needs to be - see "Centre-bass
+        isolation" in docs/DSP_PAN.md.
+    The combined spatial signal is reshaped into L and R contributions by
+    two independent low-shelf filters (one per output channel) rather
+    than a crossover split - see "Crossover artifact" in docs/DSP_PAN.md
+    for why: splitting the spatial signal into low/high *bands* and then
+    multiplying each band by a *different real gain* before summing is a
+    textbook source of a frequency-response bump right at the crossover
+    (the two bands are phase-shifted relative to each other, so
+    unequal-gain summing is a vector sum, not a linear interpolation). A
+    single monotonic shelf per channel has no second, differently-gained
+    path to sum against, so no bump is possible by construction, not just
+    by tuning. Both shelves' low/high asymptote gains already encode that
+    channel's own width AND motion-rotation ceiling for that frequency
+    region, driven by a slow (~0.3Hz), free-running, deterministic LFO -
+    a stable centre with the *surrounding* space moving, not a global
+    auto-pan of the whole signal.
 
     Every curve in PanoramaCurves.h evaluates to its identity value at
     t=0 (width gain 1.0, motion depth 0.0, induced blend 0.0) - which is
@@ -94,17 +106,35 @@ namespace uni76::dsp
         // are small - moving bass that was never really stereo to begin
         // with. Real Side content is not filtered this way - only ever
         // the synthesised component is excluded from the bass region.
-        // Deliberately a gentle 1-pole (not steeper): a 2nd-order
-        // Butterworth was tried here during this round's crossover
-        // rework (reasoning that a steeper cutoff should leak less of
-        // induced's own bass) and measured *worse* (centre-core L/R
-        // imbalance rose from ~2.6dB to ~3.4dB) - a 2nd-order filter's
-        // larger phase excursion (up to 180 degrees vs a 1-pole's 90)
-        // reintroduces the same complementary-subtraction phase-mismatch
-        // mechanism the width/motion shelves were rebuilt to eliminate,
-        // just applied to `induced` instead of to spatialRaw. Reverted;
-        // see docs/DSP_PAN.md's "Crossover artifact" section.
-        OnePoleLowPass inducedLowpass;
+        //
+        // A *proper, independently-designed* cascaded 4th-order (-24dB/
+        // oct) Butterworth highpass - not `induced - LP(induced)` (a
+        // complementary subtraction, which an earlier round of this fix
+        // used and which measured *worse*, not better, when steepened:
+        // `1 - LP(f)` has its own phase-shifted-vector-subtraction hump
+        // right at the corner frequency, the same category of artifact
+        // the width/motion shelves were rebuilt to eliminate - see
+        // docs/DSP_PAN.md's "Centre-bass isolation" section for the
+        // derivation). This filter is not part of any reconstruction
+        // identity (`inducedHigh` only ever multiplies into the output
+        // via `panInducedBlend(t)`, which is exactly 0 at t=0 regardless
+        // of this filter's shape), so it is free to be as steep as
+        // actually suppresses bass well, with no vector-sum risk - there
+        // is no second, differently-gained path this result is ever
+        // summed against to reconstruct anything. A single 2nd-order
+        // stage measured a ~1.5dB residual (down from ~2.9dB with the
+        // old design, but not enough) - cascading a second identical
+        // stage (4th order total) closed the rest of the gap.
+        // Cascaded (6th-order, -36dB/oct) rather than a single 2nd-order
+        // stage - measured directly: a single stage still left a ~1.5dB
+        // residual on the centre-bass-under-motion test (down from ~2.9dB
+        // with the old complementary-subtraction design), and 4th-order
+        // still left ~1.5dB specifically at 120Hz (close to this filter's
+        // own 150Hz corner, where attenuation is weakest). Safe to
+        // cascade further here (unlike the width/motion shelves)
+        // specifically because this branch has no reconstruction identity
+        // to protect - see the class comment.
+        Biquad inducedHighpass, inducedHighpass2, inducedHighpass3;
 
         // The two channel-output shelves - see the class comment above and
         // docs/DSP_PAN.md's "Crossover artifact" section. Coefficients are

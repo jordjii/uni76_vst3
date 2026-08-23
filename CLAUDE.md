@@ -190,10 +190,12 @@ docs/DSP_PAN.md's product-contract history note; that contract, its
 default, and its migration are all superseded.) Mid (`0.5*(L+R)`) is
 never modified - width/motion apply only to a separately-built "spatial"
 signal (real Side content plus, for mono/near-mono sources, a phase-
-decorrelated "induced" component derived from Mid via a single allpass -
-not a delay, so no comb filtering/wow/flutter/pitch drift), reshaped into
-L and R contributions by **two independent per-channel RBJ low-shelf
-filters** (bass gets much smaller width/motion ceilings than mid/high),
+decorrelated "induced" component derived from Mid via a single allpass,
+its own bass content stripped by a cascaded 6th-order Butterworth
+highpass before blending - not a delay, so no comb filtering/wow/
+flutter/pitch drift), reshaped into L and R contributions by **two
+independent per-channel RBJ low-shelf filters** (bass gets much smaller
+width/motion ceilings than mid/high),
 and applied to L/R via a constant-power rotation driven by a slow
 (~0.3Hz), free-running, deterministic LFO whose phase is never reset by
 a parameter change - a stable centre with the *surrounding* space
@@ -434,6 +436,48 @@ MSVC 19.51):
   tests remain green; new regression tests cover crossover-region
   frequency response, correlation on representative material, and the
   updated width/motion mapping targets.
+- **PAN centre-bass isolation fix** (commit `fc98bbc`'s remaining
+  blocker closed, see [docs/DSP_PAN.md](docs/DSP_PAN.md)'s "Centre-bass
+  isolation" section) - a follow-up pass that closed the one issue the
+  crossover/correlation fix explicitly left open: a centred 80Hz bass
+  tone under stereo highs still measured ~2.6-2.9dB of L/R movement at
+  MOTION, unacceptable for a control whose core rule is "the low end
+  stays centred." Root-caused as a *different* mechanism from the fixed
+  crossover bump: `inducedHigh = induced - LP(induced)` (stripping the
+  synthesised induced signal's own bass before blending) is itself a
+  complementary subtraction, and `1-LP(f)` has its own phase-shifted-
+  vector-subtraction hump right at its corner (proven algebraically: at
+  a 1st-order corner, `1-LP(fc) = 0.5+0.5j`, magnitude 0.707, a *rise*
+  where the design intent was suppression) - explaining why an earlier
+  attempt at a steeper 2nd-order version of this same subtraction
+  measured *worse* (~3.4dB), not better. The actual fix: stop building
+  `inducedHigh` as anyone's complement at all - unlike the width/motion
+  shelves, it has no reconstruction identity to protect (it multiplies
+  by `panInducedBlend(t)`, exactly 0 at t=0 regardless of filter shape),
+  so it can use a *real*, independently-designed, cascaded 6th-order
+  Butterworth highpass (-36dB/oct) with no vector-sum risk at all - 2nd
+  order alone left ~1.5dB, 4th order still left ~1.5dB specifically at
+  120Hz (closest to the corner), a third cascaded stage finally closed
+  the gap. Measured: centre-bass-under-stereo-highs L/R dropped from
+  ~2.6-2.9dB to **0.19dB**; a new dedicated `CenteredBassMotionIsolation`
+  test independently confirms bass magnitude barely shifts from ORIGINAL
+  to MOTION (0.10dB), a bass-only (not broadband) centroid trajectory
+  stays essentially flat (rmsExcursion 0.0006), and high-frequency
+  motion stays fully intact and unweakened (broadband centroid
+  excursion 0.149, ~260x the bass-only figure); a new 40-120Hz
+  magnitude/centroid table (`Tests/PluginTests.cpp`) confirms every
+  frequency at 100% width lands well inside this round's tightened
+  per-frequency targets (40-80Hz <0.25dB actual ~0.0-0.10dB, 100Hz
+  <0.5dB actual 0.28dB, 120Hz <0.75dB actual 0.24dB). Correlation and
+  mono fold-down both improved further as side effects (correlation at
+  100% width on the correlated-chord test material rose from +0.216 to
+  +0.393, still positive at every macro value; worst-case mono fold-down
+  level change dropped from ~1.5dB to ~1.1dB) - the previous filter's
+  near-corner overshoot had been adding a small amount of extra,
+  differently-phased induced content around 150-300Hz that the clean
+  highpass no longer contributes. Motion depth, width mapping, LFO rate,
+  and 0 added latency are all unchanged from the previous round; all
+  previously-passing PREAMP/EQ/SAT/PITCH/PAN tests remain green.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7

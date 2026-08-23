@@ -154,6 +154,25 @@ namespace uni76::dsp
     inline constexpr float panCrossoverHz = 150.0f;
     inline constexpr float panShelfSlope  = 1.0f; // RBJ "S" - 1.0 is the maximally-flat, no-overshoot slope
 
+    // ---- Induced-signal bass isolation --------------------------------------
+    //
+    // Corner frequency for `inducedHighpass` (PanoramaProcessor.cpp) - the
+    // *proper*, independently-designed 2nd-order Butterworth highpass that
+    // strips the synthesised "induced" signal's own bass content before it
+    // is blended into the spatial signal. Deliberately its own named
+    // constant, not reused from `panCrossoverHz` above: the two filters
+    // play very different roles - `panCrossoverHz` shapes the width/motion
+    // *shelves*, which must stay an exact identity at t=0 and therefore
+    // must not be made arbitrarily steep (steepness there is a musical
+    // trade-off against the shelf's own transition smoothness); this one
+    // isolates a purely-additive branch with no reconstruction identity to
+    // preserve at all, so it is free to be tuned purely for bass rejection.
+    // A real Butterworth highpass (unlike the complementary-subtraction
+    // `induced - LP(induced)` an earlier round used) has no phase-vector
+    // hump right at its own corner - its magnitude is a clean, monotonic
+    // -12dB/oct rolloff below `panInducedHighpassHz`, by construction.
+    inline constexpr float panInducedHighpassHz = 150.0f;
+
     // ---- Induced-decorrelation allpass --------------------------------------
     //
     // A single 2nd-order allpass (unity magnitude at every frequency,

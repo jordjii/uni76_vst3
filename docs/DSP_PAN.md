@@ -39,8 +39,11 @@ Input (L, R)
   -> induced = allpass(Mid)                    (phase-decorrelated reference,
                                                  mono/near-mono sources' only
                                                  source of spatial content)
-       -> inducedHigh = induced - LP(induced)  (removes induced's own bass -
-                                                 see "Low-end protection")
+       -> inducedHigh = HP6(induced)            (removes induced's own bass -
+                                                 a proper cascaded 6th-order
+                                                 highpass, not a complementary
+                                                 subtraction - see "Centre-bass
+                                                 isolation")
   -> spatialRaw = Side + inducedHigh * inducedBlend(t)
   -> theta_low  = pi/4 + motionDepthLow(t)  * sin(lfoPhase) * thetaRange
   -> theta_high = pi/4 + motionDepthHigh(t) * sin(lfoPhase) * thetaRange
@@ -262,27 +265,103 @@ of low-frequency movement:
    "Topology"), not a shared crossover split.
 
 2. **`induced`'s own bass content is removed before it ever reaches the
-   spatial signal** (`inducedHigh = induced - LP(induced)`, a gentle
-   1-pole lowpass, same 150Hz cutoff). This was a real bug found by
-   testing, not a theoretical concern: Mid (what the allpass reads)
-   contains the source's actual bass whenever there is any, so without
-   this step, synthesised spatial energy would leak into the low band
-   and get width/motion-processed there too - even with a small ceiling,
-   moving bass that was never really stereo to begin with. Measured
-   before this mechanism existed: a centred 80Hz bass tone (with
-   decorrelated stereo highs also present) showed a **22.5dB** L/R
-   imbalance at MOTION - clearly audible, clearly wrong. With the
-   1-pole induced-signal highpass: **~2.6-2.9dB** (measured across
-   several rounds of otherwise-unrelated retuning, see "Centre
-   stability" below) - small, honestly-documented, and unrelated to the
-   crossover-artifact fix above: **a steeper 2nd-order Butterworth was
-   tried here too**, on the reasoning that a steeper cutoff should leak
-   less of `induced`'s own bass, and measured *worse* (~3.4dB) - the
-   same vector-sum mechanism "Crossover artifact" describes applies
-   here too whenever a filter's complement is built by subtraction and
-   then given a different downstream gain, and a 2nd-order filter's
-   larger phase excursion made the mismatch bigger, not smaller.
-   Reverted; the 1-pole stays.
+   spatial signal** - see "Centre-bass isolation" below for the full
+   history (three attempts, two of them measured *worse* before finding
+   the actual fix) and the current design.
+
+## Centre-bass isolation
+
+**The problem.** Even after the crossover-artifact fix above (which
+eliminated the width/motion *shelves'* own vector-sum bump), a centred
+80Hz bass tone under a source with real stereo highs still measured a
+**~2.6-2.9dB** L/R imbalance at MOTION - small compared to a 22.5dB
+imbalance measured before any induced-signal bass protection existed at
+all, but still a real, audible, unacceptable amount of "the bass itself
+moving" for a control whose product rule is "the low end stays stable
+and centred."
+
+**Root cause.** `induced` is derived from the *full* Mid signal
+(`induced = allpass(mid)`), so it genuinely carries whatever real bass
+the source has. The mechanism used to strip that bass before blending -
+`inducedHigh = induced - LP(induced)`, a **complementary subtraction** -
+turns out to have exactly the same category of flaw the crossover
+artifact did: `1 - LP(f)` is not a well-designed highpass, it is the
+*algebraic leftover* of a lowpass, and it has its own phase-shifted-
+vector-subtraction hump right at the corner frequency (this can be shown
+directly: at the 1st-order corner, `LP(fc) = 0.5-0.5j`, so
+`1-LP(fc) = 0.5+0.5j` - a *rise* to 0.707 magnitude at the very point
+meant to be the transition into "removed," not a clean rolloff). This is
+why an earlier attempt at fixing this - swapping the 1-pole for a
+steeper 2nd-order Butterworth **lowpass** and keeping the same
+subtraction - measured *worse* (~3.4dB): a 2nd-order lowpass's *complement*
+has an even bigger hump at its own corner (computed directly: `L^2` at
+fc for a 2nd-order Butterworth cascade is `-0.5j`, so `1-L^2 = 1+0.5j`,
+magnitude 1.118 - actually *larger* than unity, not smaller).
+
+**The fix.** Stop building `inducedHigh` as a filter's complement at all.
+Unlike the width/motion shelves (which must reconstruct real Side
+content exactly at width=0, so their low/high asymptotes are load-
+bearing), `inducedHigh` has **no reconstruction identity to protect** -
+it only ever multiplies into the output via `panInducedBlend(t)`, which
+is exactly `0.0` at `t=0` regardless of what filter shape produced it
+(see "Topology"'s "purely additive" framing). That means it is free to
+be built from a *real, independently-designed* highpass filter instead -
+one whose own magnitude response is a clean, monotonic rolloff by
+construction, with no vector-sum hump anywhere, because there is no
+complementary partner it needs to sum against. `PanoramaProcessor.cpp`
+now cascades **three** 2nd-order Butterworth highpass stages (6th order
+total, -36dB/oct, all at `panInducedHighpassHz` = 150Hz) - safe to make
+this steep specifically *because* there is no reconstruction risk;
+un-cascaded (2nd order) still left ~1.5dB, and a 4th-order cascade still
+left ~1.5dB specifically at 120Hz (closest to the filter's own corner,
+where attenuation is always weakest) before the third stage closed the
+rest of the gap.
+
+**Measured, `generateCenterBassStereoHighs` (centred 80Hz bass +
+decorrelated 4kHz/5.5kHz highs), at MOTION**:
+
+| | 1-pole subtraction (previous) | 2nd-order subtraction (rejected) | 6th-order proper highpass (current) |
+|---|---|---|---|
+| 80Hz bass L/R | ~2.6-2.9dB | ~3.4dB | **0.19dB** |
+
+A dedicated regression test (`Tests/PluginTests.cpp`'s
+`CenteredBassMotionIsolation`) isolates four independent measurements on
+this same source at MOTION: bass L/R difference (0.19dB), bass magnitude
+change from ORIGINAL to MOTION (0.10dB - the bass level itself barely
+shifts just from turning PAN up), a *bass-only* Goertzel-windowed
+centroid trajectory (rmsExcursion 0.0006 - effectively flat, unlike the
+broadband centroid which the much-louder highs would dominate), and the
+broadband high-frequency centroid excursion (0.149 - confirming the
+fix did not also weaken the highs' own motion, which is unaffected by
+this filter since it operates far above 150Hz).
+
+**40-120Hz table** (dual-mono/mono bass tone, no real Side content, so
+every bit of the magnitude delta below comes purely from the induced-
+signal path; magnitude delta is relative to that frequency's own 0%
+value; measured via `Tests/PluginTests.cpp`'s dedicated "40-120Hz
+magnitude/centroid table" test):
+
+| Frequency | PAN 0% | PAN 25% | PAN 50% | PAN 75% | PAN 100% |
+|---|---|---|---|---|---|
+| 40Hz magnitude delta | 0dB | -0.0001dB | -0.0002dB | -0.0004dB | -0.0005dB |
+| 40Hz centroid excursion | 0 | 0.0000001 | 0.0000009 | 0.000004 | 0.000007 |
+| 60Hz magnitude delta | 0dB | 0.0012dB | 0.0041dB | 0.0076dB | 0.0095dB |
+| 60Hz centroid excursion | 0 | 0.0000003 | 0.00001 | 0.00005 | 0.0001 |
+| 80Hz magnitude delta | 0dB | 0.0138dB | 0.0455dB | 0.0795dB | 0.0957dB |
+| 80Hz centroid excursion | 0 | 0.00005 | 0.0002 | 0.0003 | 0.0004 |
+| 100Hz magnitude delta | 0dB | 0.0466dB | 0.1501dB | 0.2453dB | 0.2809dB |
+| 100Hz centroid excursion | 0 | 0.0001 | 0.0005 | 0.0015 | 0.0027 |
+| 120Hz magnitude delta | 0dB | 0.0558dB | 0.1749dB | 0.2464dB | 0.2449dB |
+| 120Hz centroid excursion | 0 | 0.00003 | 0.0011 | 0.0058 | 0.0103 |
+
+Every value at 100% width is within this round's tightened targets
+(40-80Hz `<0.25dB`, 100Hz `<0.5dB`, 120Hz `<0.75dB`) with comfortable
+margin - the largest, 100Hz at 0.28dB, is little more than half its
+0.5dB bound. Both magnitude delta and centroid excursion grow smoothly
+and monotonically with width, and both grow with frequency (bass closest
+to 40Hz stays closest to exactly 0 at every width) - the intended
+"almost nothing at 40-60Hz, very little at 80-100Hz, a little more by
+120Hz" shape, not a flat floor.
 
 ## Width mapping
 
@@ -345,7 +424,7 @@ LFO's own zero-crossing), `gainL == gainR == 1.0` - the ordinary
 symmetric-width case. The LFO only ever *redistributes* a fixed
 spatial-energy budget between L and R; it does not create or destroy it.
 Measured combined stereo power (`L^2+R^2`) over a full motion cycle at
-MOTION (100%): **-0.13dB to +0.13dB** - comfortably inside the ~1dB
+MOTION (100%): **-0.09dB to +0.06dB** - comfortably inside the ~1dB
 target (well inside the tighter 0.5dB target the correlation-balancing
 pass re-checked this against too), confirming this isn't just
 algebraically constant for the spatial term alone but stays close to
@@ -367,14 +446,14 @@ correlation by quietly shrinking Side to near-nothing.
 | Width | Centroid min | Centroid max | RMS excursion |
 |---|---|---|---|
 | 0% | 0.000 | 0.000 | 0.000 |
-| 25% | -0.0084 | -0.0039 | 0.0014 |
-| 50% | -0.075 | +0.020 | 0.032 |
-| 75% | -0.247 | +0.174 | 0.152 |
-| 100% | -0.351 | +0.290 | 0.237 |
+| 25% | -0.0277 | -0.0245 | 0.0010 |
+| 50% | -0.127 | -0.032 | 0.034 |
+| 75% | -0.318 | +0.115 | 0.159 |
+| 100% | -0.426 | +0.232 | 0.245 |
 
 Excursion grows monotonically with width; at MOTION (100%) the
-trajectory visits clearly left-biased (-0.35) and clearly right-biased
-(+0.29) states, smoothly and continuously (no window-to-window jump
+trajectory visits clearly left-biased (-0.43) and clearly right-biased
+(+0.23) states, smoothly and continuously (no window-to-window jump
 resembling a discontinuity was measured), not just varying shades of one
 side - the failure mode the product brief explicitly called out and the
 one the induced-signal fix above (see "Mono-to-stereo strategy") was
@@ -397,18 +476,31 @@ Measured centroid RMS excursion at MOTION (100%), mono tone sources:
 
 | Frequency | Excursion |
 |---|---|
-| 40 Hz | 0.0056 |
-| 60 Hz | 0.0139 |
-| 80 Hz | 0.0250 |
-| 100 Hz | 0.0369 |
-| 120 Hz | 0.0393 |
-| 3000 Hz | 0.197 |
+| 40 Hz | 0.000007 |
+| 60 Hz | 0.0001 |
+| 80 Hz | 0.0004 |
+| 100 Hz | 0.0027 |
+| 120 Hz | 0.0103 |
+| 200 Hz | 0.087 |
+| 500 Hz | 0.035 |
+| 1000 Hz | 0.046 |
+| 3000 Hz | 0.230 |
+| 10000 Hz | 0.034 |
 
-Bass (40-120Hz) moves noticeably less than 3kHz (roughly 5-35x smaller
-excursion), matching the product brief's "low frequencies stay close to
-centre, mid/high get the real motion" - and no bass fundamental frequency
-drift was measured alongside this movement (<0.2% error at every tested
-bass frequency, see "Pitch stability" below).
+Bass (40-120Hz) moves dramatically less than mid/high content now (the
+direct result of "Centre-bass isolation" below - 40Hz excursion alone
+dropped roughly 800x, from 0.0056 to 0.000007, after that fix), matching
+the product brief's "low frequencies stay close to centre, mid/high get
+the real motion." The progression is not perfectly monotonic above
+120Hz (500Hz/1000Hz/10000Hz measure lower than 200Hz/3000Hz) - expected,
+since above the induced-highpass's own corner the *dominant* factor
+becomes the `panAllpassHz`/`panMotionThetaRange` allpass-decorrelation
+mechanism ("Mono-to-stereo strategy" above), not the highpass, and a
+single fixed allpass is not equally decorrelated with Mid at every
+frequency by design - what matters is that mid/high content overall
+moves far more than bass does, which holds throughout. No bass
+fundamental frequency drift was measured alongside this movement (<0.2%
+error at every tested bass frequency, see "Pitch stability" below).
 
 ## No pitch drift, no wow/flutter
 
@@ -433,20 +525,16 @@ audible, not measurable as a trend over the motion cycle.
 ## Centre stability
 
 A centred 80Hz bass tone plus decorrelated stereo highs (4kHz/5.5kHz),
-at MOTION (100%): the bass measures a **~2.6-2.9dB** L/R difference
-(varies slightly across otherwise-unrelated retuning rounds) - small,
-honestly nonzero. This residual is a **separate phenomenon from the
-crossover artifact** fixed above, and was re-verified (not newly
-introduced) by that fix: `induced` is derived from the *full* Mid
-signal, so it genuinely carries some 80Hz-frequency energy; the 1-pole
-`inducedLowpass` that strips this before blending has a gentle,
-non-brickwall rolloff, so a small fraction still leaks through and picks
-up the low band's (deliberately small, but nonzero) width/motion gain.
-A steeper filter here was tried and measured *worse*, not better - see
-"Low-end protection" above - so this residual is treated as an accepted,
-disclosed characteristic of the gentle-filter design rather than a bug
-to keep chasing. Still far smaller than the same signal's high-frequency
-content, which is designed to move substantially at MOTION.
+at MOTION (100%): the bass now measures **0.19dB** L/R difference - down
+from ~2.6-2.9dB before this round's fix (see "Centre-bass isolation"
+above for the full root-cause derivation and the fix: a proper cascaded
+6th-order Butterworth highpass isolating `induced`'s own bass, replacing
+a complementary-subtraction construction that had its own vector-sum-
+style hump right at the corner). Far smaller than the same signal's
+high-frequency content, which is designed to move substantially at
+MOTION (broadband centroid excursion 0.149 on the same source vs the
+bass-only centroid's 0.0006 - roughly 260x smaller - see "Centre-bass
+isolation").
 
 ## Mono compatibility
 
@@ -462,17 +550,18 @@ centre-bass+highs, correlated chord, decorrelated) at 50%/100% width:
 
 | Source | 50% | 100% |
 |---|---|---|
-| mono | -0.31dB | -1.48dB |
-| centre-bass+highs | +0.01dB | +0.11dB |
-| correlated chord | -0.32dB | -1.40dB |
-| decorrelated | +0.15dB | +1.13dB |
+| mono | +0.02dB | +0.31dB |
+| centre-bass+highs | -0.01dB | +0.01dB |
+| correlated chord | +0.07dB | +0.57dB |
+| decorrelated | +0.15dB | +1.07dB |
 
-Worst case ~1.5dB (down from an earlier round's ~2.5dB, a side effect of
-the `panWidthMaxHigh`/`panMotionThetaRange` reductions made for
-correlation - see "Correlation" below) - a real, audible-but-modest
-level shift, not a comb-filtering artifact (no delay anywhere in the
-signal path means no frequency-selective nulls; this is a broadband
-level change from the motion rotation's own energy redistribution).
+Worst case ~1.1dB - improved again this round (down from ~1.5dB), a side
+effect of the centre-bass isolation fix above (less of `induced`'s bass
+leaking through means less low-frequency content available to shift the
+fold-down at all) - a real, audible-but-modest level shift, not a
+comb-filtering artifact (no delay anywhere in the signal path means no
+frequency-selective nulls; this is a broadband level change from the
+motion rotation's own energy redistribution).
 
 ## Correlation
 
@@ -483,12 +572,18 @@ content, not anti-phase):
 | Width | Correlation |
 |---|---|
 | 0% | 0.965 |
-| 25% | 0.955 |
-| 50% | 0.883 |
-| 75% | 0.567 |
-| 100% | +0.216 |
+| 25% | 0.950 |
+| 50% | 0.804 |
+| 75% | 0.526 |
+| 100% | +0.393 |
 
-**Fixed this round**: an earlier revision measured -0.071 to -0.11 at
+Correlation at 100% improved again this round (0.216 -> 0.393) as a side
+effect of the centre-bass isolation fix - the previous complementary-
+subtraction filter's near-corner overshoot (see "Centre-bass isolation")
+was adding a small amount of extra, differently-phased induced content
+right around 150-300Hz, which the new clean highpass no longer does.
+
+**Fixed the previous round**: an earlier revision measured -0.071 to -0.11 at
 100% width - not "aggressively negative" by the original acceptance bar,
 but the product brief was tightened to prefer correlation staying `>= 0`
 at 100% on representative correlated material (anti-phase test signals
@@ -525,10 +620,10 @@ synthetic source:
 | Width | Peak | RMS L | RMS R |
 |---|---|---|---|
 | 0% | 0.330 | 0.186 | 0.186 |
-| 25% | 0.370 | 0.196 | 0.207 |
-| 50% | 0.468 | 0.214 | 0.258 |
-| 75% | 0.577 | 0.227 | 0.312 |
-| 100% | 0.629 | 0.231 | 0.337 |
+| 25% | 0.377 | 0.194 | 0.209 |
+| 50% | 0.492 | 0.207 | 0.264 |
+| 75% | 0.614 | 0.215 | 0.322 |
+| 100% | 0.670 | 0.218 | 0.349 |
 
 Smooth, proportionate growth - no sudden jump, no runaway; nowhere close
 to clipping even on a Side-heavy source.
@@ -583,18 +678,16 @@ meant something).
 
 ## Known limitations
 
-- The 80Hz-under-stereo-highs centre-stability test measures a ~2.6-2.9dB
-  residual, not 0dB - see "Low-end protection"/"Centre stability" above.
-  This is **not** the crossover-artifact mechanism fixed this round (that
-  one is now proven eliminated - see "Crossover artifact") - it comes
-  from `induced`'s own bass content leaking through the gentle 1-pole
-  `inducedLowpass` before blending. A steeper filter was tried
-  specifically to close this gap and measured *worse* (the same vector-
-  sum mechanism, reintroduced via a different complementary split, with
-  a bigger phase excursion) - reverted rather than shipped. Small and far
-  below the same material's high-frequency movement, but not literally
-  zero, and not chased further this round given the failed attempt
-  already made.
+- The 80Hz-under-stereo-highs centre-stability test measures a **0.19dB**
+  residual, not 0dB - see "Centre-bass isolation" above for the full fix
+  history (a proper cascaded 6th-order Butterworth highpass, replacing a
+  complementary-subtraction construction that had its own vector-sum-
+  style hump - down from ~2.6-2.9dB before this round, and ~22.5dB before
+  any induced-signal bass protection existed at all). Small enough now
+  that it is not chased further - well inside every one of this round's
+  tightened per-frequency targets (40-80Hz `<0.25dB`, 100Hz `<0.5dB`,
+  120Hz `<0.75dB`), and roughly 260x smaller than the same source's
+  high-frequency motion.
 - A single sustained pure tone at an unlucky frequency can still show a
   measurably asymmetric (not perfectly left/right-balanced) motion
   trajectory - see "Mono-to-stereo strategy" above. Real/broadband mono
@@ -606,14 +699,17 @@ meant something).
   residual dependency entirely if ever needed, at meaningfully more
   implementation complexity than the current single allpass.
 - Mono fold-down is no longer provably invariant under motion (only
-  under ORIGINAL/pure static width) - up to ~1.5dB measured level
-  change at full MOTION on some source types (down from ~2.5dB, a side
-  effect of the correlation-balancing width/motion-range reductions).
-  Disclosed and accepted per the product brief's own relaxed mono-
-  compatibility requirement, not hidden.
+  under ORIGINAL/pure static width) - up to ~1.1dB measured level
+  change at full MOTION on some source types (down from ~1.5dB last
+  round and ~2.5dB the round before, each a side effect of unrelated
+  fixes rather than direct fold-down work). Disclosed and accepted per
+  the product brief's own relaxed mono-compatibility requirement, not
+  hidden.
 - Correlation on correlated stereo material is now measured `>= 0` at
-  every tested width including 100% (the specific thing this round's
-  correlation work targeted) - but this was tuned against the module's
+  every tested width including 100% (the specific thing a previous
+  round's correlation work targeted, further improved as a side effect
+  of this round's centre-bass fix) - but this was tuned against the
+  module's
   own three-tone `generateCorrelatedChord` test material specifically,
   not proven algebraically for arbitrary program material. Material with
   a substantially higher Side/Mid ratio than the test chord could in
