@@ -79,16 +79,20 @@ these values. See CLAUDE.md for the current fixed values.
 Exactly 7 public parameters, IDs centralised in
 [`Source/Parameters/ParameterIDs.h`](../Source/Parameters/ParameterIDs.h).
 Six are `AudioParameterFloat` in a `0..100` (%) range (`50%` default for
-`eq` and `panorama`, `0%` for the rest); `pitch` is the one exception - a
-discrete `AudioParameterInt` (`-12..+12` semitones, step 1, default 0)
-rather than a percentage, since PITCH's musically meaningful values are
-integer semitones, not a continuous 0-100% range (see
+`eq`, `0%` for the rest, including `panorama`); `pitch` is the one
+exception - a discrete `AudioParameterInt` (`-12..+12` semitones, step 1,
+default 0) rather than a percentage, since PITCH's musically meaningful
+values are integer semitones, not a continuous 0-100% range (see
 [docs/DSP_PITCH.md](DSP_PITCH.md)'s "Parameter and state migration"
 section for why, and how the old percent-based `pitch` state migrates).
-`panorama`'s default changed from `0%` to `50%` when its real DSP landed
-(see [docs/DSP_PAN.md](DSP_PAN.md)'s "Parameter and state migration"
-section) - its ID is a naming holdover from before the module's actual
-behaviour (a stereo *width* control, not an L/R pan) was decided.
+`panorama` briefly defaulted to `50%` under an earlier, retired
+MONO/NATURAL/WIDE contract; it is back to `0%` under the current
+ORIGINAL/WIDE/MOTION contract - a fresh instance's stereo field is
+untouched, matching every other non-EQ module (see
+[docs/DSP_PAN.md](DSP_PAN.md)'s "Parameter and state migration" section
+for the full schema history). Its ID is a naming holdover from before the
+module's actual behaviour (a combined stereo width + slow L/R motion
+control, not a simple L/R balance pan) was decided.
 `Low Cut` / `High Cut` are deliberately *not* separate parameters - they
 are internal implementation details of PreampProcessor, controlled
 indirectly (if at all) rather than exposed as their own automation lanes.
@@ -159,19 +163,25 @@ PREAMP/SAT use.
 `Source/DSP/PanoramaProcessor.h`/`.cpp` is the fifth - see
 [docs/DSP_PAN.md](DSP_PAN.md) for the full topology and measured data.
 Chained after PITCH. Despite the `panorama` parameter ID (a naming
-holdover, never renamed), it's a Mid/Side stereo-*width* control, not an
-L/R balance pan. Built from `PanoramaCurves.h` (the width-gain curve,
-sharing EqCurves.h's two-smoothstepped-segments-sharing-a-named-centre
-shape) and `PanoramaProcessor.h`/`.cpp` (the Mid/Side matrix + a single
-`Biquad.h` lowpass splitting Side into low/high bands with independently
-tunable width ceilings). Unlike PREAMP/EQ/SAT/PITCH, needs no
-oversampling and adds no latency - a pure per-sample gain/filter morph.
-Two properties are provable from the topology rather than just measured:
-mono fold-down is bit-identical to the input's own mono sum at every
-width (Mid is read once and never modified), and NATURAL (50%) is a true
-identity transform even with the crossover filter always running (its
-low/high gains are both exactly 1.0 there, so the split's own output
-recombines back to the unfiltered Side signal algebraically).
+holdover, never renamed), it's a combined Mid/Side stereo-*width* AND
+slow deterministic L/R *motion* control (ORIGINAL/WIDE/MOTION), not a
+simple L/R balance pan and not a naive whole-signal auto-pan. Built from
+`PanoramaCurves.h` (width, motion-depth and induced-signal-blend curves,
+each provably identity/zero at 0%) and `PanoramaProcessor.h`/`.cpp` (the
+Mid/Side matrix, a `Biquad.h` allpass deriving a phase-decorrelated
+"induced" reference from Mid for mono-source spatialisation, a pair of
+`OnePoleLowPass` filters keeping synthesised spatial energy and motion
+out of the low band, a free-running LFO driving a constant-power L/R
+rotation of the Side/spatial signal only - Mid itself is never rotated).
+Unlike PREAMP/EQ/SAT/PITCH, needs no oversampling and adds no latency - a
+pure per-sample gain/filter/rotation morph. Two properties are provable
+from the topology rather than just measured: mono fold-down at 0% is
+bit-identical to the input's own mono sum (Mid is read once and never
+modified), and ORIGINAL (0%) is a true identity transform - every curve
+in `PanoramaCurves.h` evaluates to its neutral value (width gain 1.0,
+motion depth 0.0, induced blend 0.0) at t=0 by construction, so the
+motion rotation collapses to gainL==gainR==1.0 and the LFO's own phase
+never reaches the output.
 
 `Source/DSP/Reverb.h`/`Imager.h` remain deliberately empty placeholder
 classes - no `prepare`/`process` methods, no fake processing - and are
@@ -277,8 +287,8 @@ APVTS parameter.
 
 EQ's, SAT's, PITCH's and PAN's tri-point scales are different in status
 (all four are now real DSP) but not in implementation: `DARK`/`PHONE`/
-`AIR`, `CLEAN`/`WARM`/`HOT`, `- OCT`/`0`/`+ OCT` and `MONO`/`NATURAL`/
-`WIDE` are each the three genuinely correct named positions at 0%/50%/
+`AIR`, `CLEAN`/`WARM`/`HOT`, `- OCT`/`0`/`+ OCT` and `ORIGINAL`/`WIDE`/
+`MOTION` are each the three genuinely correct named positions at 0%/50%/
 100% already, so the existing generic marker binding (`bindTriScale` - a
 plain 0..100% position, no per-module formula) needed no change when any
 of the four modules' DSP landed, unlike Preamp's filter-line indicators
@@ -287,9 +297,11 @@ below. PITCH's `onChange` callback does pass a converted value though:
 `normalised * 100` (the knob's position within its own range) rather
 than the module's real-units `scaled` value, which for PITCH is
 semitones, not a percentage. PAN needed no such conversion - it stayed a
-plain `AudioParameterFloat` (only its *default* changed, from 0% to 50%
-- see "Parameters" above), so `scaled` and `normalised*100` are already
-numerically identical for it, same as every other non-PITCH module.
+plain `AudioParameterFloat` (its default returned to 0% under the
+current ORIGINAL/WIDE/MOTION contract - see "Parameters" above and
+[docs/DSP_PAN.md](DSP_PAN.md)), so `scaled` and `normalised*100` are
+already numerically identical for it, same as every other non-PITCH
+module.
 
 The Preamp module's "LOW CUT" / "HIGH CUT" lines are different: they now
 track the *real* drive-dependent filters `Source/DSP/PreampProcessor`

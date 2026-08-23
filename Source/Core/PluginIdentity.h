@@ -29,19 +29,32 @@ namespace uni76
             default (0 ST) whenever loadedSchemaVersion < 3, rather than
             letting APVTS reinterpret that old raw number as a semitone
             offset (which would silently clamp/misread it).
-        v4: `panorama`'s default changed from 0% to 50% now that real
-            PAN/STEREO FIELD DSP exists (see docs/DSP_PAN.md) - 0% now
-            means MONO, and the old 0% default predates any DSP reading
-            it, so it never meant "mono" to begin with. A pre-v4 state's
-            saved `panorama` value is forced to 50% (NATURAL) whenever
-            loadedSchemaVersion < 4, for the same reason PITCH's v3
-            migration forces old values to its new default: an old
-            project that never touched PAN must not suddenly play in
-            mono after this update. Unlike PITCH, `panorama` stays the
-            same AudioParameterFloat type/range (0..100%) - only the
-            *meaning* of a stored value changed, not the C++ type.
+        v4: (superseded by v5 below - kept here for the log's honesty, not
+            because a v4 state should still be treated specially.)
+            `panorama`'s default changed from 0% to 50% under a first
+            revision of PAN/STEREO FIELD DSP that used a MONO(0%)/
+            NATURAL(50%)/WIDE(100%) product contract. That contract was
+            retired before public release in favour of the ORIGINAL(0%)/
+            WIDE(50%)/MOTION(100%) contract v5 describes - v4's 50%
+            default and its "NATURAL" meaning no longer exist.
+        v5: `panorama`'s default reverted to 0% under the current, final
+            PAN contract - ORIGINAL(0%, bit-exact identity)/WIDE(50%)/
+            MOTION(100%) (see docs/DSP_PAN.md). Any state saved with
+            loadedSchemaVersion < 5 - whether a genuinely old pre-DSP
+            state *or* a v4 state saved under the retired MONO/NATURAL/
+            WIDE contract - has its `panorama` value forced to 0%
+            (ORIGINAL), for the same reason PITCH's v3 migration forces
+            old values to its new default: neither an old pre-DSP value
+            nor a v4-era "50% NATURAL" choice has any meaning under the
+            current contract, so there is nothing to "best-effort"
+            preserve - forcing every pre-v5 state to ORIGINAL is what
+            guarantees an old (or v4-only) project can't suddenly play
+            altered after this update. This plugin has not had a public
+            release yet (see CLAUDE.md), so there is no real installed
+            base whose v4 "NATURAL" choices this migration could be
+            accused of destroying - only local development states.
     */
-    inline constexpr int stateSchemaVersion = 4;
+    inline constexpr int stateSchemaVersion = 5;
 
     /** Property name under which stateSchemaVersion is stored in the saved
         ValueTree, so setStateInformation can detect old presets.
@@ -56,12 +69,14 @@ namespace uni76
     */
     inline constexpr int pitchDiscreteSchemaVersion = 3;
 
-    /** The schema version at which `panorama`'s default became 50%
-        (NATURAL) instead of 0% (see stateSchemaVersion's v4 entry above).
-        Fixed at 4 regardless of any later bump to stateSchemaVersion -
-        a future unrelated migration must not re-trigger the panorama-
-        value-stripping branch in setStateInformation() for states that
-        are already v4+.
+    /** The schema version at which `panorama` settled on its current,
+        final ORIGINAL(0%)/WIDE(50%)/MOTION(100%) contract and 0% default
+        (see stateSchemaVersion's v5 entry above - this also covers and
+        supersedes the retired v4 MONO/NATURAL/WIDE contract). Fixed at 5
+        regardless of any later bump to stateSchemaVersion - a future
+        unrelated migration must not re-trigger the panorama-value-
+        stripping branch in setStateInformation() for states that are
+        already v5+.
     */
-    inline constexpr int panoramaNaturalSchemaVersion = 4;
+    inline constexpr int panoramaOriginalSchemaVersion = 5;
 }

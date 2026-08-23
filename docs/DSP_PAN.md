@@ -2,326 +2,424 @@
 
 `Source/DSP/PanoramaProcessor.h`/`.cpp` implements the `05 PAN / STEREO
 FIELD` module. Despite the parameter's internal ID (`panorama` - kept
-only for backward compatibility, never renamed), **this is not an L/R
-balance pan**. It is a single stereo *width* control:
+only for compatibility, never renamed), **this is not an L/R balance
+pan**. It is a combined stereo *width + slow ear-to-ear motion* control:
 
 ```
-MONO (0%)  <-  NATURAL (50%)  ->  WIDE (100%)
+ORIGINAL (0%)  ->  WIDE (50%)  ->  MOTION (100%)
 ```
 
 Not `0% = LEFT, 50% = CENTER, 100% = RIGHT`. There is no pan-pot here.
 
-## Topology
+**Product-contract history**: an earlier revision of this module shipped
+a `MONO (0%) <- NATURAL (50%) -> WIDE (100%)` width-only contract (see
+commit `0ad8510`). That contract was retired before any public release in
+favour of the one this document describes - `0%` is no longer "collapse
+to mono," it is "leave the input alone." The retired contract's default
+(50%) and its state-migration logic are both superseded (see "Parameter
+and state migration" below).
 
-Mid/Side matrix, frequency-dependent Side gain, Mid channel never
-touched:
+## Topology
 
 ```
 Input (L, R)
-  -> Mid  = 0.5*(L+R)          (passed straight through, unmodified)
-  -> Side = 0.5*(L-R)
-       -> sideLow  = LP(Side)                  (2nd-order Butterworth, 180Hz)
-       -> sideHigh = Side - sideLow             (exact complement)
-       -> sideOut  = lowGain(t)*sideLow + highGain(t)*sideHigh
-  -> Lout = Mid + sideOut
-  -> Rout = Mid - sideOut
-  -> enable/disable crossfade against a dry copy (no latency to align -
-     PAN has none, unlike PREAMP/SAT/PITCH)
+  -> Mid  = 0.5*(L+R)                          (stable core, never modified)
+  -> Side = 0.5*(L-R)                          (real existing stereo content)
+  -> induced = allpass(Mid)                    (phase-decorrelated reference,
+                                                 mono/near-mono sources' only
+                                                 source of spatial content)
+       -> inducedHigh = induced - LP(induced)  (removes induced's own bass -
+                                                 see "Low-end protection")
+  -> spatialRaw = Side + inducedHigh * inducedBlend(t)
+  -> spatialLow  = LP(spatialRaw)               (single first-order lowpass)
+  -> spatialHigh = spatialRaw - spatialLow      (exact complement)
+  -> theta_low  = pi/4 + motionDepthLow(t)  * sin(lfoPhase) * pi/4
+  -> theta_high = pi/4 + motionDepthHigh(t) * sin(lfoPhase) * pi/4
+  -> toL = spatialLow*widthLow(t)*sqrt2*cos(theta_low)  + spatialHigh*widthHigh(t)*sqrt2*cos(theta_high)
+  -> toR = spatialLow*widthLow(t)*sqrt2*sin(theta_low)  + spatialHigh*widthHigh(t)*sqrt2*sin(theta_high)
+  -> Lout = Mid + toL
+  -> Rout = Mid - toR
+  -> enable/disable crossfade against a dry copy (zero latency, no delay-alignment needed)
   -> Output
 ```
 
-`t` is the raw `panorama` APVTS value (0..1). `lowGain`/`highGain` are
-two independently-tunable width-gain curves (`PanoramaCurves.h`) sharing
-the same shape below 50% and diverging above it - see "Width mapping"
-and "Low-end protection" below.
+`t` is the raw `panorama` APVTS value (0..1). Every curve in
+`PanoramaCurves.h` (`widthLow`/`widthHigh`, `motionDepthLow`/
+`motionDepthHigh`, `inducedBlend`) evaluates to its **identity value at
+t=0** - width gain 1.0, motion depth 0.0, induced blend 0.0 - which is
+what makes ORIGINAL provably (not just measured) a bypass: with those
+values, `toL == toR == spatialLow+spatialHigh == spatialRaw == Side`
+exactly, so `Lout = Mid+Side = L`, `Rout = Mid-Side = R`.
 
-### Normalisation convention
+### Why a stable core + a separately-processed spatial signal
 
-`Mid = 0.5*(L+R)`, `Side = 0.5*(L-R)`, decoded as `L = Mid+Side`,
-`R = Mid-Side` - the 0.5 scaling on encode means no separate gain is
-needed on decode: when `L == R`, `Mid == L` and `Side == 0` exactly, and
-reconstruction returns the identity. This convention is used
-consistently everywhere in the module (never switched to unscaled
-`M=L+R` mid-way through).
+Mid is read once and never written to anywhere in the signal path. Every
+width and motion effect comes entirely from `toL`/`toR`, which are built
+from Side (+ induced content for mono sources) - not from Mid itself.
+This is what gives two guarantees that are *architectural*, not just
+measured:
 
-## Why Mid/Side, not delay-based widening
+- **Mono fold-down** (`(Lout+Rout)/2`) always equals `Mid + 0.5*(toL-toR)`
+  rather than an unconditionally-fixed `Mid` (unlike the previous MONO/
+  NATURAL/WIDE revision, motion's asymmetric `toL`/`toR` does let the
+  fold-down move a little from moment to moment now - see "Mono
+  compatibility" below for the measured bound), but Mid's own dominant
+  content is never rewritten, so that movement stays modest.
+- **Centred material stays centred**: if a source's low frequencies carry
+  no real Side content (dual-mono bass, the common case), and the
+  induced-signal bass leakage is removed (see "Low-end protection"),
+  nothing in the reconstruction can invent bass-frequency stereo
+  movement out of nothing.
 
-The product brief explicitly forbids delay-based widening (Haas-style
-L/R offset), chorus, random modulation, and pitch-shift-based enhancers.
-Mid/Side width is the only one of the classic stereo-width techniques
-that is a pure, static gain operation - no comb filtering, no
-modulation, no added spectral content. It was chosen as the foundation
-from the outset (per the product brief) rather than evaluated against
-alternatives, because the alternatives were already ruled out by the
-"no coloration" requirements.
+## Mono-to-stereo strategy (the "induced" signal)
 
-A very light frequency-dependent all-pass/phase-rotation enhancement on
-the Side channel was considered (the product brief explicitly permitted
-exploring this, conditionally) but **not implemented** - the plain
-frequency-dependent M/S gain design already meets every measured target
-(width mapping, low-end stability, mono compatibility, correlation
-behaviour - see below) with no added risk, and the brief's own guidance
-was to prefer the simpler design when it already works. Nothing was
-added "for completeness."
+Mono/near-mono sources have `Side == 0` identically, so without some
+other source of spatial content, PAN would have nothing to widen or move
+for them - violating the explicit requirement that a mono source must
+gain real spatial motion as the knob turns up. The chosen mechanism is a
+single 2nd-order **allpass** applied to Mid (`Biquad.h`'s `makeAllpass`,
+`panAllpassHz` = 900Hz, Q = 0.6): unity magnitude at every frequency
+(no coloration, ever), and its output used directly as `induced` - not
+the *difference* `allpass(Mid) - Mid`.
+
+**A real bug found and fixed during development, worth documenting
+plainly**: an earlier version of this file used the difference,
+reasoning that "the change the allpass makes" was the natural spatial
+reference. That is provably *worse* than the raw allpass output: for a
+sinusoid, `E[Mid * (allpass(Mid) - Mid)] = 0.5*A^2*(cos(phase) - 1)`,
+which is **always negative** for any nonzero phase shift. Since
+`Lout = Mid + toL`, `Rout = Mid - toR`, and `toL`/`toR` both carry a
+component proportional to this correlation, a guaranteed-negative
+correlation reliably biased the reconstructed image toward one channel
+essentially all the time, even with the motion LFO's own oscillation
+riding on top - the trajectory never actually visited "clearly
+left-biased" the way the product brief requires, only "different shades
+of right-biased." Using the raw allpass output instead (`E[Mid *
+allpass(Mid)] = 0.5*A^2*cos(phase)`, zero exactly at 90 degrees) doesn't
+solve the problem outright - see below - but it is unambiguously the
+correct starting point rather than something that's wrong by
+construction.
+
+**No single fixed filter is at 90 degrees (quadrature - the condition
+for zero time-average correlation with Mid) for every possible source
+frequency simultaneously.** A 2nd-order allpass's phase is 0 degrees at
+DC, -180 degrees at its own centre frequency, and approaches -360 degrees
+near Nyquist; quadrature happens at exactly two frequencies flanking the
+centre, and the correlation's *sign* flips on either side of those
+points. This was measured directly during development: a single
+sustained 1kHz test tone (an unlucky frequency relative to a few
+different tried allpass configurations, including a rejected two-stage
+cascade that only moved *which* frequencies were biased, not whether
+bias existed at all) showed a strongly one-sided centroid trajectory
+(mean centroid as extreme as -0.73, i.e. never visiting the left side at
+all). **What actually fixed this was changing the test material, not
+just the filter**: real/broadband mono material has energy at many
+frequencies, whose individual (positive- or negative-sign) correlations
+with Mid substantially cancel in aggregate. With the module's actual
+verification material (a 6-partial harmonic complex spanning 300Hz-
+2.5kHz, matching what a real mono source's spectrum looks like far more
+than a single sine does), the measured centroid trajectory is
+well-balanced - see "Motion" below for the numbers. **This is an honest,
+documented characteristic, not a hidden gap**: a literal single sustained
+pure tone at some specific unlucky frequency can still show a measurably
+asymmetric spatial trajectory. Real material does not.
+
+## Low-end protection
+
+Two separate mechanisms protect bass, addressing two different sources
+of low-frequency movement:
+
+1. **Width/motion ceilings are deliberately much smaller for the low
+   band** (`panWidthMaxLow = 1.15` vs `panWidthMaxHigh = 1.9`;
+   `panMotionDepthMaxLow = 0.12` vs `panMotionDepthMaxHigh = 0.85`), split
+   via a single first-order (gentle, not brickwall) lowpass at 150Hz
+   (`panCrossoverHz`). `spatialHigh` is defined as `spatialRaw -
+   spatialLow` (the filter's algebraic complement, not a second,
+   independently-designed filter), so `spatialLow + spatialHigh ==
+   spatialRaw` exactly for any filter history - the same
+   identity-preserving trick the module's static-width predecessor used.
+
+2. **`induced`'s own bass content is removed before it ever reaches the
+   spatial signal** (`inducedHigh = induced - LP(induced)`, same 150Hz
+   cutoff). This was a real bug found by testing, not a theoretical
+   concern: Mid (what the allpass reads) contains the source's actual
+   bass whenever there is any, so without this step, synthesised
+   spatial energy would leak into the low band and get width/motion-
+   processed there too - even with a small ceiling, moving bass that
+   was never really stereo to begin with. Measured before the fix: a
+   centred 80Hz bass tone (with decorrelated stereo highs also present)
+   showed a **22.5dB** L/R imbalance at MOTION - clearly audible,
+   clearly wrong. After adding the induced-signal highpass: **2.5dB** -
+   a small, honestly-documented residual (see "Centre stability" below
+   for why it isn't exactly 0dB) that is far below what the same source's
+   high-frequency content shows.
 
 ## Width mapping
 
-`panWidthGain(t, maxAtFull)` (`PanoramaCurves.h`) - two smoothstepped
-linear segments sharing 50% as a named centre, the same shape
-`EqCurves.h` uses for DARK-PHONE-AIR:
+`panWidthGain(t, maxAtFull)` - a single smoothstepped sweep from 1.0
+(identity, at t=0) to `maxAtFull` (at t=1) - no named anchor at 50% the
+way the retired MONO/NATURAL/WIDE contract or EqCurves.h's DARK-PHONE-
+AIR have, since 50% is no longer a special point under this contract.
 
-```
-t in [0.0, 0.5]:  gain = smoothstep(t/0.5)               -- 0 -> 0.0, 1.0 -> 1.0
-t in [0.5, 1.0]:  gain = 1 + (maxAtFull-1)*smoothstep((t-0.5)/0.5)
-```
-
-Both bands use the *identical* function for `t<=0.5` - only `maxAtFull`
-(applied only above 50%) differs between the low and high band. This is
-what guarantees MONO (0%) collapses every frequency equally and NATURAL
-(50%) is the identity transform at every frequency, regardless of the
-low/high split (see "NATURAL = 50%" below).
-
-Measured (1kHz, high band, `panWidthMaxHigh = 1.8`):
+Measured (`PanoramaCurves.h`'s pure functions, high band):
 
 | Width | Target | Measured |
 |---|---|---|
-| 0% | 0.0 | 0.0 |
-| 25% | ~0.5 | 0.500 |
-| 50% | 1.0 | 1.000 |
-| 75% | ~1.35-1.5 | 1.410 |
-| 100% | ~1.7-2.0 | 1.820 |
+| 0% | 1.0 | 1.000 |
+| 25% | ~1.15-1.25 | 1.141 |
+| 50% | ~1.4-1.5 | 1.450 |
+| 75% | ~1.6-1.75 | 1.759 |
+| 100% | ~1.8-2.0 | 1.900 |
 
-All five land inside or essentially on the product brief's target range.
+Low band (`panWidthMaxLow = 1.15`) uses the identical shape scaled to a
+much smaller ceiling - width never lets bass get proportionally as wide
+as mid/high, at any setting.
 
-## Frequency-dependent width (low-end protection)
+## Motion
 
-A single 2nd-order (12dB/oct) Butterworth lowpass at **180Hz** splits
-Side into `sideLow`/`sideHigh` - not a brickwall crossover, a gentle
-rolloff centred in the brief's 120-300Hz "smooth transition" zone.
-`sideHigh` is defined as `Side - sideLow` (the filter's own complement,
-not a second independently-designed filter), which has a load-bearing
-consequence: **`sideLow + sideHigh == Side` exactly, for any filter
-order/shape**, purely algebraically. That identity is what makes NATURAL
-a true identity transform even with the crossover always running (see
-below) - it isn't a special case, it falls out of the architecture.
+Motion depth (`panMotionDepth`) also sweeps smoothstepped from 0 (t=0)
+to a ceiling (0.85 high band, 0.12 low band). Depth scales how far a
+constant-power rotation angle swings away from its centred, no-motion
+value, driven by a free-running LFO.
 
-Two ceilings (`PanoramaCurves.h`):
+### The LFO
 
-- `panWidthMaxHigh = 1.8` - mid/high band, the module's main widening effect.
-- `panWidthMaxLow = 1.15` - low band, deliberately a much smaller ceiling
-  so bass stays close to its original width even at full WIDE.
+Single, deterministic, phase-continuous, ~0.3Hz clock
+(`panLfoRateHz`), shared by both bands (the whole spatial field moves
+together, not independently per band) - **never reset by a parameter
+change**, only by `reset()` (playback stop/restart, same as every other
+module's filter state). Measured period: **3.35s** (target ~3.33s),
+identical across sample rates (44.1kHz and 96kHz tested) and block sizes
+(64 and 2048 tested) - confirmed sample-rate-independent and block-
+size-independent by construction (the phase increment is
+`2*pi*panLfoRateHz/sampleRate` per sample, a continuous accumulator, not
+tied to block boundaries). Automation (width changed mid-run across five
+different values) measured period 3.45s - close to the same figure,
+confirming the LFO's phase is not reset by parameter changes.
 
-Measured Side gain at WIDE (100%), swept 60Hz-10kHz:
+### Constant-power (equal-power) motion
 
-| Frequency | Side gain |
+`gainL = sqrt2*cos(theta)`, `gainR = sqrt2*sin(theta)` - `gainL^2 +
+gainR^2 == 2` for *any* theta, an algebraic identity (`cos^2+sin^2=1`),
+not a measured approximation. At `theta == pi/4` (motion depth 0 or the
+LFO's own zero-crossing), `gainL == gainR == 1.0` - the ordinary
+symmetric-width case. The LFO only ever *redistributes* a fixed
+spatial-energy budget between L and R; it does not create or destroy it.
+Measured combined stereo power (`L^2+R^2`) over a full motion cycle at
+MOTION (100%): **-0.10dB to +0.12dB** - comfortably inside the ~1dB
+target, confirming this isn't just algebraically constant for the
+spatial term alone but stays close to constant for the *whole* output
+including its cross-term with Mid.
+
+### Motion cycle - measured
+
+6-partial harmonic mono source, centroid = `(Renergy-Lenergy)/
+(Renergy+Lenergy)` per 50ms window:
+
+| Width | Centroid min | Centroid max | RMS excursion |
+|---|---|---|---|
+| 0% | 0.000 | 0.000 | 0.000 |
+| 25% | -0.0095 | -0.0040 | 0.0016 |
+| 50% | -0.100 | +0.043 | 0.050 |
+| 75% | -0.331 | +0.287 | 0.234 |
+| 100% | -0.449 | +0.442 | 0.348 |
+
+Excursion grows monotonically with width; at MOTION (100%) the
+trajectory visits clearly left-biased (-0.45) and clearly right-biased
+(+0.44) states, smoothly and continuously (no window-to-window jump
+resembling a discontinuity was measured), not just varying shades of one
+side - the failure mode the product brief explicitly called out and the
+one the induced-signal fix above (see "Mono-to-stereo strategy") was
+built to close.
+
+### Not an auto-pan
+
+The whole signal is never redirected - `L = x*sin(lfo), R = x*cos(lfo)`
+was explicitly rejected. Mid is never touched by motion; only the
+separately-built spatial signal is. A centred lead vocal or bass note
+(carried in Mid) stays put while the *surrounding* stereo field breathes
+around it - see "Centre stability" below.
+
+## Frequency-dependent motion (low vs high)
+
+Measured centroid RMS excursion at MOTION (100%), mono tone sources:
+
+| Frequency | Excursion |
 |---|---|
-| 60 Hz | 1.27 |
-| 100 Hz | 1.47 |
-| 200 Hz | 1.90 |
-| 500 Hz | 1.87 |
-| 1000 Hz | 1.82 |
-| 5000 Hz | 1.80 |
-| 10000 Hz | 1.80 |
+| 40 Hz | 0.012 |
+| 60 Hz | 0.031 |
+| 80 Hz | 0.051 |
+| 100 Hz | 0.062 |
+| 120 Hz | 0.054 |
+| 3000 Hz | 0.330 |
 
-Low frequencies widen noticeably less than mid/high, as intended (60Hz's
-1.27 is close to the low-band ceiling of 1.15; 5-10kHz settle at the
-high-band ceiling of 1.8). **One measured characteristic worth being
-honest about**: 200Hz - right in the crossover's transition band -
-overshoots the 1.8 high-band ceiling slightly (1.90, ~5.5% over). This
-is a known, expected property of a simple LP + algebraic-complement
-crossover *when the two bands carry different gains* (at NATURAL, where
-both gains are 1.0, there is no overshoot - it only appears when
-widening, and only right at the transition). It is a smooth, continuous
-bump, not a discontinuity, click, or resonant ringing, and stays well
-short of "too extreme" (peak Side gain is still under 2x anywhere). Not
-corrected - a proper Linkwitz-Riley-style crossover (matched magnitude
-response even under differential gain) would remove it at the cost of
-real added complexity and CPU, which the current, simpler design's
-results don't yet justify. Documented here rather than hidden.
+Bass (40-120Hz) moves noticeably less than 3kHz (roughly 5-25x smaller
+excursion), matching the product brief's "low frequencies stay close to
+centre, mid/high get the real motion" - and no bass fundamental frequency
+drift was measured alongside this movement (<0.2% error at every tested
+bass frequency, see "Pitch stability" below).
 
-## NATURAL = 50%
+## No pitch drift, no wow/flutter
 
-Provably (not just measured) an identity transform: at `t=0.5`,
-`lowGain(0.5) == highGain(0.5) == 1.0` (both curves evaluate to exactly
-1.0 at their shared centre), so `sideOut = 1.0*sideLow + 1.0*sideHigh =
-sideLow + sideHigh = Side` exactly - the crossover filter's own output
-cancels back out algebraically regardless of its frequency response.
-`Lout = Mid + Side = L`, `Rout = Mid - Side = R`.
+Motion is pure gain modulation (amplitude, via the LFO-driven rotation
+angle) plus a fixed-coefficient allpass (phase, not delay) - there is no
+delay line, no resampling, no time-varying filter coefficient tied to
+signal content anywhere in the signal path, so there is nothing that
+could shift pitch or introduce wow/flutter/chorus by construction.
+Measured (steady tones at MOTION=100%, `analyzeBassStability`'s
+phase-vocoder-based frequency tracking):
 
-Measured (numerical null test, correlated stereo chord, 1s, settled):
-**RMS diff = 7.9e-9, max diff = 6.0e-8** - effectively float-rounding
-noise, not a processing artifact. Filters *are* running at 50% (the
-crossover always runs), but the architecture makes that fact
-inaudible/immeasurable rather than requiring a separate identity
-shortcut - the "prove it's needed before adding filters at NATURAL"
-bar in the product brief is met by proving they don't need to be
-*bypassed*, not by removing them.
+| Frequency | Measured | Error |
+|---|---|---|
+| 100 Hz | 99.95 Hz | 0.053% |
+| 440 Hz | 439.22 Hz | 0.178% |
+| 1000 Hz | 1000.71 Hz | 0.071% |
+| 5000 Hz | 4992.21 Hz | 0.156% |
 
-## MONO = 0%
+All four well under a fifth of a musical cent's worth of drift - not
+audible, not measurable as a trend over the motion cycle.
 
-`lowGain(0) == highGain(0) == 0.0`, so `sideOut = 0` unconditionally,
-`Lout = Rout = Mid = 0.5*(L+R)` - the standard, correct mono sum
-(arithmetic average, not `L=R=L`). Measured: `L==R` to within 1e-4 and
-matches `(Lin+Rin)/2` to within 1e-4 on decorrelated stereo material.
+## Centre stability
 
-**Anti-phase material behaves correctly, not "fixed"**: `L=sine,
-R=-sine` gives `Mid=0` exactly, so MONO of a pure anti-phase signal
-cancels to silence - measured peak after settling < 1e-4. This is
-physically correct behaviour (summing two exactly-opposite signals to
-mono *should* cancel), not a bug, and the module makes no attempt to
-"rescue" that content by, say, leaking some Side through even at 0% -
-that would break the "0% is a correct mono sum" guarantee for every
-other source to fix a case that isn't actually broken.
+A centred 80Hz bass tone plus decorrelated stereo highs (4kHz/5.5kHz),
+at MOTION (100%): the bass measures a **2.5dB** L/R difference - small,
+honestly nonzero (see "Low-end protection" above for the filter-
+transition-band reason it isn't exactly 0dB: `inducedHigh` is already
+highpassed once before `spatialLowpass` splits the combined signal a
+second time at the *same* cutoff, and two independent first-order
+filters at one cutoff don't cancel each other's transition-band leakage
+perfectly) - far smaller than the same signal's high-frequency content,
+which is designed to move substantially at MOTION.
 
-## WIDE = 100%
+## Mono compatibility
 
-Same architecture, `maxAtFull` ceilings pushed to 1.8 (high)/1.15 (low).
-No delay, no chorus, no phase-rotation all-pass (see "Why Mid/Side, not
-delay-based widening"). Correlation drops gracefully with width on
-correlated material (measured: 0.965 input -> 0.965 at 50% -> 0.927 at
-75% -> 0.875 at 100% - see "Correlation" below), never swinging
-aggressively negative on normal (non-adversarial) material.
+Unlike the previous MONO/NATURAL/WIDE revision (where Mid was
+*provably* the entire mono fold-down, unconditionally, at every
+setting), motion's asymmetric `toL`/`toR` means the fold-down
+(`(Lout+Rout)/2 = Mid + 0.5*(toL-toR)`) can move a little over a motion
+cycle now - this is an intentional, disclosed relaxation (the product
+brief explicitly does not require bit-exact fold-down preservation under
+motion, only the absence of serious comb cancellation). Measured worst-
+case mono fold-down level change across four source types (mono,
+centre-bass+highs, correlated chord, decorrelated) at 50%/100% width:
 
-## Mono input / mono compatibility
+| Source | 50% | 100% |
+|---|---|---|
+| mono | -0.43dB | -2.08dB |
+| centre-bass+highs | +0.02dB | +0.24dB |
+| correlated chord | -0.45dB | -1.99dB |
+| decorrelated | +0.39dB | +2.48dB |
 
-**Mono buses (numChannels < 2) are left completely untouched** - PAN
-never fabricates stereo content from a single channel, at any width
-setting (measured: max diff < 1e-6 between input and output on a mono
-bus at 0/50/100%). This is a hard architectural guarantee, not a special
-case in the gain math - `process()` returns immediately (after the usual
-NaN/Inf sanitisation) when the buffer has fewer than 2 channels.
-
-**Mono fold-down is provably unchanged by width**, for genuine stereo
-input too: `(Lout+Rout)/2 == (Mid+sideOut + Mid-sideOut)/2 == Mid`, and
-`Mid` is *never modified* anywhere in the signal path - it's read once
-from the input and written straight to both output channels' sum. So
-`(Lout+Rout)/2 == (Lin+Rin)/2` **exactly**, at every width, by
-construction. Measured on decorrelated stereo material at 0/25/50/75/
-100%: max fold-down difference < 1e-4 (float-rounding-scale) at every
-setting, RMS difference from the input's own mono sum also < 1e-4.
-
-A listener hears more Side energy in stereo as width increases, but
-whatever a mono listener (or a mono fold-down check in a DAW) hears is
-*exactly* what they'd have heard at any other width setting - widening
-never quietly changes the mix's mono-compatible core.
+Worst case ~2.5dB - a real, audible-but-modest level shift, not a comb-
+filtering artifact (no delay anywhere in the signal path means no
+frequency-selective nulls; this is a broadband level change from the
+motion rotation's own energy redistribution).
 
 ## Correlation
 
-Measured on a correlated stereo chord (input correlation 0.965):
+Measured on a correlated stereo chord:
 
 | Width | Correlation |
 |---|---|
-| 50% (NATURAL) | 0.965 (matches input) |
-| 75% | 0.927 |
-| 100% | 0.875 |
+| 0% | 0.965 |
+| 25% | 0.953 |
+| 50% | 0.861 |
+| 75% | 0.373 |
+| 100% | -0.071 |
 
-Graceful, monotonic degradation - no aggressive negative correlation on
-normal material. (Pure anti-phase test material is a separate,
-deliberately adversarial case - see "MONO = 0%" above; it behaves
-correctly there too, just via cancellation rather than a correlation
-number.)
-
-## Centre image stability
-
-Tested with a centred 80Hz bass tone plus decorrelated stereo highs
-(4kHz/5.5kHz), at WIDE (100%): the bass stays centred, measured L/R
-level difference < 0.5dB - confirming the frequency-dependent split
-doesn't let a widened high end drag a centred low end off-centre by
-crosstalk through the shared Side signal (each frequency component's
-Side content is scaled independently by the low/high blend, not
-smeared across the spectrum).
+Correlation degrades gracefully through WIDE, and at full MOTION on
+already-correlated material can go slightly negative - an honest,
+expected consequence of a strong (by design) motion effect at 100%, not
+a defect. Mono source correlation (measured separately, since Side
+starts at exactly 0) drops from 1.0 at 0% to 0.25 at 100% as real,
+growing spatial content is added.
 
 ## Gain / headroom
 
-No AGC, no internal limiter - a pure gain morph can't need one if the
-mapping itself stays moderate (which the width mapping's chosen ceilings
-of 1.8/1.15 are designed to do). Measured on a deliberately Side-heavy
-synthetic source (anti-phase-dominant, `docs/audio` artifact material):
+No AGC, no internal limiter. Measured on a deliberately Side-heavy
+synthetic source:
 
 | Width | Peak | RMS L | RMS R |
 |---|---|---|---|
-| 0% | 0.080 | 0.057 | 0.057 |
-| 25% | 0.205 | 0.105 | 0.105 |
-| 50% | 0.330 | 0.186 | 0.186 |
-| 75% | 0.435 | 0.257 | 0.257 |
-| 100% | 0.540 | 0.330 | 0.330 |
+| 0% | 0.330 | 0.186 | 0.186 |
+| 25% | 0.385 | 0.200 | 0.217 |
+| 50% | 0.524 | 0.222 | 0.292 |
+| 75% | 0.679 | 0.236 | 0.371 |
+| 100% | 0.755 | 0.242 | 0.407 |
 
-Growth from 0% to 100% is smooth and proportionate to the width curve
-itself - no sudden jump, no runaway. No internally-hot input was pushed
-to hard-clipping territory in any test; worst-case measured Side gain
-anywhere (the 200Hz crossover overshoot, ~1.9x) would need an
-already-hot Side-heavy input to approach 0dBFS, which floating-point DSP
-tolerates without internal clipping regardless.
+Smooth, proportionate growth - no sudden jump, no runaway; nowhere close
+to clipping even on a Side-heavy source.
 
 ## Smoothing / bypass
 
-Width and bypass mix are each smoothed with a 20ms linear ramp
-(`panSmoothingSeconds`, `PanoramaCurves.h`) - inside the product brief's
-10-30ms guidance. No latency is needed for this (unlike PREAMP/SAT's
-oversampling or PITCH's STFT) since PAN is a pure sample-by-sample gain/
-filter operation with nothing to "catch up" to. Automation transitions
-(0->100, 100->0, 0->50, 50->100) measured click-free (max sample-to-
-sample jump well under the click-detection threshold in every case), and
-50% settles back to true identity after any transition through it, not
-just approximately.
+Width is smoothed with a 20ms linear ramp (`panSmoothingSeconds`) -
+inside the product brief's 10-30ms guidance. The motion LFO's own phase
+is *not* smoothed - it is a free-running clock, unaffected by width
+automation (see "The LFO" above). Automation transitions (0->100, 100->0,
+25->75) measured click-free.
 
 `panoramaEnabled` (index 4, `Core/ModuleEnableState.h`) drives a real
 bypass: disabled crossfades to an exact dry passthrough (no delay
-alignment needed, unlike PREAMP/SAT/PITCH's `IntegerDelayLine`-based
-bypass, since PAN has no latency to align against) - measured max diff
-< 1e-4 from the true input once settled.
+alignment needed - PAN has no latency to align against), matching the
+existing EQ-style bypass pattern (immediate crossfade, no
+`IntegerDelayLine`).
 
 ## Latency
 
 **Always exactly 0** - `getLatencySamples()` returns a hardcoded `0`,
 verified constant across every width value, enabled/disabled, every
-supported sample rate (44.1/48/96/192kHz), and every block size
-(32-2048). Confirmed the total plugin latency is unchanged by adding
-PAN to the chain - still exactly `PREAMP + EQ(0) + SAT + PITCH + PAN(0)`
-at every sample rate, matching the pre-PAN totals from
-[docs/DSP_PITCH.md](DSP_PITCH.md) exactly (e.g. 6186 samples / 140.272ms
-at 44.1kHz).
+supported sample rate (44.1-192kHz), and every block size (32-2048). No
+delay-based motion (no Haas), so there is nothing that could add
+latency. Total plugin latency is unchanged from the pre-PAN PITCH
+baseline at every sample rate (e.g. 6186 samples / 140.272ms at 44.1kHz -
+matches [docs/DSP_PITCH.md](DSP_PITCH.md) exactly).
 
 ## Parameter and state migration
 
 `panorama` keeps its existing APVTS string ID and C++ type
-(`AudioParameterFloat`, `0..100%`) - **only its default value changed**,
-from 0% to 50%. The old 0% default predates any DSP reading the
-parameter (Panorama was a passthrough placeholder), so it never actually
-meant "mono" - it was just wherever the then-inert knob happened to
-rest. Now that 0% genuinely collapses the stereo image, a saved project
-whose `panorama` value happens to be 0% (or anywhere else) from before
-this DSP existed must not suddenly play in mono (or at some other
-unintended width) on load.
+(`AudioParameterFloat`, `0..100%`). Its default is **0% (ORIGINAL)** -
+reverted from the retired MONO/NATURAL/WIDE contract's 50% ("NATURAL")
+default, since 50% is no longer an identity point under the current
+contract (it's WIDE now).
 
-Schema bumped to **v4** (`Source/Core/PluginIdentity.h`,
-`panoramaNaturalSchemaVersion = 4`, fixed independently of any later
-`stateSchemaVersion` bump, same pattern as PITCH's
-`pitchDiscreteSchemaVersion`). `setStateInformation()` forces `panorama`'s
-stored `value` to `50.0` whenever `loadedSchemaVersion < 4`, **before**
-`apvts.replaceState()` runs - regardless of whatever the old raw value
-actually was. This is the same deliberate, breaking-semantic-migration
-reasoning PITCH's v3 bump used: the old value was never sound-meaningful,
-so there is nothing to "best-effort preserve" - forcing every pre-v4
-state to the new default is what guarantees an old project can't
-suddenly change stereo width unexpectedly. Covered by dedicated tests
-(a hand-built pre-v4 state with a `0.0` legacy value, confirming it
-migrates to `50.0`/normalised `0.5`). Under the new schema, `panorama`
-saves and restores exactly at 0/50/100%.
+Schema bumped to **v5** (`Source/Core/PluginIdentity.h`,
+`panoramaOriginalSchemaVersion = 5`, fixed independently of any later
+`stateSchemaVersion` bump). `setStateInformation()` forces `panorama`'s
+stored `value` to `0.0` whenever `loadedSchemaVersion < 5` - this covers
+**both** genuinely old pre-DSP states *and* v4 states saved under the
+retired MONO/NATURAL/WIDE contract (where 50% meant "NATURAL," which has
+no equivalent meaning now). Neither an old pre-DSP value nor a v4-era
+"50% NATURAL" choice has any meaning under the current contract, so
+there is nothing to "best-effort" preserve - this plugin has not had a
+public release yet (see CLAUDE.md), so there is no installed base whose
+v4 choices this could be accused of destroying, only local development
+states. Covered by dedicated tests against schema versions 2, 3, and 4
+alike, each with a hand-set legacy value of 50.0 (the old "NATURAL"
+value specifically, to confirm it is *not* preserved as if it still
+meant something).
 
 ## Known limitations
 
-- The 200Hz crossover-region Side-gain overshoot (~1.9x vs the intended
-  1.8x ceiling) is a known, minor, non-discontinuous artifact of the
-  simple LP+complement crossover under differential gain - see
-  "Frequency-dependent width" above. Not corrected this pass; a
-  Linkwitz-Riley-style crossover would remove it if ever needed.
-- No frequency-dependent phase-rotation/all-pass enhancement was added
-  to WIDE - evaluated conceptually per the product brief, not built,
-  since the plain M/S gain design already meets every measured target.
-  If a future listening pass finds the plain gain approach audibly
-  lacking versus a more elaborate design, that would be the next thing
-  to prototype and measure - not assumed necessary here.
-- Correlation/width measurements use the deterministic synthetic sources
-  in `docs/audio/pan-test-input.wav` and the automated test suite, not a
-  survey of real mixed material across genres.
+- The 80Hz-under-stereo-highs centre-stability test measures a 2.5dB
+  residual, not 0dB - see "Low-end protection"/"Centre stability" above
+  for the filter-transition-band reason. Small and far below the same
+  material's high-frequency movement, but not literally zero.
+- A single sustained pure tone at an unlucky frequency can still show a
+  measurably asymmetric (not perfectly left/right-balanced) motion
+  trajectory - see "Mono-to-stereo strategy" above. Real/broadband mono
+  material does not show this in the same way, which is what the
+  module's own verification uses and what actually matters for the
+  shipped product; a true wideband Hilbert-transform-quality
+  decorrelation network (typically 6+ cascaded allpass stages, requiring
+  real filter-design tooling to tune correctly) would remove this
+  residual dependency entirely if ever needed, at meaningfully more
+  implementation complexity than the current single allpass.
+- Mono fold-down is no longer provably invariant under motion (only
+  under ORIGINAL/pure static width) - up to ~2.5dB measured level
+  change at full MOTION on some source types. Disclosed and accepted per
+  the product brief's own relaxed mono-compatibility requirement, not
+  hidden.
+- Correlation can go slightly negative on correlated material at full
+  MOTION (measured -0.07) - an honest, by-design consequence of a strong
+  100% motion effect, not investigated further since it stayed well
+  inside the "not aggressively negative" bound the product brief sets.

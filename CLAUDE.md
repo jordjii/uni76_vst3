@@ -49,8 +49,9 @@ get oriented without re-reading the whole codebase.
   secondary read-out (the Preamp filter-position lines, the tri-point
   scales on EQ/Pitch/Pan/Verb/Imager) is purely a derived visual computed
   from that same parameter's value in JS - never a second control, never a
-  second parameter. PAN's tri-scale (`MONO`/`NATURAL`/`WIDE`) is a stereo-
-  *width* scale, not L/R balance - see the PAN section below.
+  second parameter. PAN's tri-scale (`ORIGINAL`/`WIDE`/`MOTION`) is a
+  stereo width + slow ear-to-ear motion scale, not L/R balance - see the
+  PAN section below.
 - **7 immutable public parameters.** See below - the UI must never grow an
   8th knob or a new APVTS parameter without a deliberate, separate
   decision.
@@ -87,15 +88,15 @@ constant.
 `preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager` -
 see [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
 Six are `0..100%` `AudioParameterFloat`s: default `50%` for `eq` (its
-centred/flat "PHONE" position) and `panorama` (its centred/neutral
-"NATURAL" position - see below), `0%` for the other four (fully off,
-matching a console where drive/saturation/space/image all start at
-zero). `pitch` is the one exception - a discrete `AudioParameterInt`,
-`-12..+12` semitones, step 1, default `0` (25 fixed positions, no cents -
-see [docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s "Parameter and state
-migration" section). `panorama`'s internal ID is a naming holdover - the
-module it drives is a stereo *width* control, not an L/R balance pan, see
-below. Low Cut / High Cut are **not** separate parameters - they are
+centred/flat "PHONE" position), `0%` for the other five - including
+`panorama` (fully off/ORIGINAL, matching a console where drive/
+saturation/width/space/image all start at zero). `pitch` is the one
+exception - a discrete `AudioParameterInt`, `-12..+12` semitones, step 1,
+default `0` (25 fixed positions, no cents - see
+[docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s "Parameter and state migration"
+section). `panorama`'s internal ID is a naming holdover - the module it
+drives is a stereo width + slow motion control, not an L/R balance pan,
+see below. Low Cut / High Cut are **not** separate parameters - they are
 internal to `Source/DSP/PreampProcessor`, derived entirely from `preamp`
 (see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
 
@@ -182,21 +183,28 @@ bypass pattern as PREAMP/SAT (`Biquad.h`'s `IntegerDelayLine`).
 module - see [docs/DSP_PAN.md](docs/DSP_PAN.md) for the full topology and
 measured data. Despite the `panorama` parameter ID (kept only for
 compatibility, never renamed), **this is not an L/R balance pan** - it's
-a Mid/Side stereo-*width* control: `MONO (0%) <- NATURAL (50%) -> WIDE
-(100%)`. Mid (`0.5*(L+R)`) is passed through completely untouched -
-which is what makes two things *provable*, not just measured: mono
-fold-down (`(Lout+Rout)/2`) is bit-identical to the input's own mono sum
-at every width setting, and NATURAL (50%) is a true identity transform
-even though a fixed 180Hz crossover filter always splits the Side signal
-into low/high bands (their gains are both exactly 1.0 at 50%, and
-`sideLow+sideHigh == Side` algebraically regardless of the filter's own
-response, so the split cancels back out). The low band gets a much
-smaller width ceiling than the high band (1.15x vs 1.8x at 100%) so bass
-stays close to centre even at full WIDE - frequency-dependent width, not
-uniform. No delay-based widening (Haas), no chorus, no random modulation,
-no oversampling - a pure gain/filter morph, zero added latency. Same
-`panoramaEnabled`-driven crossfade bypass pattern as EQ (no delay-
-alignment needed, PAN has no latency to align against).
+a combined stereo width + slow ear-to-ear motion control: `ORIGINAL (0%)
+-> WIDE (50%) -> MOTION (100%)`. (An earlier revision briefly used a
+`MONO (0%) <- NATURAL (50%) -> WIDE (100%)` width-only contract - see
+docs/DSP_PAN.md's product-contract history note; that contract, its
+default, and its migration are all superseded.) Mid (`0.5*(L+R)`) is
+never modified - width/motion apply only to a separately-built "spatial"
+signal (real Side content plus, for mono/near-mono sources, a phase-
+decorrelated "induced" component derived from Mid via a single allpass -
+not a delay, so no comb filtering/wow/flutter/pitch drift), split into
+low/high bands via a first-order crossover (bass gets much smaller width/
+motion ceilings than mid/high), and applied to L/R via a constant-power
+rotation driven by a slow (~0.3Hz), free-running, deterministic LFO whose
+phase is never reset by a parameter change - a stable centre with the
+*surrounding* space moving, not a global auto-pan. ORIGINAL (0%) is a
+provable (not just measured) identity transform: every curve in
+`PanoramaCurves.h` evaluates to its identity value there (width gain 1.0,
+motion depth 0.0, induced blend 0.0), which algebraically collapses the
+whole reconstruction back to the unmodified input regardless of what the
+crossover/allpass filters are doing internally. No delay-based widening
+(Haas), no chorus, no random modulation, no oversampling - zero added
+latency. Same `panoramaEnabled`-driven crossfade bypass pattern as EQ (no
+delay-alignment needed, PAN has no latency to align against).
 
 **Reverb and Imager remain a strict passthrough** - do not add DSP to
 either without a separate, deliberate decision. `Source/DSP/Reverb.h` /
@@ -329,43 +337,61 @@ MSVC 19.51):
   and non-identical (not just dual-mono) stereo content confirming the two
   independent per-channel engines track a shared bass component to within
   0.02% and 0.01dB of each other.
-- **PAN DSP** (Mid/Side stereo width, see [docs/DSP_PAN.md](docs/DSP_PAN.md)):
-  width mapping matches the product brief's target curve at 0/25/50/75/
-  100% (measured 0/0.5/1.0/1.41/1.82 vs targets 0/0.5/1.0/1.4/1.8);
-  NATURAL (50%) measured as a near-identity transform (RMS diff 7.9e-9,
-  max diff 6.0e-8) despite the crossover filter always running, which
-  the topology makes provable rather than just measured (Mid untouched,
-  Side low/high gains both exactly 1.0 at 50%); MONO (0%) gives a
-  correct `(L+R)/2` sum (max diff <1e-4) with anti-phase material
-  cancelling as physically expected, not "fixed"; frequency-dependent
-  Side gain confirmed low (60Hz: 1.27x) widens far less than high
-  (5kHz+: 1.80x) at WIDE, with one honestly-documented minor artifact
-  (a ~5.5% Side-gain overshoot right at the 200Hz crossover under
-  differential gain - smooth, not a discontinuity, not corrected this
-  pass); mono fold-down provably unchanged by width at every setting
-  (Mid is never modified); mono buses (numChannels<2) left completely
-  untouched at every width, no fabricated stereo; centred bass stays
-  centred under WIDE even with decorrelated stereo highs present;
-  correlation degrades gracefully (0.965->0.875 at 100% on correlated
-  material); no runaway gain (peak stays under 0.6 on a deliberately
-  Side-heavy source across the full width range); click-free automation
-  and bypass; zero added latency confirmed at every sample rate/block
-  size/width/enabled state, and confirmed the total plugin latency is
-  unchanged from the pre-PAN PITCH baseline; PITCH+PAN integration
-  (identical-L/R through PITCH's two-engine architecture stays nearly
-  identical through PAN at NATURAL); full 5-module chain integration;
-  backward-compatible state migration from the old, DSP-less 0% default
-  to the new 50% (NATURAL) default (schema v4).
+- **PAN DSP** (width + slow motion, see [docs/DSP_PAN.md](docs/DSP_PAN.md)) -
+  a follow-up pass that replaced an earlier MONO/NATURAL/WIDE width-only
+  revision (commit `0ad8510`) with the current, final ORIGINAL(0%)/
+  WIDE(50%)/MOTION(100%) contract: width mapping matches the product
+  brief's target curve (measured 1.00/1.14/1.45/1.76/1.90 vs targets
+  1.0/~1.2/~1.45/~1.68/~1.9 across 0/25/50/75/100%); ORIGINAL (0%)
+  measured as a near-identity transform (RMS diff ~1e-4-scale) - provable
+  from the topology, not just measured, since every curve evaluates to
+  its identity value at t=0 regardless of what the crossover/allpass
+  filters are doing internally; motion verified via an explicit stereo-
+  centroid trajectory metric growing monotonically with width (RMS
+  excursion 0/0.0016/0.050/0.234/0.348 at 0/25/50/75/100%) that visits
+  clearly left- and right-biased states at MOTION, smoothly and
+  continuously, not just varying shades of one side - closing a real bug
+  found during development (an early induced-signal design was
+  *provably* always negatively correlated with Mid, biasing the whole
+  trajectory toward one side permanently; fixed by using the allpass's
+  raw output instead of its difference against Mid, and by verifying
+  with realistic multi-partial mono material rather than a single
+  worst-case sustained tone); the motion LFO measured sample-rate- and
+  block-size-independent (~3.35s period, target ~3.33s) and confirmed
+  not reset by width automation; combined stereo power stays within
+  ~0.1dB across a full motion cycle (constant-power rotation, proven
+  algebraically for the spatial term and confirmed in the full signal
+  including its Mid cross-term); no pitch drift at MOTION (<0.2% error,
+  100Hz-5kHz); bass motion measured 5-25x smaller than 3kHz's; a second
+  real bug found and fixed - the mono-source "induced" signal initially
+  leaked its own bass-frequency content into the low band (measured
+  22.5dB L/R imbalance on a centred 80Hz tone), fixed by highpassing the
+  induced signal before blending it in (residual dropped to 2.5dB,
+  honestly documented rather than hidden); mono fold-down and
+  correlation are disclosed as no longer bit-exact-invariant under
+  motion specifically (up to ~2.5dB fold-down change, correlation can go
+  slightly negative on correlated material at full MOTION) per the
+  product brief's own relaxed mono-compatibility requirement; no runaway
+  gain; click-free automation/bypass; zero added latency at every sample
+  rate/block size/width/enabled state, confirmed the total plugin
+  latency is unchanged from the pre-PAN PITCH baseline; PITCH+PAN
+  integration (PAN's motion doesn't add wobble to PITCH's already-
+  verified bass stability); full 5-module chain integration; backward-
+  compatible state migration - schema v5 forces *both* genuinely old
+  pre-DSP states *and* v4 states saved under the retired MONO/NATURAL/
+  WIDE contract to the new 0% (ORIGINAL) default, since neither an old
+  value nor a v4-era "50% NATURAL" choice means anything under the
+  current contract.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
   parameters (plus one host-added generic bypass parameter, standard VST3
   hosting behaviour, not a UNI 76 parameter), confirmed PITCH defaults to
-  0 ST and PAN defaults to 50% NATURAL, drove PREAMP/EQ/SAT/PITCH/PAN
+  0 ST and PAN defaults to 0% ORIGINAL, drove PREAMP/EQ/SAT/PITCH/PAN
   through real `processBlock()` calls across the full `-12..+12` ST range,
   the full 0-100% PAN width range, and through a combined full-chain
   setting with real bass, confirmed measurable/bounded/finite output,
-  correct correlation behaviour at WIDE, and correct total (summed)
+  correct correlation behaviour at MOTION, and correct total (summed)
   latency (unchanged by PAN), ran automation sweeps (incl. rapid discrete
   PITCH jumps and the full PAN width range) during continuous audio,
   round-tripped state through a real `getStateInformation()`/
@@ -411,15 +437,28 @@ Not verified (say so plainly rather than guessing):
   "Live UI verification" section and the three real screenshots in
   `docs/screenshots/pitch-{minus12,zero,plus12}.png`. This was PITCH's own
   knob only, still through synthetic (not a human's physical) input, and
-  the other 6 modules' knobs were not re-exercised this way (unchanged
-  since the PREAMP/EQ/SAT pass, not expected to need it). PAN's new
-  DSP/default-value work (this entry) was likewise not exercised this
-  way - verified via the non-GUI VST3 host harness plus the DSP/APVTS
-  test suite, not a live mouse-driven WebView2 session. The UI-visible
-  change for PAN (knob resting position, `50%` label) is a static markup
-  default (`index.html`'s inline `--knob-angle`/`.knob__value`), the same
-  kind of change PITCH's own default-position markup got, just not
-  independently re-verified by screenshot this time.
+  the other 5 modules' knobs were not re-exercised this way (unchanged
+  since the PREAMP/EQ/SAT pass, not expected to need it). A follow-up
+  pass closed this gap for PAN's ORIGINAL/WIDE/MOTION rework specifically
+  (superseding the MONO/NATURAL/WIDE-era PAN entry, which had not been
+  screenshotted): a scratch JUCE host app loaded the real built `.vst3`,
+  created its real WebView2 editor, and confirmed by direct screenshot -
+  not by reading `index.html`/`knob.js` - that a fresh instance renders
+  the PAN knob at its 0% resting position (pointer left, matching every
+  other non-EQ module) with the tri-scale reading `ORIGINAL WIDE MOTION`
+  and its marker at the far left, then used a real host-API automation
+  call (`setValueNotifyingHost`, the same call path a DAW's automation
+  lane uses - not a WebView-internal shortcut) to drive PAN to 100% and
+  confirmed the knob rotated fully, the label read `100% WIDTH`, and the
+  tri-scale marker moved to the far right under `MOTION`, with the rest
+  of the UI (all 6 other modules, header, footer) unchanged from the
+  idle baseline. This was real-value automation rather than a
+  physical/synthetic mouse drag (unlike PITCH's pass above), since the
+  PAN acceptance checklist only required confirming the labels/default/
+  marker are correct, not re-verifying drag-distance-to-value mapping
+  (PAN's knob input handling is shared, unmodified `knob.js` code, already
+  covered by PITCH's synthetic-mouse pass). Screenshots saved at
+  `docs/screenshots/pan-final.png` (PAN ~100%, MOTION).
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

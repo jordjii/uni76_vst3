@@ -36,18 +36,20 @@ namespace uni76
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
 
-        // EQ and PAN both default to their centred/neutral position (50%)
-        // - EQ's flat "PHONE" and PAN's "NATURAL" (the original stereo
-        // image, unprocessed - see docs/DSP_PAN.md). Every other module
-        // defaults to fully off (0%), matching a console where drive/
-        // saturation/pitch/space/image all start at zero. PAN's 50%
-        // default is a deliberate change from its original 0% - see
-        // PluginIdentity.h's panoramaNaturalSchemaVersion for why.
+        // EQ defaults to its centred/flat "PHONE" position (50%). Every
+        // other module - including PAN/`panorama` - defaults to fully off
+        // (0%), matching a console where drive/saturation/pitch/width/
+        // space/image all start at zero. PAN's 0% is its ORIGINAL
+        // (bit-exact identity) position - see docs/DSP_PAN.md. An earlier
+        // revision of this module briefly used a 50% ("NATURAL") default
+        // under a since-superseded MONO/NATURAL/WIDE product contract;
+        // that contract and its default are retired - see
+        // PluginIdentity.h's panoramaOriginalSchemaVersion.
         params.push_back (makePercentParameter (ParamID::preamp,     "Preamp",     0.0f));
         params.push_back (makePercentParameter (ParamID::eq,         "EQ",         50.0f));
         params.push_back (makePercentParameter (ParamID::saturation, "Saturation", 0.0f));
         params.push_back (makePitchParameter());
-        params.push_back (makePercentParameter (ParamID::panorama,   "Panorama",   50.0f));
+        params.push_back (makePercentParameter (ParamID::panorama,   "Panorama",   0.0f));
         params.push_back (makePercentParameter (ParamID::reverb,     "Reverb",     0.0f));
         params.push_back (makePercentParameter (ParamID::imager,     "Imager",     0.0f));
 

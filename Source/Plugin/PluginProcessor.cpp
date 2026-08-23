@@ -201,23 +201,26 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
                 pitchParam.setProperty ("value", 0.0, nullptr);
         }
 
-        // Pre-v4 states saved `panorama` under its old 0%-default
-        // AudioParameterFloat, from before any DSP read it - that old
-        // value (typically 0.0, or whatever a user happened to leave the
-        // then-inert knob at) never meant "mono" and must not suddenly be
-        // interpreted as MONO now that 0% genuinely collapses the stereo
-        // image. Same deliberate breaking-migration reasoning as PITCH's
-        // v3 bump above: force every pre-v4 state to the new default
-        // (50%, NATURAL) rather than "best-effort" preserving a number
-        // that was never sound-meaningful, so an old project that never
-        // touched PAN can't suddenly play in mono after this update.
-        // `panorama`'s parameter ID and C++ type are unchanged - only the
-        // stored value is forced, same mechanism as PITCH's migration.
-        if (loadedSchemaVersion < uni76::panoramaNaturalSchemaVersion)
+        // Pre-v5 states - genuinely old pre-DSP states *and* v4 states
+        // saved under the since-retired MONO/NATURAL/WIDE contract alike
+        // - saved `panorama` under a meaning that no longer exists: a
+        // pre-DSP state's value was never sound-meaningful at all, and a
+        // v4 state's "50% = NATURAL/identity" has no equivalent under the
+        // current ORIGINAL(0%)/WIDE(50%)/MOTION(100%) contract (50% is
+        // now WIDE, not identity). Force every pre-v5 state to the
+        // current default (0%, ORIGINAL) rather than "best-effort"
+        // preserving a number that means something different now - same
+        // deliberate breaking-migration reasoning as PITCH's v3 bump: an
+        // old (or v4-only) project that never touched PAN under the
+        // current contract must not suddenly sound processed after this
+        // update. `panorama`'s parameter ID and C++ type are unchanged -
+        // only the stored value is forced, same mechanism as PITCH's
+        // migration.
+        if (loadedSchemaVersion < uni76::panoramaOriginalSchemaVersion)
         {
             auto panoramaParam = newState.getChildWithProperty ("id", juce::var (uni76::ParamID::panorama));
             if (panoramaParam.isValid())
-                panoramaParam.setProperty ("value", 50.0, nullptr);
+                panoramaParam.setProperty ("value", 0.0, nullptr);
         }
 
         // A pre-v2 (or otherwise missing) flag defaults to enabled=true -

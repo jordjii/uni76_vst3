@@ -249,6 +249,29 @@ namespace uni76::dsp
         biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
     }
 
+    /** 2nd-order allpass - unity magnitude at every frequency (|H(jw)|==1
+        always), only phase changes. Used by PanoramaProcessor to derive a
+        phase-decorrelated ("induced") version of a mono/centre signal
+        without adding, removing, or delaying any spectral content - see
+        docs/DSP_PAN.md's "Mono-to-stereo strategy" section for why this is
+        the phase-safe alternative to a Haas/delay-based approach. */
+    inline void makeAllpass (Biquad& biquad, double sampleRate, float frequencyHz, float q) noexcept
+    {
+        const auto w0    = twoPi * (double) frequencyHz / sampleRate;
+        const auto cosw0 = std::cos (w0);
+        const auto sinw0 = std::sin (w0);
+        const auto alpha = sinw0 / (2.0 * (double) q);
+
+        const auto a0 = 1.0 + alpha;
+        const auto b0 = (1.0 - alpha) / a0;
+        const auto b1 = (-2.0 * cosw0) / a0;
+        const auto b2 = 1.0;
+        const auto a1 = (-2.0 * cosw0) / a0;
+        const auto a2 = (1.0 - alpha) / a0;
+
+        biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
+    }
+
     /** Peaking/bell EQ - broad and low-Q by construction whenever callers
         pass a modest Q (UNI 76's EQ module never uses a high-Q bell - see
         Source/DSP/EqCurves.h). */
