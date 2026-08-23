@@ -46,7 +46,7 @@ namespace uni76::dsp
     // *adds* to the existing stereo image, never subtracts from it. Two
     // independently-tunable ceilings (high/low band, see the crossover
     // below) both share this same t=0 starting point.
-    inline constexpr float panWidthMaxHigh = 1.9f; // high band ceiling at t=1.0 (WIDE/MOTION range: ~1.8-2.0)
+    inline constexpr float panWidthMaxHigh = 1.6f; // reduced from 1.9 during correlation-balancing (see panMotionThetaRange's comment) - was pushing amplified Side power above Mid power on correlated material, flipping L/R correlation negative from width alone, independent of motion
     inline constexpr float panWidthMaxLow  = 1.15f; // low band ceiling at t=1.0 - bass barely widens
 
     inline float panWidthGain (float t01, float maxAtFull) noexcept
@@ -109,29 +109,50 @@ namespace uni76::dsp
     // PanoramaProcessor::process() for the constant-power proof
     // (gainL^2 + gainR^2 == 2 for *any* theta, algebraically, not just
     // measured) this angle-based formulation provides.
-    inline constexpr float panMotionThetaCentre = 0.7853981633974483f; // pi/4
-    inline constexpr float panMotionThetaRange  = 0.7853981633974483f; // pi/4 - depth=1 swings a full quarter-turn either way
-
-    // ---- Low/high band split -----------------------------------------------
     //
-    // A single first-order (6dB/oct) one-pole lowpass splits the spatial
-    // signal into spatialLow/spatialHigh - deliberately gentler than the
-    // previous (MONO/NATURAL/WIDE) revision's 2nd-order Butterworth.
-    // That revision measured a ~5.5% Side-gain overshoot right at its
-    // crossover whenever the two bands carried different gains (a
-    // consequence of the 2nd-order filter's steeper phase excursion
-    // interacting with the complementary-band vector sum - see
-    // docs/DSP_PAN.md's "Frequency-dependent motion and width" section
-    // for the full explanation and the measured before/after). A 1st-order
-    // split has a much smaller worst-case phase shift (max 90 degrees
-    // instead of 180), which measurably reduces that overshoot, and is
-    // *simpler* than what it replaces, not more complex. spatialHigh is
-    // still defined as the exact complement (spatial - LP(spatial)), so
-    // spatialLow + spatialHigh == spatial identically for any filter
-    // shape - the same identity-preserving property the previous design
-    // relied on for its NATURAL point is what makes ORIGINAL (t=0, both
-    // bands' width gain 1.0 and motion depth 0.0) exact here too.
+    // panMotionThetaRange was reduced from a full pi/4 (a full quarter-
+    // turn swing at depth=1) during this round's correlation-balancing
+    // pass: a full quarter-turn drives gainHigh's L/R ratio as far as
+    // ~8:1 at its extreme, which measurably pushed correlation negative
+    // on correlated stereo material at 100% width (measured -0.10 to
+    // -0.13 depending on source). Reducing the *swing*, not the width or
+    // the induced/Side balance (the user's explicit request - don't fix
+    // this by quietly shrinking Side to near-nothing), keeps L<->R
+    // motion clearly audible (a smaller but still wide ~3.4:1 gain
+    // ratio at depth=1) while measurably improving correlation - see
+    // docs/DSP_PAN.md's "Correlation" section for the before/after.
+    inline constexpr float panMotionThetaCentre = 0.7853981633974483f; // pi/4
+    inline constexpr float panMotionThetaRange  = 0.55f; // was pi/4 (0.7853981634)
+
+    // ---- Frequency-dependent gain shelf (WIDTH + MOTION) --------------------
+    //
+    // Two independent low-shelf filters (one per output channel, see
+    // PanoramaProcessor::process()) reshape the spatial signal directly,
+    // rather than splitting it into low/high *bands* first and applying a
+    // different gain to each before summing. Two earlier revisions used a
+    // band-split-then-sum architecture (first a 2nd-order Butterworth
+    // crossover, measured ~5.5% Side-gain overshoot; then a "gentler"
+    // 1st-order crossover, measured ~2.5dB residual near 150-200Hz) - both
+    // still had a genuine mathematical bump, not a tuning problem: any two
+    // complementary bands built from a causal IIR split are phase-shifted
+    // relative to each other (e.g. exactly 90 degrees apart at a 1st-order
+    // crossover's own corner), so `a*low + b*high` (a != b) is a *vector*
+    // sum, not a linear interpolation between a and b - it provably
+    // overshoots both endpoints whenever a != b (see docs/DSP_PAN.md's
+    // "Crossover artifact" section for the derivation and measured before/
+    // after). A single shelf filter has no second, differently-gained path
+    // to vector-sum against - by construction (RBJ cookbook shelf, S=1
+    // "maximally flat" slope - no resonant peaking), its magnitude
+    // response is a smooth, monotonic transition between its own low and
+    // high asymptotes, so no overshoot is possible regardless of how far
+    // apart those two asymptotes are. At 0dB gain (low asymptote == high
+    // asymptote), Biquad.h's makeLowShelf collapses to an exact identity
+    // filter (b0=a0, b1=a1, b2=a2 algebraically, not just approximately),
+    // which is what makes ORIGINAL (t=0, every band gain exactly 1.0)
+    // provably exact here, the same guarantee the previous band-split
+    // design relied on its own complementary-subtraction identity for.
     inline constexpr float panCrossoverHz = 150.0f;
+    inline constexpr float panShelfSlope  = 1.0f; // RBJ "S" - 1.0 is the maximally-flat, no-overshoot slope
 
     // ---- Induced-decorrelation allpass --------------------------------------
     //

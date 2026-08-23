@@ -4839,8 +4839,12 @@ public:
             std::cout << "\n=== PAN curve mapping (PanoramaCurves.h, direct) ===" << std::endl;
 
             struct Case { float t; float widthTarget; };
+            // Targets reduced from an earlier {1.2,1.45,1.675,1.9} during
+            // this round's correlation-balancing pass - see
+            // panWidthMaxHigh's comment in PanoramaCurves.h and
+            // docs/DSP_PAN.md's "Correlation" section.
             const Case widthCases[] {
-                { 0.0f, 1.0f }, { 0.25f, 1.2f }, { 0.5f, 1.45f }, { 0.75f, 1.675f }, { 1.0f, 1.9f },
+                { 0.0f, 1.0f }, { 0.25f, 1.1f }, { 0.5f, 1.3f }, { 0.75f, 1.5f }, { 1.0f, 1.6f },
             };
             for (const auto& c : widthCases)
             {
@@ -5213,6 +5217,125 @@ public:
             juce::ignoreUnused (windowLen);
         }
 
+        beginTest ("Crossover-region frequency response has no unexpected bump/dip (no vector-sum overshoot beyond the shelf's own asymptotes)");
+        {
+            // Regression guard for the specific bug fixed this round: a
+            // band-split-then-differently-gained-sum crossover is a
+            // *vector* sum of phase-shifted complementary paths, which
+            // provably overshoots both endpoint gains whenever they
+            // differ (see docs/DSP_PAN.md's "Crossover artifact"
+            // section) - replaced by two independent single-channel
+            // shelf filters (PanoramaProcessor.cpp), which by
+            // construction (RBJ S=1 shelf - monotonic, no resonant
+            // peaking) cannot overshoot their own two asymptotes. This
+            // test measures the real Side-signal response at 14
+            // frequencies spanning 40Hz-10kHz and checks that no
+            // interior frequency - especially the 100-300Hz crossover
+            // region itself - pokes outside the envelope set by the
+            // deepest-low/deepest-high measurements.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float amplitude = 0.3f;
+
+            const float testFreqs[] { 40.0f, 60.0f, 80.0f, 100.0f, 120.0f, 150.0f, 180.0f, 200.0f, 250.0f, 300.0f, 500.0f, 1000.0f, 5000.0f, 10000.0f };
+            constexpr size_t numFreqs = sizeof (testFreqs) / sizeof (testFreqs[0]);
+
+            auto measureSideResponseDb = [&] (float width, float freqHz) -> float
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+
+                // A pure anti-phase (Side-only, Mid==0) tone isolates the
+                // width/motion shelf's own response: Mid==0 means
+                // induced==allpass(0)==0 too, so nothing but real Side
+                // content and the shelves are under test.
+                //
+                // Deliberately a SHORT, fixed-duration window (~50ms),
+                // not one scaled to "many cycles" of the tone or to a
+                // full ~3.33s LFO period, for two reasons found while
+                // building this test: (1) generateSine() accumulates
+                // phase in `float`, which drifts audibly over the
+                // hundreds of thousands of samples a low-frequency,
+                // many-cycle window would need, corrupting the
+                // measurement itself (a test bug, not a PAN bug) - a
+                // short window avoids that entirely; (2) using a window
+                // whose *duration* varies wildly by frequency (a few ms
+                // at 10kHz vs most of a second at 40Hz) would sample the
+                // free-running LFO at inconsistent phases per frequency,
+                // making the frequencies incomparable. A fixed short
+                // settle+window instead measures every frequency at
+                // (very nearly) the *same* LFO phase, close to lfoSin=0
+                // (theta==thetaCentre, i.e. the plain symmetric-width
+                // case) - exactly what isolates the shelf's own width
+                // response from motion's separate, already-tested
+                // time-domain behaviour.
+                // 0.1s is an exact integer number of cycles for every
+                // frequency in testFreqs[] (4, 6, 8, 10, 12, 15, 18, 20,
+                // 25, 30, 50, 100, 500, 1000 cycles respectively), so the
+                // Goertzel bin lands exactly on each one with no leakage.
+                const auto settle = (int) (0.1 * sr);
+                const auto window = (int) (0.1 * sr);
+                const auto totalSamples = settle + window + 64;
+
+                auto input = generateAntiPhase (totalSamples, sr, freqHz, amplitude);
+                auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
+
+                juce::AudioBuffer<float> sideOnly (1, totalSamples);
+                for (int i = 0; i < totalSamples; ++i)
+                    sideOnly.setSample (0, i, 0.5f * (output.getSample (0, i) - output.getSample (1, i)));
+
+                const auto mag = goertzelMagnitude (sideOnly, 0, settle, window, sr, freqHz);
+                return 20.0f * std::log10 (juce::jmax (mag, 1.0e-9f) / amplitude);
+            };
+
+            std::cout << "\n=== PAN crossover-region frequency response (dB, Side-only input) ===" << std::endl;
+            for (auto width : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                std::vector<float> responseDb;
+                for (auto freq : testFreqs)
+                    responseDb.push_back (measureSideResponseDb (width, freq));
+
+                std::cout << "  width=" << (width * 100.0f) << "%:";
+                for (size_t i = 0; i < numFreqs; ++i)
+                    std::cout << " " << testFreqs[i] << "Hz=" << responseDb[i] << "dB";
+                std::cout << std::endl;
+
+                if (width > 0.0f)
+                {
+                    const auto lowRef  = responseDb.front();
+                    const auto highRef = responseDb.back();
+                    const auto envelopeMin = juce::jmin (lowRef, highRef) - 0.5f;
+                    const auto envelopeMax = juce::jmax (lowRef, highRef) + 0.5f;
+
+                    for (size_t i = 1; i + 1 < numFreqs; ++i)
+                        expect (responseDb[i] >= envelopeMin && responseDb[i] <= envelopeMax,
+                                juce::String (testFreqs[i]) + "Hz at " + juce::String (width * 100.0f) + "%: " + juce::String (responseDb[i])
+                                    + "dB is outside the [" + juce::String (envelopeMin) + ", " + juce::String (envelopeMax)
+                                    + "]dB envelope set by the 40Hz/10kHz asymptotes - crossover bump/dip");
+
+                    // Monotonicity through the 100-300Hz crossover region
+                    // itself: since the high-band ceiling is always >=
+                    // the low-band ceiling (see PanoramaCurves.h), the
+                    // *intended* response only ever rises with frequency
+                    // - a naturally steep rise right around the shelf's
+                    // own corner is expected and NOT what this test is
+                    // guarding against (an earlier version of this check
+                    // used a flat per-step dB cap here and had to be
+                    // corrected - it was flagging the shelf's normal,
+                    // monotonic transition slope as if it were a bump).
+                    // What must never happen is a *reversal* - a point
+                    // reading measurably lower than the one below it in
+                    // frequency - which is what an actual crossover bump
+                    // or dip would produce.
+                    for (size_t i = 4; i <= 9; ++i) // 120,150,180,200,250,300Hz vs their predecessor
+                        expect (responseDb[i] >= responseDb[i - 1] - 0.1f,
+                                "response should not dip going from " + juce::String (testFreqs[i - 1]) + "Hz to " + juce::String (testFreqs[i])
+                                    + "Hz at " + juce::String (width * 100.0f) + "%: " + juce::String (responseDb[i - 1]) + "dB -> " + juce::String (responseDb[i]) + "dB");
+                }
+            }
+            std::cout << "=== end crossover-region frequency response ===" << std::endl << std::endl;
+        }
+
         beginTest ("Mono fold-down stays musical (no serious comb cancellation) across widths, on varied source material");
         {
             constexpr double sr = 44100.0;
@@ -5280,7 +5403,7 @@ public:
                 auto output = runPanoramaProcessor (pan, input, blockSize, width, true);
                 const auto stats = measureStereo (output, settle, totalSamples - settle);
 
-                std::cout << "  width=" << (width * 100.0f) << "%: correlation=" << stats.correlation << std::endl;
+                std::cout << "  width=" << (width * 100.0f) << "%: correlation=" << stats.correlation << " sideMidRatio=" << stats.sideMidRatio << std::endl;
                 expect (stats.correlation > -0.3, "correlation should not be driven aggressively negative on correlated material at " + juce::String (width * 100.0f) + "%");
             }
             std::cout << "=== end correlation vs width ===" << std::endl << std::endl;

@@ -1,6 +1,7 @@
 #include "PanoramaProcessor.h"
 #include "PanoramaCurves.h"
 
+#include <algorithm>
 #include <cmath>
 
 namespace uni76::dsp
@@ -12,7 +13,6 @@ namespace uni76::dsp
 
         makeAllpass (midAllpass, sampleRate, panAllpassHz, panAllpassQ);
         inducedLowpass.setCutoffHz (sampleRate, panCrossoverHz);
-        spatialLowpass.setCutoffHz (sampleRate, panCrossoverHz);
 
         dryScratch.setSize (2, maximumBlockSize, false, false, true);
 
@@ -32,7 +32,8 @@ namespace uni76::dsp
     {
         midAllpass.reset();
         inducedLowpass.reset();
-        spatialLowpass.reset();
+        shelfL.reset();
+        shelfR.reset();
         lfoPhase = 0.0;
     }
 
@@ -106,11 +107,11 @@ namespace uni76::dsp
             // `induced` is derived from the *full* Mid signal, which
             // includes any real bass the source has - without removing
             // that bass-frequency content here, synthesised spatial
-            // energy would leak into the low band below and get width/
-            // motion-processed there too (even though the low-band
-            // ceilings are small), moving bass that was never really
-            // stereo to begin with. `inducedHigh` is what's left after
-            // subtracting the induced signal's own low band.
+            // energy would leak into the low band and get width/motion-
+            // processed there too (even though the low-band ceilings are
+            // small), moving bass that was never really stereo to begin
+            // with. `inducedHigh` is what's left after subtracting the
+            // induced signal's own low band.
             const auto inducedLow  = inducedLowpass.processSample (induced);
             const auto inducedHigh = induced - inducedLow;
 
@@ -119,9 +120,6 @@ namespace uni76::dsp
             // value - real Side content is the only thing ORIGINAL ever
             // reproduces, never synthesised content.
             const auto spatialRaw = side + inducedHigh * panInducedBlend (t);
-
-            const auto spatialLow  = spatialLowpass.processSample (spatialRaw);
-            const auto spatialHigh = spatialRaw - spatialLow; // exact complement, always
 
             const auto widthLow  = panWidthGain (t, panWidthMaxLow);
             const auto widthHigh = panWidthGain (t, panWidthMaxHigh);
@@ -136,26 +134,43 @@ namespace uni76::dsp
             const auto thetaLow  = panMotionThetaCentre + motionLow  * lfoSin * panMotionThetaRange;
             const auto thetaHigh = panMotionThetaCentre + motionHigh * lfoSin * panMotionThetaRange;
 
-            // Equal-power rotation: gainL^2 + gainR^2 == (sqrt2*cos)^2 +
-            // (sqrt2*sin)^2 == 2*(cos^2+sin^2) == 2, for *any* theta -
-            // an algebraic identity, not a measured approximation. At
-            // theta==thetaCentre (pi/4), gainL==gainR==1.0, i.e. plain
-            // symmetric width with no motion bias - the LFO only ever
-            // *redistributes* a fixed spatial-energy budget between L and
-            // R, never creates or destroys it.
-            const auto gainLLow  = sqrt2 * std::cos (thetaLow);
-            const auto gainRLow  = sqrt2 * std::sin (thetaLow);
-            const auto gainLHigh = sqrt2 * std::cos (thetaHigh);
-            const auto gainRHigh = sqrt2 * std::sin (thetaHigh);
+            // Equal-power rotation baked directly into each band's gain:
+            // gainLow^2 + gainHigh^2 (same channel) == width^2 * ((sqrt2
+            // *cos)^2+(sqrt2*sin)^2) == 2*width^2 at that band's own
+            // asymptote frequency, for *any* theta - an algebraic
+            // identity at each shelf asymptote, not a measured
+            // approximation. At theta==thetaCentre (pi/4) and width==1,
+            // gainL==gainR==1.0, i.e. plain symmetric width with no
+            // motion bias.
+            const auto gainLLow  = widthLow  * sqrt2 * std::cos (thetaLow);
+            const auto gainLHigh = widthHigh * sqrt2 * std::cos (thetaHigh);
+            const auto gainRLow  = widthLow  * sqrt2 * std::sin (thetaLow);
+            const auto gainRHigh = widthHigh * sqrt2 * std::sin (thetaHigh);
 
-            const auto toL = spatialLow * widthLow * gainLLow + spatialHigh * widthHigh * gainLHigh;
-            const auto toR = spatialLow * widthLow * gainRLow + spatialHigh * widthHigh * gainRHigh;
+            // Each output channel gets its own single monotonic low-shelf
+            // (not a crossover split shared between channels) whose low/
+            // high asymptotes are exactly that channel's own low/high-
+            // band gain above - see the class comment in
+            // PanoramaProcessor.h and docs/DSP_PAN.md's "Crossover
+            // artifact" section for why this construction cannot produce
+            // a vector-sum bump the way splitting spatialRaw into two
+            // *shared* bands and weighting each differently did. At t=0,
+            // gainLLow==gainLHigh==gainRLow==gainRHigh==1.0 exactly (see
+            // above), so both shelves' gainDb collapses to exactly 0dB -
+            // an algebraically exact identity filter (see Biquad.h's
+            // makeLowShelf) - and toL==toR==spatialRaw==side exactly.
+            constexpr float minGain = 1.0e-6f;
+            const auto gainDbL = 20.0f * std::log10 (std::max (minGain, gainLLow) / std::max (minGain, gainLHigh));
+            makeLowShelf (shelfL, sampleRate, panCrossoverHz, gainDbL, panShelfSlope);
+            const auto toL = shelfL.processSample (spatialRaw) * gainLHigh;
 
-            // Mid is never touched - at t=0 (widthLow==widthHigh==1.0,
-            // gainL==gainR==1.0 both bands), toL==toR==spatialLow+
-            // spatialHigh==spatialRaw==side exactly, so wetL/wetR
-            // collapse to the exact input L/R - see the class comment in
-            // PanoramaProcessor.h.
+            const auto gainDbR = 20.0f * std::log10 (std::max (minGain, gainRLow) / std::max (minGain, gainRHigh));
+            makeLowShelf (shelfR, sampleRate, panCrossoverHz, gainDbR, panShelfSlope);
+            const auto toR = shelfR.processSample (spatialRaw) * gainRHigh;
+
+            // Mid is never touched - at t=0, toL==toR==spatialRaw==side
+            // exactly, so wetL/wetR collapse to the exact input L/R - see
+            // the class comment in PanoramaProcessor.h.
             const auto wetL = mid + toL;
             const auto wetR = mid - toR;
 

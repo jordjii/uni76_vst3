@@ -19,6 +19,17 @@ to mono," it is "leave the input alone." The retired contract's default
 (50%) and its state-migration logic are both superseded (see "Parameter
 and state migration" below).
 
+**Topology history**: the first working revision of the current
+ORIGINAL/WIDE/MOTION contract (commit `b6f83ca`) built `toL`/`toR` by
+splitting the spatial signal into low/high *bands* via a crossover filter
+and applying a different real gain to each band before summing. That
+architecture measured a genuine, mathematically-explained frequency-
+response bump right around its own crossover frequency whenever the two
+bands' gains differed (which is whenever width/motion is above 0%) - see
+"Crossover artifact" below for the root cause and the fix. The topology
+below is the corrected version: two independent per-channel shelf filters
+instead of a shared band split.
+
 ## Topology
 
 ```
@@ -31,25 +42,34 @@ Input (L, R)
        -> inducedHigh = induced - LP(induced)  (removes induced's own bass -
                                                  see "Low-end protection")
   -> spatialRaw = Side + inducedHigh * inducedBlend(t)
-  -> spatialLow  = LP(spatialRaw)               (single first-order lowpass)
-  -> spatialHigh = spatialRaw - spatialLow      (exact complement)
-  -> theta_low  = pi/4 + motionDepthLow(t)  * sin(lfoPhase) * pi/4
-  -> theta_high = pi/4 + motionDepthHigh(t) * sin(lfoPhase) * pi/4
-  -> toL = spatialLow*widthLow(t)*sqrt2*cos(theta_low)  + spatialHigh*widthHigh(t)*sqrt2*cos(theta_high)
-  -> toR = spatialLow*widthLow(t)*sqrt2*sin(theta_low)  + spatialHigh*widthHigh(t)*sqrt2*sin(theta_high)
+  -> theta_low  = pi/4 + motionDepthLow(t)  * sin(lfoPhase) * thetaRange
+  -> theta_high = pi/4 + motionDepthHigh(t) * sin(lfoPhase) * thetaRange
+  -> gainL_low  = widthLow(t)  * sqrt2*cos(theta_low)
+  -> gainL_high = widthHigh(t) * sqrt2*cos(theta_high)
+  -> gainR_low  = widthLow(t)  * sqrt2*sin(theta_low)
+  -> gainR_high = widthHigh(t) * sqrt2*sin(theta_high)
+  -> toL = shelf(spatialRaw; lowAsymptote=gainL_low, highAsymptote=gainL_high)
+  -> toR = shelf(spatialRaw; lowAsymptote=gainR_low, highAsymptote=gainR_high)
   -> Lout = Mid + toL
   -> Rout = Mid - toR
   -> enable/disable crossfade against a dry copy (zero latency, no delay-alignment needed)
   -> Output
 ```
 
-`t` is the raw `panorama` APVTS value (0..1). Every curve in
+`toL` and `toR` are each produced by their **own, independent** RBJ
+low-shelf filter (`Biquad.h`'s `makeLowShelf`, corner `panCrossoverHz` =
+150Hz, slope `panShelfSlope` = 1.0 "maximally flat") applied directly to
+`spatialRaw` - not a shared crossover split feeding two differently-
+gained sums. `t` is the raw `panorama` APVTS value (0..1). Every curve in
 `PanoramaCurves.h` (`widthLow`/`widthHigh`, `motionDepthLow`/
 `motionDepthHigh`, `inducedBlend`) evaluates to its **identity value at
-t=0** - width gain 1.0, motion depth 0.0, induced blend 0.0 - which is
-what makes ORIGINAL provably (not just measured) a bypass: with those
-values, `toL == toR == spatialLow+spatialHigh == spatialRaw == Side`
-exactly, so `Lout = Mid+Side = L`, `Rout = Mid-Side = R`.
+t=0** - width gain 1.0, motion depth 0.0, induced blend 0.0 - so
+`gainL_low == gainL_high == gainR_low == gainR_high == 1.0` exactly at
+t=0, both shelves' gain collapses to exactly 0dB (an algebraically exact
+identity filter - see "Crossover artifact" below), and
+`toL == toR == spatialRaw == Side` exactly, so `Lout = Mid+Side = L`,
+`Rout = Mid-Side = R`. This is what makes ORIGINAL provably (not just
+measured) a bypass.
 
 ### Why a stable core + a separately-processed spatial signal
 
@@ -124,35 +144,145 @@ documented characteristic, not a hidden gap**: a literal single sustained
 pure tone at some specific unlucky frequency can still show a measurably
 asymmetric spatial trajectory. Real material does not.
 
+## Crossover artifact
+
+A follow-up pass (after `b6f83ca`) fixed a real, mathematically-explained
+frequency-response artifact - a ~2.5dB "coloration" measured around
+150-200Hz whenever width/motion was above 0%, i.e. a random-looking EQ
+bump the user got just from turning PAN up, with no way to avoid it.
+
+**Root cause.** `b6f83ca`'s topology split the spatial signal into two
+bands via a crossover (`spatialLow = LP(spatialRaw)`, `spatialHigh =
+spatialRaw - spatialLow` - exact complement, algebraically) and applied a
+*different real gain* to each band before summing: `toL = spatialLow*a +
+spatialHigh*b`. This construction is exact and identity-preserving when
+`a == b` (the ORIGINAL/t=0 case), but for `a != b` (every other setting)
+it is provably **not** a linear interpolation between `a` and `b` at the
+crossover frequency. A causal lowpass has both magnitude *and phase* -
+for a 1st-order filter at its own corner frequency, `LP(jwc) =
+0.5-0.5j` (45 degrees of phase lag) and its complement `1-LP(jwc) =
+0.5+0.5j` (45 degrees of phase *lead*) - the two bands are 90 degrees
+apart (in quadrature), not in phase with each other. Weighting two
+quadrature vectors by different real scalars and summing is a **vector
+sum**, not a scalar interpolation:
+
+```
+|a*LP + b*(1-LP)| at fc = 0.5*sqrt(2a^2 + 2b^2) = sqrt((a^2+b^2)/2)
+```
+
+By the QM-AM inequality, `sqrt((a^2+b^2)/2) >= (a+b)/2` always, with
+equality only at `a == b`. So the combined gain right at the crossover
+provably **exceeds** the naive average of the two band gains whenever
+they differ - a genuine overshoot, not a measurement artifact, and not
+something any amount of *retuning the same architecture* (crossover
+order, Q, or corner frequency) can eliminate outright, since it follows
+from the two bands' phase relationship, not their exact shape. (A 2nd-
+order crossover was tried first, in the module's very first revision,
+and measured a *larger* ~5.5% overshoot - consistent with a steeper
+filter's larger phase excursion producing a bigger quadrature mismatch,
+not a smaller one.)
+
+**Fix.** Replaced the shared band-split-then-sum with **two independent
+per-channel RBJ low-shelf filters** (`toL`/`toR`, see "Topology" above) -
+each channel's output comes from exactly *one* filter with no second,
+differently-gained path to vector-sum against. A well-designed shelf
+(RBJ cookbook, slope `S=1`, "maximally flat") has a magnitude response
+that transitions **monotonically** between its own two asymptotes by
+construction - no resonant peaking, hence no possible overshoot,
+regardless of how far apart the two asymptotes are. At 0dB gain (both
+asymptotes equal), `Biquad.h`'s `makeLowShelf` algebraically collapses to
+`b0=a0, b1=a1, b2=a2` - an exact identity filter, not an approximation -
+which is what keeps ORIGINAL provably exact under the new topology too.
+
+Shelf coefficients are recomputed **every sample**, not once per block
+(unlike `EqProcessor`'s convention): PAN's target gain is itself
+audio-rate, driven by the free-running motion LFO, not just a slow
+user/automation macro - a per-block update would show up as an audible
+staircase in the motion trajectory at large host block sizes.
+
+**Symptom, previously measured on the old topology**: the "Low-end
+protection"/"Centre stability" sections of an earlier revision of this
+document reported a ~2.5dB L/R residual for a centred bass tone under
+MOTION, and the module's very first (2nd-order-crossover) revision
+measured a larger ~5.5% Side-gain overshoot at its own crossover -
+both consistent with, and now explained by, the vector-sum derivation
+above. No clean full-spectrum frequency sweep of the old topology exists
+(the sweep test below was built *for* this fix, after the old topology
+had already been replaced in code) - the derivation above is offered as
+the root-cause proof, not an additional empirical measurement of the old
+code.
+
+**Measured on the new (shelf-based) topology** - real Side-signal
+response, 14 frequencies 40Hz-10kHz, anti-phase test tone so `Mid==0`
+and only the shelves under test contribute, a short fixed-duration
+~100ms settle+window sized so every one of the 14 frequencies lands on
+an exact Goertzel bin (see the note below on why):
+
+| Frequency | 25% | 50% | 75% | 100% |
+|---|---|---|---|---|
+| 40Hz | +0.20dB | +0.64dB | +1.04dB | +1.22dB |
+| 100Hz | +0.30dB | +0.89dB | +1.43dB | +1.65dB |
+| 150Hz (crossover) | +0.49dB | +1.43dB | +2.24dB | +2.57dB |
+| 200Hz | +0.64dB | +1.86dB | +2.88dB | +3.30dB |
+| 300Hz | +0.74dB | +2.16dB | +3.35dB | +3.82dB |
+| 10000Hz | +0.76dB | +2.24dB | +3.49dB | +3.99dB |
+
+Smooth and **perfectly monotonic** at every width - zero envelope
+violations (no interior frequency exceeds the range set by the 40Hz/
+10kHz asymptotes) and zero frequency-order reversals, verified by a
+dedicated regression test (`Tests/PluginTests.cpp`'s "Crossover-region
+frequency response..." test, run at all five macro values). At 0% every
+frequency reads within 0.02dB of 0dB (the residual is float rounding
+noise, not a filter artifact).
+
+*A note on the measurement window*: an early version of this same test
+used a long (200-cycle) window and reported huge, obviously-wrong dB
+swings (down to -25dB) even at 0% width, where the output is
+algebraically guaranteed to be exact identity. That turned out to be a
+**test-methodology bug**, not a DSP bug: `float`-precision phase
+accumulation in the test tone generator drifts audibly over the hundreds
+of thousands of samples such a long, low-frequency window needs, and a
+window whose *duration* varies by frequency samples the free-running
+motion LFO at a different, inconsistent phase per frequency. Both are
+fixed by the short, fixed, per-frequency-bin-aligned window described
+above - caught and corrected before trusting any number in this section,
+consistent with the project's practice of distinguishing a genuine DSP
+bug from a test-design artifact rather than "fixing" either blindly.
+
 ## Low-end protection
 
 Two separate mechanisms protect bass, addressing two different sources
 of low-frequency movement:
 
 1. **Width/motion ceilings are deliberately much smaller for the low
-   band** (`panWidthMaxLow = 1.15` vs `panWidthMaxHigh = 1.9`;
-   `panMotionDepthMaxLow = 0.12` vs `panMotionDepthMaxHigh = 0.85`), split
-   via a single first-order (gentle, not brickwall) lowpass at 150Hz
-   (`panCrossoverHz`). `spatialHigh` is defined as `spatialRaw -
-   spatialLow` (the filter's algebraic complement, not a second,
-   independently-designed filter), so `spatialLow + spatialHigh ==
-   spatialRaw` exactly for any filter history - the same
-   identity-preserving trick the module's static-width predecessor used.
+   band** (`panWidthMaxLow = 1.15` vs `panWidthMaxHigh = 1.6`;
+   `panMotionDepthMaxLow = 0.12` vs `panMotionDepthMaxHigh = 0.85`),
+   applied via the two independent shelf filters above (each shelf's own
+   low/high asymptote *is* that channel's low-band/high-band gain - see
+   "Topology"), not a shared crossover split.
 
 2. **`induced`'s own bass content is removed before it ever reaches the
-   spatial signal** (`inducedHigh = induced - LP(induced)`, same 150Hz
-   cutoff). This was a real bug found by testing, not a theoretical
-   concern: Mid (what the allpass reads) contains the source's actual
-   bass whenever there is any, so without this step, synthesised
-   spatial energy would leak into the low band and get width/motion-
-   processed there too - even with a small ceiling, moving bass that
-   was never really stereo to begin with. Measured before the fix: a
-   centred 80Hz bass tone (with decorrelated stereo highs also present)
-   showed a **22.5dB** L/R imbalance at MOTION - clearly audible,
-   clearly wrong. After adding the induced-signal highpass: **2.5dB** -
-   a small, honestly-documented residual (see "Centre stability" below
-   for why it isn't exactly 0dB) that is far below what the same source's
-   high-frequency content shows.
+   spatial signal** (`inducedHigh = induced - LP(induced)`, a gentle
+   1-pole lowpass, same 150Hz cutoff). This was a real bug found by
+   testing, not a theoretical concern: Mid (what the allpass reads)
+   contains the source's actual bass whenever there is any, so without
+   this step, synthesised spatial energy would leak into the low band
+   and get width/motion-processed there too - even with a small ceiling,
+   moving bass that was never really stereo to begin with. Measured
+   before this mechanism existed: a centred 80Hz bass tone (with
+   decorrelated stereo highs also present) showed a **22.5dB** L/R
+   imbalance at MOTION - clearly audible, clearly wrong. With the
+   1-pole induced-signal highpass: **~2.6-2.9dB** (measured across
+   several rounds of otherwise-unrelated retuning, see "Centre
+   stability" below) - small, honestly-documented, and unrelated to the
+   crossover-artifact fix above: **a steeper 2nd-order Butterworth was
+   tried here too**, on the reasoning that a steeper cutoff should leak
+   less of `induced`'s own bass, and measured *worse* (~3.4dB) - the
+   same vector-sum mechanism "Crossover artifact" describes applies
+   here too whenever a filter's complement is built by subtraction and
+   then given a different downstream gain, and a 2nd-order filter's
+   larger phase excursion made the mismatch bigger, not smaller.
+   Reverted; the 1-pole stays.
 
 ## Width mapping
 
@@ -163,13 +293,22 @@ AIR have, since 50% is no longer a special point under this contract.
 
 Measured (`PanoramaCurves.h`'s pure functions, high band):
 
-| Width | Target | Measured |
-|---|---|---|
-| 0% | 1.0 | 1.000 |
-| 25% | ~1.15-1.25 | 1.141 |
-| 50% | ~1.4-1.5 | 1.450 |
-| 75% | ~1.6-1.75 | 1.759 |
-| 100% | ~1.8-2.0 | 1.900 |
+| Width | Measured |
+|---|---|
+| 0% | 1.000 |
+| 25% | 1.094 |
+| 50% | 1.300 |
+| 75% | 1.506 |
+| 100% | 1.600 |
+
+`panWidthMaxHigh` was reduced from an earlier 1.9 to 1.6 during the
+correlation-balancing pass (see "Correlation" below) - amplifying Side
+up to 1.9x was, on its own (independent of any motion rotation), enough
+to push Side's power above Mid's power on realistic correlated material,
+which is mathematically sufficient to flip the L/R correlation sign
+regardless of motion. 1.6 is still a substantial, clearly audible
+widening at 100%, just no longer strong enough on its own to invert
+correlation on typical material.
 
 Low band (`panWidthMaxLow = 1.15`) uses the identical shape scaled to a
 much smaller ceiling - width never lets bass get proportionally as wide
@@ -206,10 +345,19 @@ LFO's own zero-crossing), `gainL == gainR == 1.0` - the ordinary
 symmetric-width case. The LFO only ever *redistributes* a fixed
 spatial-energy budget between L and R; it does not create or destroy it.
 Measured combined stereo power (`L^2+R^2`) over a full motion cycle at
-MOTION (100%): **-0.10dB to +0.12dB** - comfortably inside the ~1dB
-target, confirming this isn't just algebraically constant for the
-spatial term alone but stays close to constant for the *whole* output
-including its cross-term with Mid.
+MOTION (100%): **-0.13dB to +0.13dB** - comfortably inside the ~1dB
+target (well inside the tighter 0.5dB target the correlation-balancing
+pass re-checked this against too), confirming this isn't just
+algebraically constant for the spatial term alone but stays close to
+constant for the *whole* output including its cross-term with Mid.
+
+`panMotionThetaRange` (how far theta swings from centre at full depth)
+was reduced from a full `pi/4` (a full quarter-turn) to `0.55` radians
+during the same correlation-balancing pass - see "Correlation" below.
+This softens the *peak* L/R gain ratio during rotation (from ~8:1 to
+~3.4:1 at depth=1) without touching width, Side amplitude, or the
+induced-signal blend - the user's explicit direction was not to fix
+correlation by quietly shrinking Side to near-nothing.
 
 ### Motion cycle - measured
 
@@ -219,18 +367,21 @@ including its cross-term with Mid.
 | Width | Centroid min | Centroid max | RMS excursion |
 |---|---|---|---|
 | 0% | 0.000 | 0.000 | 0.000 |
-| 25% | -0.0095 | -0.0040 | 0.0016 |
-| 50% | -0.100 | +0.043 | 0.050 |
-| 75% | -0.331 | +0.287 | 0.234 |
-| 100% | -0.449 | +0.442 | 0.348 |
+| 25% | -0.0084 | -0.0039 | 0.0014 |
+| 50% | -0.075 | +0.020 | 0.032 |
+| 75% | -0.247 | +0.174 | 0.152 |
+| 100% | -0.351 | +0.290 | 0.237 |
 
 Excursion grows monotonically with width; at MOTION (100%) the
-trajectory visits clearly left-biased (-0.45) and clearly right-biased
-(+0.44) states, smoothly and continuously (no window-to-window jump
+trajectory visits clearly left-biased (-0.35) and clearly right-biased
+(+0.29) states, smoothly and continuously (no window-to-window jump
 resembling a discontinuity was measured), not just varying shades of one
 side - the failure mode the product brief explicitly called out and the
 one the induced-signal fix above (see "Mono-to-stereo strategy") was
-built to close.
+built to close. Excursion is smaller than an earlier round's ~0.35-0.45
+figures (the direct result of the `panMotionThetaRange`/`panWidthMaxHigh`
+reductions above), but still clearly, audibly visits both sides, not a
+subtle wobble.
 
 ### Not an auto-pan
 
@@ -246,14 +397,14 @@ Measured centroid RMS excursion at MOTION (100%), mono tone sources:
 
 | Frequency | Excursion |
 |---|---|
-| 40 Hz | 0.012 |
-| 60 Hz | 0.031 |
-| 80 Hz | 0.051 |
-| 100 Hz | 0.062 |
-| 120 Hz | 0.054 |
-| 3000 Hz | 0.330 |
+| 40 Hz | 0.0056 |
+| 60 Hz | 0.0139 |
+| 80 Hz | 0.0250 |
+| 100 Hz | 0.0369 |
+| 120 Hz | 0.0393 |
+| 3000 Hz | 0.197 |
 
-Bass (40-120Hz) moves noticeably less than 3kHz (roughly 5-25x smaller
+Bass (40-120Hz) moves noticeably less than 3kHz (roughly 5-35x smaller
 excursion), matching the product brief's "low frequencies stay close to
 centre, mid/high get the real motion" - and no bass fundamental frequency
 drift was measured alongside this movement (<0.2% error at every tested
@@ -271,10 +422,10 @@ phase-vocoder-based frequency tracking):
 
 | Frequency | Measured | Error |
 |---|---|---|
-| 100 Hz | 99.95 Hz | 0.053% |
-| 440 Hz | 439.22 Hz | 0.178% |
+| 100 Hz | 99.95 Hz | 0.052% |
+| 440 Hz | 439.21 Hz | 0.179% |
 | 1000 Hz | 1000.71 Hz | 0.071% |
-| 5000 Hz | 4992.21 Hz | 0.156% |
+| 5000 Hz | 4992.22 Hz | 0.156% |
 
 All four well under a fifth of a musical cent's worth of drift - not
 audible, not measurable as a trend over the motion cycle.
@@ -282,14 +433,20 @@ audible, not measurable as a trend over the motion cycle.
 ## Centre stability
 
 A centred 80Hz bass tone plus decorrelated stereo highs (4kHz/5.5kHz),
-at MOTION (100%): the bass measures a **2.5dB** L/R difference - small,
-honestly nonzero (see "Low-end protection" above for the filter-
-transition-band reason it isn't exactly 0dB: `inducedHigh` is already
-highpassed once before `spatialLowpass` splits the combined signal a
-second time at the *same* cutoff, and two independent first-order
-filters at one cutoff don't cancel each other's transition-band leakage
-perfectly) - far smaller than the same signal's high-frequency content,
-which is designed to move substantially at MOTION.
+at MOTION (100%): the bass measures a **~2.6-2.9dB** L/R difference
+(varies slightly across otherwise-unrelated retuning rounds) - small,
+honestly nonzero. This residual is a **separate phenomenon from the
+crossover artifact** fixed above, and was re-verified (not newly
+introduced) by that fix: `induced` is derived from the *full* Mid
+signal, so it genuinely carries some 80Hz-frequency energy; the 1-pole
+`inducedLowpass` that strips this before blending has a gentle,
+non-brickwall rolloff, so a small fraction still leaks through and picks
+up the low band's (deliberately small, but nonzero) width/motion gain.
+A steeper filter here was tried and measured *worse*, not better - see
+"Low-end protection" above - so this residual is treated as an accepted,
+disclosed characteristic of the gentle-filter design rather than a bug
+to keep chasing. Still far smaller than the same signal's high-frequency
+content, which is designed to move substantially at MOTION.
 
 ## Mono compatibility
 
@@ -305,34 +462,60 @@ centre-bass+highs, correlated chord, decorrelated) at 50%/100% width:
 
 | Source | 50% | 100% |
 |---|---|---|
-| mono | -0.43dB | -2.08dB |
-| centre-bass+highs | +0.02dB | +0.24dB |
-| correlated chord | -0.45dB | -1.99dB |
-| decorrelated | +0.39dB | +2.48dB |
+| mono | -0.31dB | -1.48dB |
+| centre-bass+highs | +0.01dB | +0.11dB |
+| correlated chord | -0.32dB | -1.40dB |
+| decorrelated | +0.15dB | +1.13dB |
 
-Worst case ~2.5dB - a real, audible-but-modest level shift, not a comb-
-filtering artifact (no delay anywhere in the signal path means no
-frequency-selective nulls; this is a broadband level change from the
-motion rotation's own energy redistribution).
+Worst case ~1.5dB (down from an earlier round's ~2.5dB, a side effect of
+the `panWidthMaxHigh`/`panMotionThetaRange` reductions made for
+correlation - see "Correlation" below) - a real, audible-but-modest
+level shift, not a comb-filtering artifact (no delay anywhere in the
+signal path means no frequency-selective nulls; this is a broadband
+level change from the motion rotation's own energy redistribution).
 
 ## Correlation
 
-Measured on a correlated stereo chord:
+Measured on a correlated stereo chord (three tones, same frequencies on
+both channels at different per-tone balances - genuinely correlated
+content, not anti-phase):
 
 | Width | Correlation |
 |---|---|
 | 0% | 0.965 |
-| 25% | 0.953 |
-| 50% | 0.861 |
-| 75% | 0.373 |
-| 100% | -0.071 |
+| 25% | 0.955 |
+| 50% | 0.883 |
+| 75% | 0.567 |
+| 100% | +0.216 |
 
-Correlation degrades gracefully through WIDE, and at full MOTION on
-already-correlated material can go slightly negative - an honest,
-expected consequence of a strong (by design) motion effect at 100%, not
-a defect. Mono source correlation (measured separately, since Side
-starts at exactly 0) drops from 1.0 at 0% to 0.25 at 100% as real,
-growing spatial content is added.
+**Fixed this round**: an earlier revision measured -0.071 to -0.11 at
+100% width - not "aggressively negative" by the original acceptance bar,
+but the product brief was tightened to prefer correlation staying `>= 0`
+at 100% on representative correlated material (anti-phase test signals
+excluded from this specific bar, since anti-phase is a deliberately
+worst-case, uncorrelated-by-construction input). Root-caused via the
+input's own `sideMidRatio` (`Side_rms/Mid_rms`, measured directly in
+`Tests/PluginTests.cpp`'s correlation test): for `L=Mid+width*Side,
+R=Mid-width*Side` with symmetric gains (no rotation at all), `E[L*R] =
+E[Mid^2] - width^2*E[Side^2]` - this goes **negative purely from width
+amplification**, independent of motion rotation, whenever
+`width^2 * Side_rms^2` exceeds `Mid_rms^2`. At `panWidthMaxHigh = 1.9`
+and this test material's own `sideMidRatio` (~0.89 at 100% width, after
+amplification), that threshold was being crossed by width alone.
+Reducing `panWidthMaxHigh` to 1.6 (see "Width mapping" above) was the
+dominant fix; `panMotionThetaRange`'s reduction (see "Motion" above) was
+tried first, on the assumption that motion's asymmetric rotation was the
+main driver, and measured almost no improvement on its own (-0.097 ->
+-0.11) - a useful negative result, kept in the code anyway since it
+genuinely softens the L/R gain ratio during rotation and costs nothing,
+but the width reduction is what actually mattered here. Correlation
+now degrades gracefully and stays **positive at every measured width**,
+including full MOTION. Mono source correlation (measured separately,
+since Side starts at exactly 0) drops from 1.0 at 0% to 0.275 at 100% as
+real, growing spatial content is added - not comparable to the stereo-
+material table above (a mono source has no pre-existing Side content for
+width to amplify relative to, so this number isn't subject to the same
+correlation-sign mechanism).
 
 ## Gain / headroom
 
@@ -342,10 +525,10 @@ synthetic source:
 | Width | Peak | RMS L | RMS R |
 |---|---|---|---|
 | 0% | 0.330 | 0.186 | 0.186 |
-| 25% | 0.385 | 0.200 | 0.217 |
-| 50% | 0.524 | 0.222 | 0.292 |
-| 75% | 0.679 | 0.236 | 0.371 |
-| 100% | 0.755 | 0.242 | 0.407 |
+| 25% | 0.370 | 0.196 | 0.207 |
+| 50% | 0.468 | 0.214 | 0.258 |
+| 75% | 0.577 | 0.227 | 0.312 |
+| 100% | 0.629 | 0.231 | 0.337 |
 
 Smooth, proportionate growth - no sudden jump, no runaway; nowhere close
 to clipping even on a Side-heavy source.
@@ -400,10 +583,18 @@ meant something).
 
 ## Known limitations
 
-- The 80Hz-under-stereo-highs centre-stability test measures a 2.5dB
-  residual, not 0dB - see "Low-end protection"/"Centre stability" above
-  for the filter-transition-band reason. Small and far below the same
-  material's high-frequency movement, but not literally zero.
+- The 80Hz-under-stereo-highs centre-stability test measures a ~2.6-2.9dB
+  residual, not 0dB - see "Low-end protection"/"Centre stability" above.
+  This is **not** the crossover-artifact mechanism fixed this round (that
+  one is now proven eliminated - see "Crossover artifact") - it comes
+  from `induced`'s own bass content leaking through the gentle 1-pole
+  `inducedLowpass` before blending. A steeper filter was tried
+  specifically to close this gap and measured *worse* (the same vector-
+  sum mechanism, reintroduced via a different complementary split, with
+  a bigger phase excursion) - reverted rather than shipped. Small and far
+  below the same material's high-frequency movement, but not literally
+  zero, and not chased further this round given the failed attempt
+  already made.
 - A single sustained pure tone at an unlucky frequency can still show a
   measurably asymmetric (not perfectly left/right-balanced) motion
   trajectory - see "Mono-to-stereo strategy" above. Real/broadband mono
@@ -415,11 +606,19 @@ meant something).
   residual dependency entirely if ever needed, at meaningfully more
   implementation complexity than the current single allpass.
 - Mono fold-down is no longer provably invariant under motion (only
-  under ORIGINAL/pure static width) - up to ~2.5dB measured level
-  change at full MOTION on some source types. Disclosed and accepted per
-  the product brief's own relaxed mono-compatibility requirement, not
-  hidden.
-- Correlation can go slightly negative on correlated material at full
-  MOTION (measured -0.07) - an honest, by-design consequence of a strong
-  100% motion effect, not investigated further since it stayed well
-  inside the "not aggressively negative" bound the product brief sets.
+  under ORIGINAL/pure static width) - up to ~1.5dB measured level
+  change at full MOTION on some source types (down from ~2.5dB, a side
+  effect of the correlation-balancing width/motion-range reductions).
+  Disclosed and accepted per the product brief's own relaxed mono-
+  compatibility requirement, not hidden.
+- Correlation on correlated stereo material is now measured `>= 0` at
+  every tested width including 100% (the specific thing this round's
+  correlation work targeted) - but this was tuned against the module's
+  own three-tone `generateCorrelatedChord` test material specifically,
+  not proven algebraically for arbitrary program material. Material with
+  a substantially higher Side/Mid ratio than the test chord could in
+  principle still cross zero at high width, by the same mechanism
+  documented in "Correlation" above (`width^2 * Side_rms^2` exceeding
+  `Mid_rms^2`) - anti-phase/pure-Side content is the extreme case of
+  this and is explicitly excluded from the `>= 0` bar, per the product
+  brief.

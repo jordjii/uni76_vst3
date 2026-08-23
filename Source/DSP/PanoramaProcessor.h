@@ -22,12 +22,20 @@
     signal (built from the real Side content plus, for mono/near-mono
     sources, a phase-decorrelated "induced" component derived from Mid via
     an allpass - no delay, so no comb filtering, no wow/flutter, no pitch
-    drift), split into low/high bands (bass moves far less than mid/high),
-    and applied to L/R via a constant-power (equal-power pan law) rotation
-    driven by a slow (~0.3Hz), free-running, deterministic LFO. The LFO
-    biases how much spatial energy goes to each channel from moment to
-    moment - a stable centre with the *surrounding* space moving, not a
-    global auto-pan of the whole signal.
+    drift), reshaped into L and R contributions by two independent
+    low-shelf filters (one per output channel) rather than a crossover
+    split - see "Crossover artifact" in docs/DSP_PAN.md for why: splitting
+    the spatial signal into low/high *bands* and then multiplying each
+    band by a *different real gain* before summing is a textbook source of
+    a frequency-response bump right at the crossover (the two bands are
+    phase-shifted relative to each other, so unequal-gain summing is a
+    vector sum, not a linear interpolation). A single monotonic shelf per
+    channel has no second, differently-gained path to sum against, so no
+    bump is possible by construction, not just by tuning. Both shelves'
+    low/high asymptote gains already encode that channel's own width AND
+    motion-rotation ceiling for that frequency region, driven by a slow
+    (~0.3Hz), free-running, deterministic LFO - a stable centre with the
+    *surrounding* space moving, not a global auto-pan of the whole signal.
 
     Every curve in PanoramaCurves.h evaluates to its identity value at
     t=0 (width gain 1.0, motion depth 0.0, induced blend 0.0) - which is
@@ -86,13 +94,26 @@ namespace uni76::dsp
         // are small - moving bass that was never really stereo to begin
         // with. Real Side content is not filtered this way - only ever
         // the synthesised component is excluded from the bass region.
+        // Deliberately a gentle 1-pole (not steeper): a 2nd-order
+        // Butterworth was tried here during this round's crossover
+        // rework (reasoning that a steeper cutoff should leak less of
+        // induced's own bass) and measured *worse* (centre-core L/R
+        // imbalance rose from ~2.6dB to ~3.4dB) - a 2nd-order filter's
+        // larger phase excursion (up to 180 degrees vs a 1-pole's 90)
+        // reintroduces the same complementary-subtraction phase-mismatch
+        // mechanism the width/motion shelves were rebuilt to eliminate,
+        // just applied to `induced` instead of to spatialRaw. Reverted;
+        // see docs/DSP_PAN.md's "Crossover artifact" section.
         OnePoleLowPass inducedLowpass;
 
-        // Splits the spatial signal (Side + filtered induced) into low/
-        // high bands - a single first-order lowpass; the high band is its
-        // exact complement (spatial - low), so low+high == spatial
-        // always, regardless of filter history - see PanoramaCurves.h.
-        OnePoleLowPass spatialLowpass;
+        // The two channel-output shelves - see the class comment above and
+        // docs/DSP_PAN.md's "Crossover artifact" section. Coefficients are
+        // recomputed every sample (not once per block, unlike EqProcessor):
+        // their target gain is itself audio-rate (driven by the free-
+        // running motion LFO), not just a slow user/automation macro, so a
+        // per-block update would show up as an audible staircase in the
+        // motion trajectory at large host block sizes.
+        Biquad shelfL, shelfR;
 
         // Free-running motion clock, radians, wrapped to [0, 2*pi) each
         // sample - never reset by a parameter change, only by reset().

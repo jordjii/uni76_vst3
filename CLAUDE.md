@@ -191,20 +191,31 @@ default, and its migration are all superseded.) Mid (`0.5*(L+R)`) is
 never modified - width/motion apply only to a separately-built "spatial"
 signal (real Side content plus, for mono/near-mono sources, a phase-
 decorrelated "induced" component derived from Mid via a single allpass -
-not a delay, so no comb filtering/wow/flutter/pitch drift), split into
-low/high bands via a first-order crossover (bass gets much smaller width/
-motion ceilings than mid/high), and applied to L/R via a constant-power
-rotation driven by a slow (~0.3Hz), free-running, deterministic LFO whose
-phase is never reset by a parameter change - a stable centre with the
-*surrounding* space moving, not a global auto-pan. ORIGINAL (0%) is a
+not a delay, so no comb filtering/wow/flutter/pitch drift), reshaped into
+L and R contributions by **two independent per-channel RBJ low-shelf
+filters** (bass gets much smaller width/motion ceilings than mid/high),
+and applied to L/R via a constant-power rotation driven by a slow
+(~0.3Hz), free-running, deterministic LFO whose phase is never reset by
+a parameter change - a stable centre with the *surrounding* space
+moving, not a global auto-pan. A follow-up pass replaced an earlier
+(commit `b6f83ca`) band-split-then-differently-gained-sum crossover with
+this shelf-per-channel design after finding and proving the split-based
+approach had a genuine, mathematically-explained frequency-response bump
+at its own crossover (a vector-sum of two phase-shifted complementary
+bands weighted by different real gains, not a linear interpolation - see
+docs/DSP_PAN.md's "Crossover artifact" section for the derivation); two
+independent single-path shelves have no second, differently-gained path
+to vector-sum against, so no bump is possible by construction, verified
+by a dedicated frequency-response regression test (perfectly monotonic,
+zero envelope violations, at every macro value). ORIGINAL (0%) is a
 provable (not just measured) identity transform: every curve in
 `PanoramaCurves.h` evaluates to its identity value there (width gain 1.0,
-motion depth 0.0, induced blend 0.0), which algebraically collapses the
-whole reconstruction back to the unmodified input regardless of what the
-crossover/allpass filters are doing internally. No delay-based widening
-(Haas), no chorus, no random modulation, no oversampling - zero added
-latency. Same `panoramaEnabled`-driven crossfade bypass pattern as EQ (no
-delay-alignment needed, PAN has no latency to align against).
+motion depth 0.0, induced blend 0.0), which makes both shelves' gain
+collapse to an algebraically exact 0dB identity filter, so the whole
+reconstruction collapses back to the unmodified input. No delay-based
+widening (Haas), no chorus, no random modulation, no oversampling - zero
+added latency. Same `panoramaEnabled`-driven crossfade bypass pattern as
+EQ (no delay-alignment needed, PAN has no latency to align against).
 
 **Reverb and Imager remain a strict passthrough** - do not add DSP to
 either without a separate, deliberate decision. `Source/DSP/Reverb.h` /
@@ -382,6 +393,47 @@ MSVC 19.51):
   WIDE contract to the new 0% (ORIGINAL) default, since neither an old
   value nor a v4-era "50% NATURAL" choice means anything under the
   current contract.
+- **PAN crossover-artifact + correlation fix** (commit `b6f83ca`'s
+  topology superseded, see [docs/DSP_PAN.md](docs/DSP_PAN.md)'s
+  "Crossover artifact" and "Correlation" sections) - a follow-up pass
+  that fixed two known issues in the ORIGINAL/WIDE/MOTION topology
+  without touching its product contract (still 0%/50%/100% =
+  ORIGINAL/WIDE/MOTION, default 0%, ~0.3Hz LFO, 0 added latency):
+  (1) a real ~2.5dB frequency-response bump at the 150-200Hz crossover,
+  root-caused via a QM-AM-inequality derivation (`|a*LP+b*(1-LP)|` at
+  the crossover equals `sqrt((a^2+b^2)/2) >= (a+b)/2`, i.e. a *vector*
+  sum of two phase-shifted complementary bands weighted by different
+  real gains, not a linear interpolation, whenever the two gains
+  differ) - fixed by replacing the shared band-split-then-sum with two
+  independent per-channel RBJ low-shelf filters (no second, differently-
+  gained path to vector-sum against, by construction), verified via a
+  dedicated 14-frequency (40Hz-10kHz) regression test showing a
+  perfectly smooth, monotonic response with zero envelope violations at
+  every width - this test's own first version had a `float`-phase-drift
+  and inconsistent-LFO-phase measurement bug of its own, caught and
+  fixed before trusting any number from it; (2) correlation on
+  correlated stereo material going slightly negative at 100% width
+  (-0.07 to -0.11 measured), root-caused algebraically (`E[L*R] =
+  E[Mid^2] - width^2*E[Side^2]` for symmetric-gain width alone, which
+  provably goes negative once amplified Side power exceeds Mid power,
+  independent of motion rotation) and fixed by reducing
+  `panWidthMaxHigh` (1.9->1.6) - the actual dominant lever, found only
+  after `panMotionThetaRange`'s reduction (pi/4->0.55, tried first on
+  the assumption motion rotation was the main driver) measured almost
+  no improvement on its own, a useful negative result kept anyway since
+  it still softens rotation's peak L/R gain ratio at no cost - now
+  measured `>=0` at every tested width (0.965/0.955/0.883/0.567/+0.216
+  at 0/25/50/75/100%) while motion stays clearly audible (centroid
+  RMS excursion 0.237 at 100%, still visiting clearly left- and right-
+  biased states). A 2nd-order Butterworth was also tried for the
+  induced-signal lowpass specifically (hoping to reduce a separate,
+  ~2.6-2.9dB centre-stability residual, unrelated to the crossover fix)
+  and measured *worse* (~3.4dB, the same vector-sum mechanism
+  reintroduced via a steeper filter's larger phase excursion) - reverted
+  rather than shipped. All previously-passing PAN/PREAMP/EQ/SAT/PITCH
+  tests remain green; new regression tests cover crossover-region
+  frequency response, correlation on representative material, and the
+  updated width/motion mapping targets.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
