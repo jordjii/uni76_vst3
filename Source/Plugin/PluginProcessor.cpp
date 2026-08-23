@@ -19,6 +19,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     saturationParameter = apvts.getRawParameterValue (uni76::ParamID::saturation);
     pitchParameter = apvts.getRawParameterValue (uni76::ParamID::pitch);
     panoramaParameter = apvts.getRawParameterValue (uni76::ParamID::panorama);
+    reverbParameter = apvts.getRawParameterValue (uni76::ParamID::reverb);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -33,19 +34,23 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     satProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     pitchProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     panoramaProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    verbProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ and PAN both add no algorithmic latency (getLatencySamples() ==
-    // 0 for each - PAN is a pure gain/filter morph, no oversampling, no
-    // lookahead, no delay-based widening). PREAMP, SAT and PITCH each own
-    // independent processing with their own real latency - the plugin's
-    // total declared latency is their sum, since all five run in series
-    // in the signal chain and a host's plugin-delay-compensation needs
-    // the combined delay, not just one stage's.
+    // EQ, PAN and VERB all add no algorithmic latency (getLatencySamples()
+    // == 0 for each - PAN is a pure gain/filter morph, no oversampling, no
+    // lookahead, no delay-based widening; VERB's pre-delay/tank are wet-
+    // path effects, not a lookahead on the direct signal - see
+    // docs/DSP_VERB.md). PREAMP, SAT and PITCH each own independent
+    // processing with their own real latency - the plugin's total
+    // declared latency is their sum, since all six run in series in the
+    // signal chain and a host's plugin-delay-compensation needs the
+    // combined delay, not just one stage's.
     setLatencySamples (preampProcessor.getLatencySamples()
                         + eqProcessor.getLatencySamples()
                         + satProcessor.getLatencySamples()
                         + pitchProcessor.getLatencySamples()
-                        + panoramaProcessor.getLatencySamples());
+                        + panoramaProcessor.getLatencySamples()
+                        + verbProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
@@ -55,6 +60,7 @@ void UNI76AudioProcessor::releaseResources()
     satProcessor.reset();
     pitchProcessor.reset();
     panoramaProcessor.reset();
+    verbProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -110,8 +116,12 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     panoramaProcessor.process (buffer, panoramaWidth, panoramaEnabled);
 
-    // Reverb/Imager remain a strict passthrough at this stage - see
-    // CLAUDE.md.
+    const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
+    const auto reverbEnabled = moduleEnableState.isEnabled (5); // index 5 = reverb, see ModuleEnableState::propertyNames
+
+    verbProcessor.process (buffer, reverbWet, reverbEnabled);
+
+    // Imager remains a strict passthrough at this stage - see CLAUDE.md.
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.

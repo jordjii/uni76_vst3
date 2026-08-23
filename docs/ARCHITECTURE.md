@@ -5,9 +5,10 @@ sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
 (see [docs/DSP_EQ.md](DSP_EQ.md)) + SAT DSP (see
 [docs/DSP_SAT.md](DSP_SAT.md)) + PITCH DSP (see
 [docs/DSP_PITCH.md](DSP_PITCH.md)) + PAN DSP (see
-[docs/DSP_PAN.md](DSP_PAN.md)). Reverb and Imager remain a strict
-passthrough. See root [CLAUDE.md](../CLAUDE.md) for the living project
-log and the rules this architecture exists to enforce.
+[docs/DSP_PAN.md](DSP_PAN.md)) + VERB DSP (see
+[docs/DSP_VERB.md](DSP_VERB.md)). Imager remains a strict passthrough.
+See root [CLAUDE.md](../CLAUDE.md) for the living project log and the
+rules this architecture exists to enforce.
 
 ## Layers
 
@@ -21,11 +22,12 @@ Source/
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
   DSP/          PreampProcessor + EqProcessor + SatProcessor + PitchProcessor
-                + PanoramaProcessor (real DSP, chained in that order - see
-                docs/DSP_PREAMP.md / docs/DSP_EQ.md / docs/DSP_SAT.md /
-                docs/DSP_PITCH.md / docs/DSP_PAN.md) plus architectural
-                placeholders for the other 2 processing modules (Reverb,
-                Imager). See "DSP modules" below.
+                + PanoramaProcessor + VerbProcessor (real DSP, chained in
+                that order - see docs/DSP_PREAMP.md / docs/DSP_EQ.md /
+                docs/DSP_SAT.md / docs/DSP_PITCH.md / docs/DSP_PAN.md /
+                docs/DSP_VERB.md) plus an architectural placeholder for
+                the remaining processing module (Imager). See "DSP
+                modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -183,11 +185,35 @@ motion depth 0.0, induced blend 0.0) at t=0 by construction, so the
 motion rotation collapses to gainL==gainR==1.0 and the LFO's own phase
 never reaches the output.
 
-`Source/DSP/Reverb.h`/`Imager.h` remain deliberately empty placeholder
-classes - no `prepare`/`process` methods, no fake processing - and are
-not referenced from `PluginProcessor`. Wiring one in means giving it real
-behaviour like PREAMP/EQ/SAT/PITCH/PAN got, not just calling an empty
-stub.
+`Source/DSP/VerbProcessor.h`/`.cpp` is the sixth - see
+[docs/DSP_VERB.md](DSP_VERB.md) for the full topology and measured data.
+Chained after PAN. A single 1970s-style electromechanical plate reverb +
+analog send/return electronics - not a generic digital hall, not a
+ROOM/PLATE/CHAMBER morph. Dry is read into locals and written back
+unmodified in the same per-sample loop iteration, never passing through
+any filter/delay/nonlinearity in the file - the wet contribution is
+purely additive (an aux-send level, not a crossfade), scaled by
+`VerbCurves.h`'s `verbWetGain(t)` (exactly 0.0 at t=0) and the bypass
+smoother, which is what makes "dry never touched" an algebraic
+guarantee and DRY (0%) a provable identity. The wet path is a 350Hz
+cascaded 4-pole Butterworth highpass, a tiny asymmetric-tanh analog
+send stage, a 4-stage short-delay Schroeder-allpass diffuser (early
+density - not used alone as the whole reverb, which would be the
+rejected "cheap Schroeder" architecture), a smoothly-variable pre-delay,
+a 12-line FDN plate tank (Householder feedback matrix - an orthogonal,
+energy-preserving mix computable in O(N) per sample - with per-line
+`OnePoleLowPass` damping so highs decay faster than mid, fed from a
+single mono sum and read out via two independent fixed sign patterns
+for decorrelated stereo width), an analog return stage (tiny tanh +
+soft bandwidth ceiling), and a second, lighter 350Hz safety highpass on
+the wet output. Adds no latency (pre-delay/tank recirculation are
+wet-path effects, not a lookahead on the direct signal).
+
+`Source/DSP/Imager.h` remains a deliberately empty placeholder class -
+no `prepare`/`process` methods, no fake processing - and is not
+referenced from `PluginProcessor`. Wiring it in means giving it real
+behaviour like PREAMP/EQ/SAT/PITCH/PAN/VERB got, not just calling an
+empty stub.
 
 ## Web UI / native bridge
 
@@ -279,11 +305,14 @@ continuous behaviour unchanged.
 
 ### Derived (non-parameter) visual indicators
 
-The tri-point scales on Reverb/Imager (`aux_visuals.js`) are illustrative
-read-outs computed from the *existing* parameter's value - those 2
-modules are still passthrough, so these don't imply DSP behaviour that
-isn't implemented. They do not create, read, or write any additional
-APVTS parameter.
+The tri-point scale on Imager (`aux_visuals.js`) is an illustrative
+read-out computed from the *existing* parameter's value - that module is
+still passthrough, so this doesn't imply DSP behaviour that isn't
+implemented. It does not create, read, or write any additional APVTS
+parameter. VERB's own tri-scale (`DRY`/`PLATE`/`DEEP`) is different in
+status (real DSP, see docs/DSP_VERB.md) but not in implementation - it
+uses the same generic `bindTriScale` binding as EQ/SAT/PITCH/PAN's own
+tri-scales below.
 
 EQ's, SAT's, PITCH's and PAN's tri-point scales are different in status
 (all four are now real DSP) but not in implementation: `DARK`/`PHONE`/

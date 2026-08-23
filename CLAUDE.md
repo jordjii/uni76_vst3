@@ -100,19 +100,20 @@ see below. Low Cut / High Cut are **not** separate parameters - they are
 internal to `Source/DSP/PreampProcessor`, derived entirely from `preamp`
 (see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
 
-## PREAMP + EQ + SAT + PITCH + PAN DSP (the only modules with real audio processing so far)
+## PREAMP + EQ + SAT + PITCH + PAN + VERB DSP (the only modules with real audio processing so far)
 
-Chain order: `Input -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> (future
-modules) -> Output` - `PluginProcessor::processBlock()` calls
+Chain order: `Input -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> VERB ->
+(IMAGE) -> Output` - `PluginProcessor::processBlock()` calls
 `preampProcessor.process()`, then `eqProcessor.process()`, then
 `satProcessor.process()`, then `pitchProcessor.process()`, then
-`panoramaProcessor.process()`, in that order. Total plugin latency is the
-**sum** of every stage's own latency (`preampProcessor.getLatencySamples()
-+ eqProcessor.getLatencySamples() + satProcessor.getLatencySamples() +
-pitchProcessor.getLatencySamples() + panoramaProcessor.getLatencySamples()`,
-computed in `prepareToPlay`) - EQ and PAN both always contribute 0; PITCH
-always contributes a nonzero, sample-rate-proportional amount (unlike
-PREAMP/SAT, it does not drop to 0 at high sample rates - see
+`panoramaProcessor.process()`, then `verbProcessor.process()`, in that
+order. Total plugin latency is the **sum** of every stage's own latency
+(`preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples()
++ satProcessor.getLatencySamples() + pitchProcessor.getLatencySamples()
++ panoramaProcessor.getLatencySamples() + verbProcessor.getLatencySamples()`,
+computed in `prepareToPlay`) - EQ, PAN and VERB all always contribute 0;
+PITCH always contributes a nonzero, sample-rate-proportional amount
+(unlike PREAMP/SAT, it does not drop to 0 at high sample rates - see
 docs/DSP_PITCH.md's "Fixed latency" section).
 
 `Source/DSP/PreampProcessor.*` implements the `01 PREAMP / TRANSFORMER`
@@ -219,9 +220,51 @@ widening (Haas), no chorus, no random modulation, no oversampling - zero
 added latency. Same `panoramaEnabled`-driven crossfade bypass pattern as
 EQ (no delay-alignment needed, PAN has no latency to align against).
 
-**Reverb and Imager remain a strict passthrough** - do not add DSP to
-either without a separate, deliberate decision. `Source/DSP/Reverb.h` /
-`Imager.h` are still empty placeholders.
+`Source/DSP/VerbProcessor.*` implements the `06 VERB / VINTAGE SPACE`
+module - see [docs/DSP_VERB.md](docs/DSP_VERB.md) for the full topology
+and measured data. A single 1970s-style electromechanical **plate**
+reverb + analog send/return electronics - not a generic digital hall,
+not a ROOM/PLATE/CHAMBER morph, not a convolution IR: `DRY (0%) -> PLATE
+(50%) -> DEEP (100%)`, always the *same* plate machine (only send
+amount, decay time, and pre-delay change with the macro, never the
+plate's own physical character). DRY is read into locals and written
+back unmodified in the same per-sample loop iteration - it never passes
+through any filter, delay line, or nonlinearity, making "dry is never
+touched" an algebraic guarantee (measured RMS diff **0** on a broadband
+source). The wet path: a 350Hz cascaded 4-pole Butterworth highpass on
+the send, a tiny asymmetric-tanh analog send stage, a 4-stage short-
+delay diffuser (early density - deliberately *not* used alone as the
+whole reverb, which is the "cheap Schroeder" architecture the product
+brief explicitly rejects), a smoothly-variable pre-delay, a 12-line FDN
+plate tank (Householder feedback matrix - orthogonal/energy-preserving,
+O(N) per sample - with per-line one-pole damping so highs decay faster
+than mid, fed from a single mono sum and read out via two independent
+fixed sign patterns for genuinely decorrelated stereo width, the way a
+real plate's two pickups at different positions would), an analog return
+stage (tiny tanh + ~9.5kHz soft bandwidth ceiling), and a second, lighter
+350Hz safety highpass on the wet output (a recirculating feedback
+network's own resonances aren't guaranteed to respect an input-side
+filter alone). Measured: 40-120Hz wet content sits 60-92dB down (almost
+no tail at all); 1kHz RT60 ~3.5s at 100% (5kHz and 8kHz measurably
+shorter - highs decay faster than mid, by design); wet-path THD under 2%
+at every macro setting (an earlier, more aggressive send/return
+asymmetry setting measured 5-6%, since the dominant even-harmonic term
+is driven by the tanh's *asymmetry*, not its drive gain - reducing
+asymmetry specifically, not just drive, is what actually fixed it); a
+hard safety clamp on any single delay line's feedback gain
+(`verbLineFeedbackGainMax`) was added after a more aggressive damping-
+filter tuning attempt pushed the shortest line's loop gain close enough
+to instability to measurably distort the result. PAN=100+VERB=50
+integration measured 80Hz bass L/R at 0.16dB (bass stays centred and
+stable with the reverb layered on top); full-chain VERB0->VERB100 bass
+change measured under 0.1dB at 60/80/100Hz. Zero added latency (pre-
+delay/tank recirculation are wet-path effects, not a lookahead on the
+direct signal), same `reverbEnabled`-driven bypass pattern as PAN
+(mutes only the wet contribution, no delay-alignment needed).
+
+**Imager remains a strict passthrough** - do not add DSP to it without a
+separate, deliberate decision. `Source/DSP/Imager.h` is still an empty
+placeholder.
 
 ### Per-module enabled/disabled state (not a parameter)
 
@@ -478,6 +521,57 @@ MSVC 19.51):
   highpass no longer contributes. Motion depth, width mapping, LFO rate,
   and 0 added latency are all unchanged from the previous round; all
   previously-passing PREAMP/EQ/SAT/PITCH/PAN tests remain green.
+- **VERB DSP** (electromechanical plate reverb, see
+  [docs/DSP_VERB.md](docs/DSP_VERB.md)) - the sixth module to get real
+  DSP: a 1970s-style plate + analog send/return electronics, one machine
+  at every setting (`DRY(0%)/PLATE(50%)/DEEP(100%)`, macro only changes
+  send/decay/pre-delay). Architecture: 350Hz cascaded 4-pole Butterworth
+  highpass on the wet send, a tiny asymmetric-tanh analog send stage, a
+  4-stage short-delay Schroeder-allpass diffuser (early density - not
+  used alone as the whole reverb, which the product brief explicitly
+  rejected as a "cheap Schroeder" architecture), a smoothly-variable
+  pre-delay, a 12-line FDN plate tank (Householder feedback matrix -
+  orthogonal/energy-preserving, O(N) per sample - with per-line
+  `OnePoleLowPass` damping so highs decay faster than mid, fed from a
+  single mono sum and read out via two independent fixed sign patterns
+  for genuinely decorrelated stereo, the way a real plate's two pickups
+  at different positions would), an analog return stage (tiny tanh +
+  ~9.5kHz soft bandwidth ceiling), and a second, lighter 350Hz safety
+  highpass on the wet output (a recirculating feedback network's own
+  resonances aren't guaranteed to respect an input-side filter alone).
+  DRY is read into locals and written back unmodified in the same
+  per-sample loop iteration - never passing through any filter/delay/
+  nonlinearity - making "dry never touched" an algebraic guarantee
+  (measured RMS diff **0** on a broadband source) rather than a
+  measured approximation. Measured: 40-120Hz wet content 60-92dB down
+  (almost no tail); 160-500Hz a smooth, monotonic transition into a
+  fully-present plate by 500Hz; 1kHz RT60 ~3.5s at 100% with 5kHz and
+  8kHz measurably (and increasingly) shorter, confirming highs decay
+  faster than mid; wet-path THD under 2% at -18dBFS across the whole
+  macro range. Two real tuning findings along the way: (1) the per-line
+  damping filter's small per-pass insertion loss compounds hugely over
+  the hundreds of feedback passes a multi-second RT60 needs even for
+  content nominally *below* its own cutoff, silently capping mid-
+  frequency decay time far under its nominal target unless the decay-
+  time formula's own anchors are tuned to compensate; pushing the
+  damping cutoff too high to avoid this instead pushed the shortest
+  delay line's loop gain close enough to instability to measurably
+  distort the result (THD roughly doubled), which is what motivated
+  adding `verbLineFeedbackGainMax`, a hard safety clamp on any single
+  line's feedback gain independent of the RT60 formula; (2) the
+  send/return analog stages' dominant even-harmonic (H2) content is
+  driven specifically by the tanh waveshaper's *asymmetry* term, not
+  its drive gain - an initial tuning pass that only reduced drive
+  measured barely any THD improvement (5.9% -> 4.9%), while reducing
+  asymmetry specifically brought it down to ~1-2%. PAN=100+VERB=50
+  integration measured 80Hz bass L/R at 0.16dB (bass stays centred and
+  stable with the plate layered on top - PAN's and VERB's independent
+  bass-protection mechanisms compound rather than compete); full-chain
+  (PREAMP+EQ+SAT+PITCH+PAN+VERB) VERB0->VERB100 bass change measured
+  under 0.1dB at 60/80/100Hz. Zero added latency at every sample rate/
+  block size/wet value/enabled state. UI tri-scale updated to
+  `DRY`/`PLATE`/`DEEP` (was the passthrough placeholder's illustrative
+  `SPRING`/`PLATE`/`CHAMBER`); knob default unchanged at 0%.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
@@ -558,9 +652,10 @@ Not verified (say so plainly rather than guessing):
 
 ## Next steps (not started - waiting for a separate go-ahead)
 
-DSP for the remaining 2 modules (Reverb, Imager - PREAMP, EQ, SAT, PITCH
-and PAN are done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md),
+DSP for the remaining module (Imager - PREAMP, EQ, SAT, PITCH, PAN and
+VERB are done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md),
 [docs/DSP_EQ.md](docs/DSP_EQ.md), [docs/DSP_SAT.md](docs/DSP_SAT.md),
-[docs/DSP_PITCH.md](docs/DSP_PITCH.md) and [docs/DSP_PAN.md](docs/DSP_PAN.md)),
-presets browser, copy protection, licensing system. See
-[docs/RELEASE.md](docs/RELEASE.md) for the pre-public-release checklist.
+[docs/DSP_PITCH.md](docs/DSP_PITCH.md), [docs/DSP_PAN.md](docs/DSP_PAN.md)
+and [docs/DSP_VERB.md](docs/DSP_VERB.md)), presets browser, copy
+protection, licensing system. See [docs/RELEASE.md](docs/RELEASE.md)
+for the pre-public-release checklist.

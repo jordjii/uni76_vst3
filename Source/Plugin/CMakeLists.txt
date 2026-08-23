@@ -52,7 +52,9 @@ target_sources(UNI76
         ../DSP/PanoramaCurves.h
         ../DSP/PanoramaProcessor.h
         ../DSP/PanoramaProcessor.cpp
-        ../DSP/Reverb.h
+        ../DSP/VerbCurves.h
+        ../DSP/VerbProcessor.h
+        ../DSP/VerbProcessor.cpp
         ../DSP/Imager.h
 
         ../UI/WebUIEditor.h
