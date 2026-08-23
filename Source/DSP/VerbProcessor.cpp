@@ -129,7 +129,18 @@ namespace uni76::dsp
                     data[i] = 0.0f;
         }
 
-        wetSmoother.setTargetValue (std::clamp (wetNormalised01, 0.0f, 1.0f));
+        // std::clamp does not clamp NaN (comparisons against NaN are
+        // always false, so it returns the input unchanged) - an
+        // std::isfinite guard is needed first, otherwise a non-finite
+        // wetNormalised01 poisons wetSmoother's target/current value for
+        // every future block until the next valid update, which then
+        // reaches verbPiecewise()'s array-index computation (VerbCurves.h)
+        // as a non-finite t01. See docs/DSP_VERB.md's "A real bug found by
+        // Debug-mode testing" section - this is the same undefined-
+        // behaviour class as the pre-delay index bug, caught at a second,
+        // independent location by the same class of regression test.
+        const auto safeWetNormalised01 = std::isfinite (wetNormalised01) ? wetNormalised01 : 0.0f;
+        wetSmoother.setTargetValue (std::clamp (safeWetNormalised01, 0.0f, 1.0f));
         bypassSmoother.setTargetValue (enabled ? 1.0f : 0.0f);
 
         // Coefficients derived from the macro value are recomputed once

@@ -6116,8 +6116,15 @@ public:
             uni76::dsp::VerbProcessor verb;
             verb.prepare (44100.0, 512, 2);
             for (auto wet : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
                 for (auto enabled : { true, false })
+                {
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    buffer.clear();
+                    verb.process (buffer, wet, enabled);
                     expectEquals (verb.getLatencySamples(), 0);
+                }
+            }
         }
 
         beginTest ("DRY (0%) is a bit-exact (up to float rounding) identity transform");
@@ -6518,6 +6525,119 @@ public:
                     verb.process (buffer, 1.0f, true);
                     expect (bufferIsFinite (buffer), "NaN/Inf input should be sanitised at " + juce::String (sr) + "Hz/" + juce::String (bs));
                 }
+            }
+        }
+
+        beginTest ("Regression: pre-delay read-index stays in-bounds under NaN macro input and other edge cases");
+        {
+            // Locks in the fix for a real Debug-mode "vector subscript out
+            // of range" crash: a NaN wetNormalised01 parameter propagates
+            // through wetSmoother into preDelaySamples, producing a
+            // non-finite readPosF for the pre-delay buffer's read index -
+            // std::isfinite comparisons against NaN are always false, so
+            // the old `while (readPosF < 0.0f)` wraparound never executed
+            // and left readPosF as NaN, and `(int) NaN` is undefined
+            // behaviour. See docs/DSP_VERB.md's "A real bug found by
+            // Debug-mode testing" section. Every sub-case below must
+            // produce finite output and must not crash/assert.
+
+            // (a) NaN wetNormalised01, several sample rates and block
+            // sizes, several consecutive blocks each (the crash this
+            // catches only manifests on the *second* block onward, once
+            // wetSmoother's own internal state has been poisoned by the
+            // first NaN target).
+            {
+                const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+                const int blocks[] { 32, 256, 512, 2048 };
+                for (auto sr : rates)
+                {
+                    for (auto bs : blocks)
+                    {
+                        uni76::dsp::VerbProcessor verb;
+                        verb.prepare (sr, bs, 2);
+                        for (int block = 0; block < 5; ++block)
+                        {
+                            juce::AudioBuffer<float> buffer (2, bs);
+                            for (int ch = 0; ch < 2; ++ch)
+                                for (int i = 0; i < bs; ++i)
+                                    buffer.setSample (ch, i, 0.1f * std::sin ((float) i * 0.1f));
+                            verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), true);
+                            expect (bufferIsFinite (buffer), "NaN wet% must not produce non-finite output at " + juce::String (sr) + "Hz/" + juce::String (bs));
+                        }
+                    }
+                }
+            }
+
+            // (b) +Inf / -Inf wetNormalised01.
+            {
+                uni76::dsp::VerbProcessor verb;
+                verb.prepare (44100.0, 512, 2);
+                for (auto wet : { std::numeric_limits<float>::infinity(), -std::numeric_limits<float>::infinity() })
+                {
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < 512; ++i)
+                            buffer.setSample (ch, i, 0.1f);
+                    verb.process (buffer, wet, true);
+                    expect (bufferIsFinite (buffer), "Inf wet% must not produce non-finite output");
+                }
+            }
+
+            // (c) NaN input, then reset(), then confirm normal processing resumes cleanly.
+            {
+                uni76::dsp::VerbProcessor verb;
+                verb.prepare (44100.0, 512, 2);
+                juce::AudioBuffer<float> nanBlock (2, 512);
+                nanBlock.clear();
+                nanBlock.setSample (0, 0, std::numeric_limits<float>::quiet_NaN());
+                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), true);
+                verb.reset();
+
+                auto post = generateSine (2, (int) (0.5 * 44100.0), 44100.0, 500.0f, 0.2f);
+                auto output = runVerbProcessor (verb, post, 512, 1.0f, true);
+                expect (bufferIsFinite (output), "processing after reset() following NaN input must be finite");
+            }
+
+            // (d) NaN input, then prepare()/re-prepare() cycles across sample rates.
+            {
+                uni76::dsp::VerbProcessor verb;
+                verb.prepare (44100.0, 512, 2);
+                juce::AudioBuffer<float> nanBlock (2, 512);
+                nanBlock.clear();
+                nanBlock.setSample (1, 10, std::numeric_limits<float>::quiet_NaN());
+                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), true);
+
+                const double rates[] { 48000.0, 96000.0, 44100.0, 192000.0 };
+                for (auto sr : rates)
+                {
+                    verb.prepare (sr, 256, 2);
+                    auto post = generateSine (2, (int) (0.2 * sr), sr, 500.0f, 0.2f);
+                    auto output = runVerbProcessor (verb, post, 256, 1.0f, true);
+                    expect (bufferIsFinite (output), "processing after re-prepare() at " + juce::String (sr) + "Hz must be finite");
+                }
+            }
+
+            // (e) Max block-size boundary: a single block far larger than
+            // the pre-delay buffer's own capacity (~0.04*sampleRate+4
+            // samples), forcing the write position to wrap around
+            // multiple times within one process() call.
+            {
+                uni76::dsp::VerbProcessor verb;
+                verb.prepare (44100.0, 8192, 2);
+                juce::AudioBuffer<float> buffer (2, 8192);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < 8192; ++i)
+                        buffer.setSample (ch, i, 0.1f * std::sin ((float) i * 0.05f));
+                verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), true);
+                expect (bufferIsFinite (buffer), "an 8192-sample block (larger than the pre-delay buffer) with NaN wet% must stay finite");
+
+                // Follow with a normal block to confirm the instance recovered cleanly.
+                juce::AudioBuffer<float> normalBlock (2, 8192);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < 8192; ++i)
+                        normalBlock.setSample (ch, i, 0.1f * std::sin ((float) i * 0.05f));
+                verb.process (normalBlock, 1.0f, true);
+                expect (bufferIsFinite (normalBlock), "normal processing after the oversized NaN block must be finite");
             }
         }
     }

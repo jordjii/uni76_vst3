@@ -40,7 +40,17 @@ namespace uni76::dsp
         polynomial through all five. */
     inline float verbPiecewise (float t01, const std::array<float, 5>& values) noexcept
     {
-        const auto t = std::clamp (t01, 0.0f, 1.0f);
+        // std::clamp does not actually clamp NaN (all comparisons against
+        // NaN are false, so it returns the unclamped input unchanged) -
+        // an std::isfinite guard is needed *before* clamping, otherwise a
+        // non-finite t01 reaches `(int) scaled` below, which is undefined
+        // behaviour and can produce an out-of-range `segment` (a real
+        // Debug-mode "array subscript out of range" crash was caught this
+        // way - see docs/DSP_VERB.md's "A real bug found by Debug-mode
+        // testing" section). Falls back to 0.0 (t=0, the DRY/identity
+        // point) rather than silently picking some other value.
+        const auto safeT01 = std::isfinite (t01) ? t01 : 0.0f;
+        const auto t = std::clamp (safeT01, 0.0f, 1.0f);
         const auto scaled = t * 4.0f;
         const auto segment = std::min (3, (int) scaled);
         const auto local = verbSmoothstep (scaled - (float) segment);

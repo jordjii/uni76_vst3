@@ -597,8 +597,30 @@ MSVC 19.51):
   black-box host harness has no legitimate way to toggle it without going
   through the WebView native bridge, which - as established in the UI
   audit - such a harness cannot reach either.
-
-Not verified (say so plainly rather than guessing):
+- **VERB acceptance/calibration pass** (validation-only round on top of
+  the module's original implementation, see
+  [docs/DSP_VERB.md](docs/DSP_VERB.md)'s "Acceptance / calibration pass"
+  section) - a mandatory narrowband resonance sweep (16 points, 1/3-
+  octave, followed up at 10-20Hz resolution around two flagged regions,
+  plus a full decay-curve comparison at the single most theoretically-
+  likely candidate for a reinforced mode - two delay lines' harmonic
+  series nearly coincide near 1235Hz) found **no genuine dominant/stuck
+  mode**, so no FDN/diffuser/damping retuning was made; impulse-density,
+  the 40-1000Hz low-end table, THD, wet-only/full-output/mono-fold-down
+  correlation (confirming the previously-reported ~-0.45 wet-only figure
+  doesn't destabilise the full, dry-dominated mix), PAN=100%+VERB=100%
+  time-varying correlation, centred-bass-under-PAN+VERB, and the RT60
+  table across all four macro values all independently confirmed the
+  existing design already meets its targets - no architecture change
+  resulted. This pass did, however, find and fix a **second, independent
+  instance** of the pre-delay NaN-indexing bug class documented above: a
+  non-finite `wetNormalised01` (the macro parameter itself, not an audio
+  sample) reached `verbPiecewise()`'s array-segment-index computation
+  (`VerbCurves.h`) via the same `std::clamp`-does-not-clamp-NaN gap,
+  caught this round by a new, dedicated regression test written
+  specifically to hunt for this bug class - fixed at both the entry
+  point (`VerbProcessor::process()`) and the shared curve utility
+  itself. New final listening WAVs at `docs/audio/verb-final-*.wav`.
 
 - **macOS**: not built or tested - no macOS machine available in this
   session. `CMakePresets.json` defines `macos-debug`/`macos-release`
