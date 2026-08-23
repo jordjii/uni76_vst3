@@ -2,9 +2,10 @@
 
 Status: technical foundation + production UI + PREAMP DSP (frozen after a
 sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
-(see [docs/DSP_EQ.md](DSP_EQ.md)). Saturation, Pitch, Panorama, Reverb and
-Imager remain a strict passthrough. See root [CLAUDE.md](../CLAUDE.md) for
-the living project log and the rules this architecture exists to enforce.
+(see [docs/DSP_EQ.md](DSP_EQ.md)) + SAT DSP (see
+[docs/DSP_SAT.md](DSP_SAT.md)). Pitch, Panorama, Reverb and Imager remain
+a strict passthrough. See root [CLAUDE.md](../CLAUDE.md) for the living
+project log and the rules this architecture exists to enforce.
 
 ## Layers
 
@@ -17,11 +18,11 @@ Source/
                 codebase (e.g. state schema version).
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
-  DSP/          PreampProcessor + EqProcessor (real DSP, chained in that
-                order - see docs/DSP_PREAMP.md / docs/DSP_EQ.md) plus
-                architectural placeholders for the other 5 processing
-                modules (Saturation, Pitch, Panorama, Reverb, Imager).
-                See "DSP modules" below.
+  DSP/          PreampProcessor + EqProcessor + SatProcessor (real DSP,
+                chained in that order - see docs/DSP_PREAMP.md /
+                docs/DSP_EQ.md / docs/DSP_SAT.md) plus architectural
+                placeholders for the other 4 processing modules (Pitch,
+                Panorama, Reverb, Imager). See "DSP modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -109,11 +110,22 @@ filter network - HP, low shelf, bell, high shelf, LP - reusing the same
 `Biquad.h` toolkit PREAMP uses). No oversampling (adds zero latency), no
 nonlinearity.
 
-`Source/DSP/Saturation.h`/`Pitch.h`/`Panorama.h`/`Reverb.h`/`Imager.h`
-remain deliberately empty placeholder classes - no `prepare`/`process`
-methods, no fake processing - and are not referenced from
-`PluginProcessor`. Wiring one in means giving it real behaviour like
-PREAMP/EQ got, not just calling an empty stub.
+`Source/DSP/SatProcessor.h`/`.cpp` is the third - see
+[docs/DSP_SAT.md](DSP_SAT.md) for its nonlinear model and measured data.
+Chained after EQ. Built from `SatCurves.h` (drive/asymmetry/compression/
+tilt/output-trim curves) and `SatProcessor.h`/`.cpp` (its own independent
+`juce::dsp::Oversampling` instance around a frequency-tilt pre-emphasis ->
+envelope-driven dynamic gain -> bounded waveshaper -> tilt de-emphasis
+chain). Reuses the bounded per-half-gain waveshaper structure PREAMP's
+calibration pass proved safe, and `Biquad.h`'s `EnvelopeFollower`
+(peak-hold envelope, added for this module) for its "memory" component -
+otherwise a fully independent set of curves/constants from PREAMP.
+
+`Source/DSP/Pitch.h`/`Panorama.h`/`Reverb.h`/`Imager.h` remain
+deliberately empty placeholder classes - no `prepare`/`process` methods,
+no fake processing - and are not referenced from `PluginProcessor`.
+Wiring one in means giving it real behaviour like PREAMP/EQ/SAT got, not
+just calling an empty stub.
 
 ## Web UI / native bridge
 
@@ -195,18 +207,19 @@ backend (see the comment in `ParameterKnob`'s constructor).
 
 ### Derived (non-parameter) visual indicators
 
-The tri-point scales on Saturation/Pitch/Panorama/Reverb/Imager
-(`aux_visuals.js`) are illustrative read-outs computed from the *existing*
-parameter's value - those 5 modules are still passthrough, so these don't
-imply DSP behaviour that isn't implemented. They do not create, read, or
-write any additional APVTS parameter.
+The tri-point scales on Pitch/Panorama/Reverb/Imager (`aux_visuals.js`)
+are illustrative read-outs computed from the *existing* parameter's value
+- those 4 modules are still passthrough, so these don't imply DSP
+behaviour that isn't implemented. They do not create, read, or write any
+additional APVTS parameter.
 
-EQ's tri-point scale is different in status (it's now real DSP) but not in
-implementation: `DARK`/`PHONE`/`AIR` are the three genuinely correct named
-positions at 0%/50%/100% already, so the existing generic marker binding
+EQ's and SAT's tri-point scales are different in status (both are now
+real DSP) but not in implementation: `DARK`/`PHONE`/`AIR` and
+`CLEAN`/`WARM`/`HOT` are each the three genuinely correct named positions
+at 0%/50%/100% already, so the existing generic marker binding
 (`bindTriScale` - a plain 0..100% position, no per-module formula) needed
-no change when EQ's DSP landed, unlike Preamp's filter-line indicators
-below.
+no change when either module's DSP landed, unlike Preamp's filter-line
+indicators below.
 
 The Preamp module's "LOW CUT" / "HIGH CUT" lines are different: they now
 track the *real* drive-dependent filters `Source/DSP/PreampProcessor`

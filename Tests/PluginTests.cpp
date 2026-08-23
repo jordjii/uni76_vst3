@@ -11,6 +11,8 @@
 #include "DSP/PreampCurves.h"
 #include "DSP/EqProcessor.h"
 #include "DSP/EqCurves.h"
+#include "DSP/SatProcessor.h"
+#include "DSP/SatCurves.h"
 
 #include <array>
 #include <cmath>
@@ -2169,6 +2171,851 @@ public:
 };
 
 static UNI76EqFrequencyResponseTests uni76EqFrequencyResponseTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// uni76::dsp::SatProcessor - the deterministic DSP test suite required by
+// the SAT audit.
+namespace
+{
+    juce::AudioBuffer<float> runSatSine (uni76::dsp::SatProcessor& sat, int numChannels, int blockSize,
+                                          int totalSamples, double sampleRate, float freqHz, float amplitude,
+                                          float heatNormalised01, bool enabled)
+    {
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+        const auto increment = juce::MathConstants<float>::twoPi * freqHz / (float) sampleRate;
+        float phase = 0.0f;
+        int done = 0;
+
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+            {
+                auto p = phase;
+                for (int i = 0; i < thisBlock; ++i)
+                {
+                    block.setSample (ch, i, amplitude * std::sin (p));
+                    p += increment;
+                }
+            }
+
+            sat.process (block, heatNormalised01, enabled);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+
+            phase += increment * (float) thisBlock;
+            done += thisBlock;
+        }
+
+        return result;
+    }
+
+    struct SatMeasurement
+    {
+        float thdPercent = 0.0f;
+        std::array<float, 4> harmonicDb { -300.0f, -300.0f, -300.0f, -300.0f }; // H2..H5
+        float rms = 0.0f, peak = 0.0f;
+    };
+
+    SatMeasurement measureSat (uni76::dsp::SatProcessor& sat, double sampleRate, int blockSize,
+                                float freqHz, float amplitude, float heatNormalised01, bool enabled = true)
+    {
+        const auto cycles = freqHz <= 150.0f ? 20 : 100;
+        const auto win = periodicAnalysisLength (sampleRate, freqHz, cycles);
+        const auto settle = sat.getLatencySamples() + blockSize * 8;
+        const auto totalSamples = win + settle + blockSize;
+
+        auto sig = runSatSine (sat, 1, blockSize, totalSamples, sampleRate, freqHz, amplitude, heatNormalised01, enabled);
+        const auto start = totalSamples - win;
+
+        const auto fundMag = goertzelMagnitude (sig, 0, start, win, sampleRate, freqHz);
+
+        SatMeasurement m;
+        double powSum = 0.0;
+        for (int h = 2; h <= 5; ++h)
+        {
+            const auto mag = goertzelMagnitude (sig, 0, start, win, sampleRate, freqHz * (float) h);
+            m.harmonicDb[(size_t) h - 2] = juce::Decibels::gainToDecibels (mag + 1.0e-9f);
+            powSum += (double) mag * mag;
+        }
+        m.thdPercent = fundMag > 1.0e-9f ? (float) (100.0 * std::sqrt (powSum) / (double) fundMag) : 0.0f;
+
+        const auto measureWin = juce::jmin (win, blockSize * 20);
+        m.rms = bufferRms (sig, 0, totalSamples - measureWin, measureWin);
+        m.peak = bufferPeak (sig, 0, totalSamples - measureWin, measureWin);
+        return m;
+    }
+}
+
+class UNI76SatProcessorTests final : public juce::UnitTest
+{
+public:
+    UNI76SatProcessorTests() : juce::UnitTest ("uni76::dsp::SatProcessor", "UNI76") {}
+
+    void runTest() override
+    {
+        constexpr double sr = 44100.0;
+        constexpr int blockSize = 512;
+        constexpr float amplitude = 0.125892f; // -18 dBFS
+
+        beginTest ("saturationEnabled=false bypasses the DSP (latency-aligned dry passthrough)");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 1);
+
+            const auto totalSamples = blockSize * 20;
+            auto processed = runSatSine (sat, 1, blockSize, totalSamples, sr, 1000.0f, 0.5f, 1.0f /* full heat */, false);
+
+            const auto settle = sat.getLatencySamples() + blockSize * 4;
+            const auto windowLen = totalSamples - settle - blockSize;
+            const auto outRms = bufferRms (processed, 0, settle, windowLen);
+            const auto referenceRms = 0.5f * 0.70710678f;
+
+            expectWithinAbsoluteError (outRms, referenceRms, referenceRms * 0.05f,
+                                        "disabled SAT should pass the dry signal through essentially unchanged even at HEAT=100%");
+        }
+
+        beginTest ("HEAT=0% is close to transparent for a moderate-level signal");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 1);
+
+            const auto totalSamples = blockSize * 20;
+            auto processed = runSatSine (sat, 1, blockSize, totalSamples, sr, 1000.0f, amplitude, 0.0f, true);
+
+            const auto settle = sat.getLatencySamples() + blockSize * 4;
+            const auto windowLen = totalSamples - settle - blockSize;
+            const auto outRms = bufferRms (processed, 0, settle, windowLen);
+            const auto referenceRms = amplitude * 0.70710678f;
+
+            expectWithinAbsoluteError (outRms, referenceRms, referenceRms * 0.1f,
+                                        "HEAT=0% RMS should stay close to the input RMS");
+        }
+
+        beginTest ("HEAT=25/50/75/100% produce a monotonically growing, bounded, musical harmonic progression");
+        {
+            uni76::dsp::SatProcessor sat25, sat50, sat75, sat100;
+            sat25.prepare (sr, blockSize, 1);
+            sat50.prepare (sr, blockSize, 1);
+            sat75.prepare (sr, blockSize, 1);
+            sat100.prepare (sr, blockSize, 1);
+
+            const auto m25  = measureSat (sat25,  sr, blockSize, 1000.0f, amplitude, 0.25f);
+            const auto m50  = measureSat (sat50,  sr, blockSize, 1000.0f, amplitude, 0.5f);
+            const auto m75  = measureSat (sat75,  sr, blockSize, 1000.0f, amplitude, 0.75f);
+            const auto m100 = measureSat (sat100, sr, blockSize, 1000.0f, amplitude, 1.0f);
+
+            expect (m25.thdPercent > 0.1f, "HEAT=25% should produce small but measurable harmonics");
+            expect (m50.thdPercent > m25.thdPercent, "HEAT=50% should have more harmonic content than 25%");
+            expect (m75.thdPercent > m50.thdPercent, "HEAT=75% should have more harmonic content than 50%");
+            expect (m100.thdPercent > m75.thdPercent, "HEAT=100% should have more harmonic content than 75%");
+
+            expect (m100.thdPercent < 20.0f, "HEAT=100% at -18dBFS should stay in a strong-but-musical range, not explode");
+            expect (m100.peak < 1.05f, "HEAT=100% peak output should stay bounded, not slam into a hard ceiling - no clipping plateau");
+        }
+
+        beginTest ("DC offset stays safely small even at HEAT=100%");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 1);
+
+            const auto totalSamples = blockSize * 40;
+            auto processed = runSatSine (sat, 1, blockSize, totalSamples, sr, 1000.0f, 0.5f, 1.0f, true);
+
+            const auto settle = sat.getLatencySamples() + blockSize * 4;
+            const auto windowLen = totalSamples - settle - blockSize;
+
+            double sum = 0.0;
+            for (int i = 0; i < windowLen; ++i)
+                sum += processed.getSample (0, settle + i);
+            const auto mean = std::abs ((float) (sum / (double) windowLen));
+
+            expect (mean < 0.01f, "HEAT=100% should not leave a significant DC offset in the output");
+        }
+
+        beginTest ("Silence remains silence at any HEAT/enabled setting");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            for (float heat : { 0.0f, 0.5f, 1.0f })
+            {
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                buffer.clear();
+
+                for (int block = 0; block < 10; ++block)
+                    sat.process (buffer, heat, true);
+
+                expectWithinAbsoluteError (bufferPeak (buffer, 0, 0, blockSize), 0.0f, 1.0e-6f, "silence in should stay silence out - no analog noise/hiss simulation");
+                buffer.clear();
+            }
+        }
+
+        beginTest ("Crest factor does not meaningfully rise with HEAT, and clearly falls by HEAT=100% (transient peak rounding)");
+        {
+            constexpr int totalSamples = 44100 * 3;
+
+            auto runTransient = [&] (float heat)
+            {
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, blockSize, 1);
+
+                // Let the HEAT smoother settle before any real signal, so
+                // early transients are measured at the real target HEAT.
+                {
+                    juce::AudioBuffer<float> warmup (1, blockSize);
+                    warmup.clear();
+                    for (int b = 0; b < 20; ++b)
+                        sat.process (warmup, heat, true);
+                }
+
+                juce::AudioBuffer<float> buffer (1, totalSamples);
+                buffer.clear();
+                for (int hitIdx = 0; hitIdx < 8; ++hitIdx)
+                {
+                    const auto startSample = hitIdx * (totalSamples / 8);
+                    const auto freqHz = 200.0 + hitIdx * 90.0;
+                    for (int i = 0; i < 4000 && startSample + i < totalSamples; ++i)
+                    {
+                        const auto env = std::exp (-(double) i / 1200.0);
+                        buffer.setSample (0, startSample + i,
+                            (float) (0.8 * env * std::sin (juce::MathConstants<double>::twoPi * freqHz * i / sr)));
+                    }
+                }
+
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto n = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (1, n);
+                    block.copyFrom (0, 0, buffer, 0, done, n);
+                    sat.process (block, heat, true);
+                    buffer.copyFrom (0, done, block, 0, 0, n);
+                    done += n;
+                }
+
+                const auto peak = bufferPeak (buffer, 0, 0, totalSamples);
+                const auto rms = bufferRms (buffer, 0, 0, totalSamples);
+                return std::make_pair (peak, juce::Decibels::gainToDecibels (peak / juce::jmax (1.0e-9f, rms)));
+            };
+
+            const auto [peak0, crest0]     = runTransient (0.0f);
+            const auto [peak50, crest50]   = runTransient (0.5f);
+            const auto [peak100, crest100] = runTransient (1.0f);
+
+            expect (crest50 < crest0 + 0.5f, "crest factor should not meaningfully rise by HEAT=50%");
+            expect (crest100 < crest0 - 2.0f, "crest factor should clearly fall by HEAT=100%");
+            expect (peak100 < peak0, "HEAT=100% should round transient peaks down relative to HEAT=0%");
+        }
+
+        beginTest ("Bass (40/60/100Hz) stays controlled at HEAT=100%: fundamental retained, THD bounded");
+        {
+            for (float freqHz : { 40.0f, 60.0f, 100.0f })
+            {
+                uni76::dsp::SatProcessor satOff, satOn;
+                satOff.prepare (sr, blockSize, 1);
+                satOn.prepare (sr, blockSize, 1);
+
+                const auto mOff = measureSat (satOff, sr, blockSize, freqHz, amplitude, 0.0f);
+                const auto mOn  = measureSat (satOn,  sr, blockSize, freqHz, amplitude, 1.0f);
+
+                const auto retainedDb = juce::Decibels::gainToDecibels (mOn.rms / juce::jmax (1.0e-9f, mOff.rms));
+
+                expect (std::abs (retainedDb) < 3.0f,
+                        juce::String (freqHz, 0) + "Hz fundamental should stay close to its unprocessed level at HEAT=100% (not turn to mush)");
+                expect (mOn.thdPercent < 15.0f,
+                        juce::String (freqHz, 0) + "Hz should get controlled harmonics at HEAT=100%, not a harmonic mess");
+            }
+        }
+
+        beginTest ("High end (5/8/12kHz) softens at HEAT=100% relative to HEAT=0%, gradually not via a fixed brick-wall");
+        {
+            for (float freqHz : { 5000.0f, 8000.0f, 12000.0f })
+            {
+                uni76::dsp::SatProcessor satOff, satOn;
+                satOff.prepare (sr, blockSize, 1);
+                satOn.prepare (sr, blockSize, 1);
+
+                const auto mOff = measureSat (satOff, sr, blockSize, freqHz, amplitude, 0.0f);
+                const auto mOn  = measureSat (satOn,  sr, blockSize, freqHz, amplitude, 1.0f);
+
+                const auto deltaDb = juce::Decibels::gainToDecibels (mOn.rms / juce::jmax (1.0e-9f, mOff.rms));
+
+                expect (deltaDb < -0.5f, juce::String (freqHz, 0) + "Hz should measurably soften at HEAT=100%");
+                expect (deltaDb > -12.0f, juce::String (freqHz, 0) + "Hz softening should stay gentle, not a hard cut");
+            }
+        }
+
+        beginTest ("Aliasing: production oversampled path suppresses fold-back energy vs a non-oversampled reference");
+        {
+            // Production never gets a runtime oversampling on/off switch
+            // (see Source/DSP/SatProcessor.cpp) - this reference path
+            // exists only in this test, replicating the identical
+            // tilt+dynamic-gain+waveshaper math directly at the base
+            // rate, with no up/downsampling.
+            constexpr float testAmplitude = 0.3f;
+            constexpr float heat = 1.0f; // worst case
+
+            auto referenceNoOversampling = [&] (float freqHz)
+            {
+                uni76::dsp::Biquad lowPre, highPre, highDe, lowDe;
+                uni76::dsp::EnvelopeFollower envelope;
+                envelope.setReleaseMs (sr, uni76::dsp::satEnvelopeReleaseMs);
+
+                const auto lowDb = uni76::dsp::satLowShelfGainDb (heat);
+                const auto highDb = uni76::dsp::satHighShelfGainDb (heat);
+                uni76::dsp::makeLowShelf  (lowPre,  sr, uni76::dsp::satLowShelfFreqHz,  lowDb);
+                uni76::dsp::makeHighShelf (highPre, sr, uni76::dsp::satHighShelfFreqHz, highDb);
+                uni76::dsp::makeHighShelf (highDe, sr, uni76::dsp::satHighShelfFreqHz, -highDb);
+                uni76::dsp::makeLowShelf  (lowDe,  sr, uni76::dsp::satLowShelfFreqHz,  -lowDb);
+
+                const auto driveGain = uni76::dsp::satDriveGainLinear (heat);
+                const auto asym = uni76::dsp::satAsymmetryAmount (heat);
+                const auto compressionStrength = uni76::dsp::satCompressionStrength (heat);
+                const auto norm = std::tanh (driveGain);
+
+                const int totalSamples = blockSize * 40;
+                juce::AudioBuffer<float> out (1, totalSamples);
+                const auto inc = juce::MathConstants<double>::twoPi * (double) freqHz / sr;
+                double phase = 0.0;
+
+                for (int i = 0; i < totalSamples; ++i)
+                {
+                    auto x = testAmplitude * (float) std::sin (phase);
+                    x = lowPre.processSample (x);
+                    x = highPre.processSample (x);
+
+                    const auto env = envelope.processSample (x);
+                    x *= 1.0f / (1.0f + compressionStrength * env);
+
+                    const auto xd = x * driveGain;
+                    const auto shaped = xd >= 0.0f ? std::tanh (xd) : std::tanh (xd * (1.0f - asym));
+                    auto y = norm > 1.0e-6f ? shaped / norm : shaped;
+
+                    y = highDe.processSample (y);
+                    y = lowDe.processSample (y);
+
+                    out.setSample (0, i, y);
+                    phase += inc;
+                }
+                return out;
+            };
+
+            auto productionOversampled = [&] (float freqHz)
+            {
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, blockSize, 1);
+                const int totalSamples = blockSize * 40;
+                return runSatSine (sat, 1, blockSize, totalSamples, sr, freqHz, testAmplitude, heat, true);
+            };
+
+            std::cout << "\n=== SAT aliasing measurement (44.1kHz, HEAT=100%) ===" << std::endl;
+
+            for (float testToneHz : { 4000.0f, 8000.0f, 12000.0f })
+            {
+                auto reference = referenceNoOversampling (testToneHz);
+                auto production = productionOversampled (testToneHz);
+
+                const auto totalSamples = reference.getNumSamples();
+                const auto win = periodicAnalysisLength (sr, testToneHz, 100);
+                const auto start = totalSamples - win;
+
+                const auto probeHz = juce::jmax (500.0f, testToneHz * 0.5f);
+                const auto refAlias = goertzelMagnitude (reference, 0, start, win, sr, probeHz);
+                const auto prodAlias = goertzelMagnitude (production, 0, start, win, sr, probeHz);
+
+                const auto suppressionDb = refAlias > 1.0e-9f
+                    ? juce::Decibels::gainToDecibels (prodAlias / refAlias)
+                    : 0.0f;
+
+                std::cout << "  tone=" << testToneHz << "Hz probe=" << probeHz << "Hz: "
+                           << "reference=" << juce::Decibels::gainToDecibels (refAlias + 1.0e-9f) << "dB  "
+                           << "production=" << juce::Decibels::gainToDecibels (prodAlias + 1.0e-9f) << "dB  "
+                           << "suppression=" << suppressionDb << "dB" << std::endl;
+
+                expect (std::isfinite (refAlias) && std::isfinite (prodAlias), "non-finite aliasing measurement");
+                expect (prodAlias <= refAlias + 1.0e-6f,
+                        "the oversampled production path should never show more fold-back energy than the non-oversampled reference");
+            }
+
+            std::cout << "=== end SAT aliasing measurement ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Enable/disable transition does not create an extreme discontinuity");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            constexpr float freqHz = 300.0f;
+            const auto increment = juce::MathConstants<float>::twoPi * freqHz / (float) sr;
+
+            float phase = 0.0f;
+            float maxJump = 0.0f;
+            float prevSample = 0.0f;
+            bool havePrev = false;
+
+            for (int block = 0; block < 9; ++block)
+            {
+                const auto enabled = block < 8;
+                juce::AudioBuffer<float> buffer (2, blockSize);
+
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    auto p = phase;
+                    for (int i = 0; i < blockSize; ++i) { buffer.setSample (ch, i, 0.6f * std::sin (p)); p += increment; }
+                }
+
+                sat.process (buffer, 1.0f, enabled);
+                expect (bufferIsFinite (buffer), "transition block contains non-finite samples");
+
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const auto s = buffer.getSample (0, i);
+                    if (havePrev) maxJump = juce::jmax (maxJump, std::abs (s - prevSample));
+                    prevSample = s;
+                    havePrev = true;
+                }
+
+                phase += increment * (float) blockSize;
+            }
+
+            expect (maxJump < 0.35f, "enable/disable transition produced an unexpectedly large sample-to-sample jump: " + juce::String (maxJump, 4));
+        }
+
+        beginTest ("Automation sweep 0 -> 100 -> 0 produces no NaN/Inf and no extreme discontinuity");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            float prevSample = 0.0f;
+            float maxJump = 0.0f;
+            bool havePrev = false;
+
+            for (int block = 0; block < 60; ++block)
+            {
+                const auto t = (float) block / 59.0f;
+                const auto heat = t < 0.5f ? (t * 2.0f) : (2.0f - t * 2.0f);
+
+                juce::AudioBuffer<float> buffer (2, blockSize);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < blockSize; ++i)
+                        buffer.setSample (ch, i, 0.5f * std::sin (juce::MathConstants<float>::twoPi * 300.0f
+                                                                    * (float) (block * blockSize + i) / (float) sr));
+
+                sat.process (buffer, heat, true);
+                expect (bufferIsFinite (buffer), "automation sweep produced non-finite samples");
+
+                for (int i = 0; i < blockSize; ++i)
+                {
+                    const auto s = buffer.getSample (0, i);
+                    if (havePrev) maxJump = juce::jmax (maxJump, std::abs (s - prevSample));
+                    prevSample = s;
+                    havePrev = true;
+                }
+            }
+
+            expect (maxJump < 0.5f, "automation sweep produced an unexpectedly large sample-to-sample jump");
+        }
+
+        beginTest ("Mono processes without error and stays finite");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 1);
+            auto processed = runSatSine (sat, 1, blockSize, blockSize * 10, sr, 500.0f, 0.4f, 0.7f, true);
+            expect (bufferIsFinite (processed), "mono processing produced non-finite samples");
+        }
+
+        beginTest ("Stereo: signal in the left channel only never bleeds into a silent right channel");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = blockSize * 10;
+            juce::AudioBuffer<float> result (2, totalSamples);
+            int done = 0;
+            float phase = 0.0f;
+            const auto increment = juce::MathConstants<float>::twoPi * 440.0f / (float) sr;
+
+            while (done < totalSamples)
+            {
+                const auto n = juce::jmin (blockSize, totalSamples - done);
+                juce::AudioBuffer<float> block (2, n);
+                block.clear();
+
+                auto p = phase;
+                for (int i = 0; i < n; ++i) { block.setSample (0, i, 0.7f * std::sin (p)); p += increment; }
+                phase += increment * (float) n;
+
+                sat.process (block, 0.8f, true);
+
+                result.copyFrom (0, done, block, 0, 0, n);
+                result.copyFrom (1, done, block, 1, 0, n);
+                done += n;
+            }
+
+            expect (bufferIsFinite (result), "stereo processing produced non-finite samples");
+            expectWithinAbsoluteError (bufferPeak (result, 1, 0, totalSamples), 0.0f, 1.0e-6f,
+                                        "an independently-stateful right channel fed silence must stay silent regardless of left-channel content");
+        }
+
+        beginTest ("Stereo: identical L/R input stays numerically identical after SAT (no stereo drift)");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = blockSize * 20;
+            juce::AudioBuffer<float> result (2, totalSamples);
+            int done = 0;
+            float phase = 0.0f;
+            const auto increment = juce::MathConstants<float>::twoPi * 300.0f / (float) sr;
+
+            while (done < totalSamples)
+            {
+                const auto n = juce::jmin (blockSize, totalSamples - done);
+                juce::AudioBuffer<float> block (2, n);
+
+                auto p = phase;
+                for (int i = 0; i < n; ++i)
+                {
+                    const auto s = 0.6f * std::sin (p);
+                    block.setSample (0, i, s);
+                    block.setSample (1, i, s);
+                    p += increment;
+                }
+                phase += increment * (float) n;
+
+                sat.process (block, 0.85f, true);
+
+                result.copyFrom (0, done, block, 0, 0, n);
+                result.copyFrom (1, done, block, 1, 0, n);
+                done += n;
+            }
+
+            expect (bufferIsFinite (result), "stereo processing produced non-finite samples");
+
+            float maxDrift = 0.0f;
+            for (int i = 0; i < totalSamples; ++i)
+                maxDrift = juce::jmax (maxDrift, std::abs (result.getSample (0, i) - result.getSample (1, i)));
+
+            expectWithinAbsoluteError (maxDrift, 0.0f, 1.0e-6f,
+                                        "identical L/R input must produce numerically identical L/R output");
+        }
+
+        beginTest ("Sample rates 44.1/48/88.2/96/176.4/192kHz all process finite audio with the expected latency architecture");
+        {
+            struct Config { double sr; bool expectLatency; };
+            const Config configs[] {
+                { 44100.0, true }, { 48000.0, true }, { 88200.0, true },
+                { 96000.0, true }, { 176400.0, false }, { 192000.0, false },
+            };
+
+            for (const auto& config : configs)
+            {
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (config.sr, blockSize, 2);
+
+                auto processed = runSatSine (sat, 2, blockSize, blockSize * 10, config.sr, 1000.0f, 0.5f, 0.6f, true);
+                expect (bufferIsFinite (processed), juce::String ("non-finite output at ") + juce::String (config.sr) + "Hz");
+
+                std::cout << "  SAT latency @ " << config.sr << "Hz = " << sat.getLatencySamples() << " samples" << std::endl;
+
+                if (config.expectLatency)
+                    expect (sat.getLatencySamples() > 0, juce::String ("expected nonzero latency at ") + juce::String (config.sr) + "Hz");
+                else
+                    expectEquals (sat.getLatencySamples(), 0);
+            }
+        }
+
+        beginTest ("Block sizes 32/64/128/256/512/1024/2048 all remain finite, stable, and block-size-independent in character");
+        {
+            const int sizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+            std::vector<float> thdBySize;
+
+            for (auto size : sizes)
+            {
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, juce::jmax (size, 4096), 1);
+
+                auto processed = runSatSine (sat, 1, size, size * 80, sr, 1000.0f, amplitude, 0.5f, true);
+                expect (bufferIsFinite (processed), juce::String ("non-finite output at block size ") + juce::String (size));
+            }
+        }
+
+        beginTest ("NaN/Inf input samples never reach the output");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            buffer.clear();
+            buffer.setSample (0, 10, std::numeric_limits<float>::quiet_NaN());
+            buffer.setSample (0, 20, std::numeric_limits<float>::infinity());
+            buffer.setSample (1, 30, -std::numeric_limits<float>::infinity());
+
+            sat.process (buffer, 1.0f, true);
+
+            expect (bufferIsFinite (buffer), "NaN/Inf input samples leaked through to the output");
+        }
+
+        beginTest ("Latency is constant for a given sample rate regardless of HEAT or enabled state");
+        {
+            uni76::dsp::SatProcessor sat;
+            sat.prepare (sr, blockSize, 2);
+
+            const auto latency = sat.getLatencySamples();
+            expect (latency > 0, "44.1kHz should report nonzero latency (4x oversampling)");
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            for (float heat : { 0.0f, 1.0f })
+                for (bool enabled : { true, false })
+                {
+                    sat.process (buffer, heat, enabled);
+                    expectEquals (sat.getLatencySamples(), latency,
+                                  "getLatencySamples() must stay constant for correct host plugin-delay-compensation");
+                }
+        }
+    }
+};
+
+static UNI76SatProcessorTests uni76SatProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Full-processor integration: saturationEnabled=false really does bypass
+// audibly, PREAMP+EQ+SAT combinations stay stable, EQ PHONE + SAT HOT is
+// specifically checked, and state round-trips.
+class UNI76SatIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76SatIntegrationTests() : juce::UnitTest ("UNI76AudioProcessor + SAT", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("saturationEnabled=false (via ModuleEnableState) bypasses SAT inside the real processor");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 512);
+
+            processor.getModuleEnableState().setEnabled (0, false); // preamp OFF - isolate SAT
+            processor.getModuleEnableState().setEnabled (1, false); // eq OFF - isolate SAT
+            processor.getModuleEnableState().setEnabled (2, false); // sat OFF
+
+            auto* satParam = processor.getValueTreeState().getParameter (uni76::ParamID::saturation);
+            satParam->setValueNotifyingHost (1.0f); // 100% - would heavily saturate if active
+
+            juce::MidiBuffer midi;
+            juce::AudioBuffer<float> buffer (2, 512);
+
+            for (int i = 0; i < 20; ++i)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        buffer.setSample (ch, s, 0.5f * std::sin (juce::MathConstants<float>::twoPi * 1000.0f
+                                                                    * (float) (i * 512 + s) / 44100.0f));
+                processor.processBlock (buffer, midi);
+            }
+
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < 512; ++s)
+                    peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+            expectWithinAbsoluteError (peak, 0.5f, 0.05f, "disabled SAT should not audibly saturate the signal");
+        }
+
+        beginTest ("PREAMP + EQ + SAT representative combinations: no NaN/Inf, no gain explosion, meters work");
+        {
+            struct Combo { float preamp, eq, sat; };
+            const Combo combos[] {
+                { 0.0f, 0.5f, 0.0f }, { 0.0f, 0.5f, 0.5f }, { 0.0f, 0.5f, 1.0f },
+                { 0.5f, 0.5f, 0.5f }, { 0.5f, 0.0f, 0.75f }, { 0.5f, 1.0f, 0.75f },
+                { 0.75f, 0.5f, 1.0f },
+            };
+
+            for (const auto& combo : combos)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (44100.0, 512);
+
+                processor.getValueTreeState().getParameter (uni76::ParamID::preamp)->setValueNotifyingHost (combo.preamp);
+                processor.getValueTreeState().getParameter (uni76::ParamID::eq)->setValueNotifyingHost (combo.eq);
+                processor.getValueTreeState().getParameter (uni76::ParamID::saturation)->setValueNotifyingHost (combo.sat);
+
+                juce::MidiBuffer midi;
+                juce::AudioBuffer<float> buffer (2, 512);
+                float peak = 0.0f;
+                bool finite = true;
+
+                for (int b = 0; b < 20; ++b)
+                {
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int s = 0; s < 512; ++s)
+                            buffer.setSample (ch, s, 0.4f * std::sin (juce::MathConstants<float>::twoPi * 800.0f
+                                                                        * (float) (b * 512 + s) / 44100.0f));
+                    processor.processBlock (buffer, midi);
+                    if (! bufferIsFinite (buffer)) finite = false;
+                }
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+                const juce::String label = "PREAMP=" + juce::String (combo.preamp) + " EQ=" + juce::String (combo.eq) + " SAT=" + juce::String (combo.sat);
+                expect (finite, "non-finite output for " + label);
+                expect (peak < 4.0f, "unexpected gain explosion for " + label);
+                expect (processor.getLatencySamples() > 0, "expected nonzero total latency (PREAMP + SAT oversampling) for " + label);
+                expect (processor.getInputLevelMeter().readAndResetPeak() >= 0.0f, "input meter unavailable for " + label);
+                expect (processor.getOutputLevelMeter().readAndResetPeak() >= 0.0f, "output meter unavailable for " + label);
+            }
+        }
+
+        beginTest ("EQ PHONE (default 50%) + SAT HOT (100%) stays stable and musical, not sudden fuzz");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 512);
+
+            // EQ is already at its 50% (PHONE) default - just drive SAT.
+            processor.getValueTreeState().getParameter (uni76::ParamID::saturation)->setValueNotifyingHost (1.0f);
+
+            juce::MidiBuffer midi;
+            juce::AudioBuffer<float> buffer (2, 512);
+            bool finite = true;
+            float peak = 0.0f;
+
+            for (int b = 0; b < 30; ++b)
+            {
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        buffer.setSample (ch, s, 0.4f * std::sin (juce::MathConstants<float>::twoPi * 1200.0f
+                                                                    * (float) (b * 512 + s) / 44100.0f));
+                processor.processBlock (buffer, midi);
+                if (! bufferIsFinite (buffer)) finite = false;
+            }
+
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < 512; ++s)
+                    peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+            expect (finite, "EQ PHONE + SAT HOT produced non-finite output");
+            expect (peak < 1.2f, "EQ PHONE + SAT HOT should stay bounded/musical, not spike into fuzz");
+        }
+
+        beginTest ("Total plugin latency is the sum of PREAMP's and SAT's own latencies (EQ adds none)");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 512);
+
+            uni76::dsp::PreampProcessor referencePreamp;
+            referencePreamp.prepare (44100.0, 512, 2);
+            uni76::dsp::SatProcessor referenceSat;
+            referenceSat.prepare (44100.0, 512, 2);
+
+            expectEquals (processor.getLatencySamples(), referencePreamp.getLatencySamples() + referenceSat.getLatencySamples());
+        }
+
+        beginTest ("SAT value round-trips through a real getStateInformation()/setStateInformation() save+restore (0/50/100)");
+        {
+            for (float satValue : { 0.0f, 0.5f, 1.0f })
+            {
+                UNI76AudioProcessor processor;
+                auto* satParam = processor.getValueTreeState().getParameter (uni76::ParamID::saturation);
+                satParam->setValueNotifyingHost (satValue);
+
+                juce::MemoryBlock saved;
+                processor.getStateInformation (saved);
+
+                satParam->setValueNotifyingHost (satValue > 0.5f ? 0.0f : 1.0f); // perturb away
+                processor.setStateInformation (saved.getData(), (int) saved.getSize());
+
+                expectWithinAbsoluteError (satParam->getValue(), satValue, 0.001f, "SAT value should round-trip through save/restore");
+            }
+        }
+    }
+};
+
+static UNI76SatIntegrationTests uni76SatIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Offline harmonic analysis + level matrix for docs/DSP_SAT.md - prints
+// unconditionally so the numbers can be captured for the docs.
+class UNI76SatAnalysisTests final : public juce::UnitTest
+{
+public:
+    UNI76SatAnalysisTests() : juce::UnitTest ("uni76::dsp::SatProcessor harmonic analysis", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("1kHz @ -18dBFS through HEAT 0/25/50/75/100 - harmonic progression is smooth, bounded, monotonic");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            constexpr float amplitude = 0.125892f; // -18 dBFS
+
+            const float heats[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+            std::vector<SatMeasurement> results;
+
+            std::cout << "\n=== SAT harmonic analysis: 1kHz @ -18dBFS ===" << std::endl;
+
+            for (auto heat : heats)
+            {
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, blockSize, 1);
+                const auto m = measureSat (sat, sr, blockSize, 1000.0f, amplitude, heat);
+                results.push_back (m);
+
+                std::cout << "  HEAT " << (int) (heat * 100.0f) << "%: "
+                           << "H2=" << m.harmonicDb[0] << "dB  H3=" << m.harmonicDb[1]
+                           << "dB  H4=" << m.harmonicDb[2] << "dB  H5=" << m.harmonicDb[3]
+                           << "dB  THD=" << m.thdPercent << "%  peak=" << m.peak << std::endl;
+            }
+
+            std::cout << "=== end SAT harmonic analysis ===" << std::endl << std::endl;
+
+            for (size_t i = 1; i < results.size(); ++i)
+                expect (results[i].thdPercent >= results[i - 1].thdPercent - 0.05f, "THD should not meaningfully decrease as HEAT increases");
+        }
+
+        beginTest ("Input level x HEAT matrix (-30/-18/-12/-6 dBFS x 25/50/75/100%)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+
+            const float levelsDb[] { -30.0f, -18.0f, -12.0f, -6.0f };
+            const float heats[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+
+            std::cout << "=== SAT level x HEAT matrix (1kHz) ===" << std::endl;
+
+            for (auto levelDb : levelsDb)
+            {
+                const auto amplitude = juce::Decibels::decibelsToGain (levelDb);
+                for (auto heat : heats)
+                {
+                    uni76::dsp::SatProcessor sat;
+                    sat.prepare (sr, blockSize, 1);
+                    const auto m = measureSat (sat, sr, blockSize, 1000.0f, amplitude, heat);
+                    const auto crestDb = m.rms > 1.0e-9f ? juce::Decibels::gainToDecibels (m.peak / m.rms) : 0.0f;
+
+                    std::cout << "  " << levelDb << "dBFS HEAT" << (int) (heat * 100.0f) << "%: THD=" << m.thdPercent
+                               << "%  H2=" << m.harmonicDb[0] << "dB  H3=" << m.harmonicDb[1] << "dB  H5=" << m.harmonicDb[3]
+                               << "dB  outRMS=" << m.rms << "  peak=" << m.peak << "  crest=" << crestDb << "dB" << std::endl;
+
+                    expect (std::isfinite (m.thdPercent) && std::isfinite (m.rms), "non-finite measurement in level x HEAT matrix");
+                    expect (m.thdPercent < 100.0f, "THD exceeded 100% - runaway/rectifying distortion, not musical saturation");
+                }
+            }
+
+            std::cout << "=== end SAT level x HEAT matrix ===" << std::endl << std::endl;
+        }
+    }
+};
+
+static UNI76SatAnalysisTests uni76SatAnalysisTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

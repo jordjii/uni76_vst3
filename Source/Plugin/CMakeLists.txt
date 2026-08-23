@@ -43,7 +43,9 @@ target_sources(UNI76
         ../DSP/EqCurves.h
         ../DSP/EqProcessor.h
         ../DSP/EqProcessor.cpp
-        ../DSP/Saturation.h
+        ../DSP/SatCurves.h
+        ../DSP/SatProcessor.h
+        ../DSP/SatProcessor.cpp
         ../DSP/Pitch.h
         ../DSP/Panorama.h
         ../DSP/Reverb.h

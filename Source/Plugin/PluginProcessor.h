@@ -5,6 +5,7 @@
 #include "Core/ModuleEnableState.h"
 #include "DSP/PreampProcessor.h"
 #include "DSP/EqProcessor.h"
+#include "DSP/SatProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -18,12 +19,13 @@
         timer, running on the message thread, is what actually reads those
         meters and talks to the WebView - the audio thread itself never
         touches the UI.
-      - PREAMP and EQ are the only modules with real DSP so far (see
-        Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md, and
-        Source/DSP/EqProcessor.h + docs/DSP_EQ.md). Saturation, Pitch,
-        Panorama, Reverb and Imager remain a strict passthrough - their
-        parameters exist and are DAW-automation compatible via APVTS, but
-        do not yet influence the audio signal.
+      - PREAMP, EQ and SAT are the only modules with real DSP so far (see
+        Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
+        Source/DSP/EqProcessor.h + docs/DSP_EQ.md, and
+        Source/DSP/SatProcessor.h + docs/DSP_SAT.md). Pitch, Panorama,
+        Reverb and Imager remain a strict passthrough - their parameters
+        exist and are DAW-automation compatible via APVTS, but do not yet
+        influence the audio signal.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -90,12 +92,14 @@ private:
 
     uni76::dsp::PreampProcessor preampProcessor;
     uni76::dsp::EqProcessor eqProcessor;
+    uni76::dsp::SatProcessor satProcessor;
 
     // Cached raw parameter pointers (juce::AudioProcessorValueTreeState's
     // documented realtime-safe way to read a parameter's current value
     // from processBlock - no lock, no allocation).
     std::atomic<float>* preampParameter = nullptr;
     std::atomic<float>* eqParameter = nullptr;
+    std::atomic<float>* saturationParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

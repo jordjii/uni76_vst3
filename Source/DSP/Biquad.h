@@ -5,7 +5,7 @@
 
 /*
     Small allocation-free DSP building blocks shared by Source/DSP/
-    PreampProcessor and Source/DSP/EqProcessor.
+    PreampProcessor, Source/DSP/EqProcessor, and Source/DSP/SatProcessor.
 
     Deliberately NOT juce::dsp::IIR::Filter: that class stores coefficients
     behind a heap-allocated, reference-counted Coefficients object, and its
@@ -93,6 +93,46 @@ namespace uni76::dsp
     private:
         float r = 0.999f;
         float xPrev = 0.0f, yPrev = 0.0f;
+    };
+
+    /** Peak-hold envelope follower - instant attack (jumps immediately to
+        a new, higher rectified value), smoothed one-pole release. Used by
+        SatProcessor as the "memory" component behind its energy-dependent
+        dynamic gain. Instant attack is deliberate, not a simplification:
+        an early version used a fast-but-smoothed attack (a few ms) and
+        measured *increasing* crest factor through the 25-50% HEAT range
+        (transient peaks slipped through mostly unreduced before the
+        envelope caught up, while sustained/decaying content was still
+        pulled down) - the opposite of the required "HEAT smoothly reduces
+        crest factor". Peak-hold matches how many analog compressors'
+        actual detector circuits behave and fixes this. Bounded by
+        construction (monotonically decays toward abs(x) on release, jumps
+        to exactly abs(x) on attack - never overshoots), no randomness, no
+        feedback loop wider than this single pole, so it can't ring or
+        become unstable. */
+    class EnvelopeFollower
+    {
+    public:
+        void setReleaseMs (double sampleRate, float releaseMs) noexcept
+        {
+            releaseCoeff = 1.0f - std::exp ((float) (-1.0 / (0.001 * (double) releaseMs * sampleRate)));
+        }
+
+        void reset() noexcept { envelope = 0.0f; }
+
+        float processSample (float x) noexcept
+        {
+            const auto rectified = std::abs (x);
+            if (rectified > envelope)
+                envelope = rectified;
+            else
+                envelope += releaseCoeff * (rectified - envelope);
+            return envelope;
+        }
+
+    private:
+        float releaseCoeff = 0.01f;
+        float envelope = 0.0f;
     };
 
     /** Fixed-length integer-sample delay, used to time-align an

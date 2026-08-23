@@ -13,6 +13,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
 {
     preampParameter = apvts.getRawParameterValue (uni76::ParamID::preamp);
     eqParameter = apvts.getRawParameterValue (uni76::ParamID::eq);
+    saturationParameter = apvts.getRawParameterValue (uni76::ParamID::saturation);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -24,16 +25,24 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
 
     preampProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     eqProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    satProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ adds no algorithmic latency (getLatencySamples() == 0) - PREAMP's
-    // oversampling remains the plugin's only source of latency.
-    setLatencySamples (preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples());
+    // EQ adds no algorithmic latency (getLatencySamples() == 0). PREAMP
+    // and SAT each own an independent oversampling instance and each
+    // report their own real latency - the plugin's total declared latency
+    // is their sum, since the two run in series in the signal chain and a
+    // host's plugin-delay-compensation needs the combined delay, not just
+    // one stage's.
+    setLatencySamples (preampProcessor.getLatencySamples()
+                        + eqProcessor.getLatencySamples()
+                        + satProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
 {
     preampProcessor.reset();
     eqProcessor.reset();
+    satProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -66,8 +75,13 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     eqProcessor.process (buffer, eqTone, eqEnabled);
 
-    // Saturation/Pitch/Panorama/Reverb/Imager remain a strict passthrough
-    // at this stage - see CLAUDE.md.
+    const auto satHeat = saturationParameter != nullptr ? saturationParameter->load() / 100.0f : 0.0f;
+    const auto satEnabled = moduleEnableState.isEnabled (2); // index 2 = saturation, see ModuleEnableState::propertyNames
+
+    satProcessor.process (buffer, satHeat, satEnabled);
+
+    // Pitch/Panorama/Reverb/Imager remain a strict passthrough at this
+    // stage - see CLAUDE.md.
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.
