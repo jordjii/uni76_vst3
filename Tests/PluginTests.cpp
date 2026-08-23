@@ -772,11 +772,19 @@ namespace
         fundamental frequency or level cyclically "breathes"/floats with
         the algorithm's own hop/window period - an ordinary single-shot
         FFT/Goertzel measurement over the whole tone cannot see this. */
+    // minCycles=4 resolves an isolated tone comfortably. For a target with
+    // *other* spectral content nearby (a chord tone a third or so away),
+    // 4 cycles is too coarse to separate them by Goertzel bin resolution
+    // alone (resolution = targetFreq/minCycles scales with the target the
+    // same way a fixed musical interval's Hz gap does, so the gap/
+    // resolution ratio for e.g. a minor third is <1 bin at *any* register)
+    // - callers analysing a closely-voiced chord tone should pass a larger
+    // minCycles to trade time-resolution for enough frequency-resolution.
     BassStability analyzeBassStability (const juce::AudioBuffer<float>& buffer, int channel, int startSample,
-                                         int usableSamples, double sampleRate, float targetFreqHz)
+                                         int usableSamples, double sampleRate, float targetFreqHz, int minCycles = 4)
     {
         const auto windowLen = juce::jmax ((int) std::round (sampleRate * 0.015),
-                                            (int) std::round (4.0 * sampleRate / (double) targetFreqHz));
+                                            (int) std::round ((double) minCycles * sampleRate / (double) targetFreqHz));
         const auto hopLen = juce::jmax (1, windowLen / 3);
 
         std::vector<double> instFreqs, ampDb, rmsValues;
@@ -882,6 +890,36 @@ namespace
             20.0 * std::log10 (juce::jmax ((double) belowMag, 1.0e-9)) - targetDb,
             20.0 * std::log10 (juce::jmax ((double) aboveMag, 1.0e-9)) - targetDb
         };
+    }
+
+    /** Deterministic multi-tone chord/mix generator (sum of sines, fixed
+        phases) - used for polyphonic material tests. No randomness, so
+        results are exactly reproducible. */
+    juce::AudioBuffer<float> generateChord (int totalSamples, double sampleRate,
+                                             const std::vector<float>& freqsHz, const std::vector<float>& amplitudes)
+    {
+        jassert (freqsHz.size() == amplitudes.size());
+        juce::AudioBuffer<float> buffer (1, totalSamples);
+        buffer.clear();
+
+        for (size_t n = 0; n < freqsHz.size(); ++n)
+        {
+            const auto increment = juce::MathConstants<float>::twoPi * freqsHz[n] / (float) sampleRate;
+            auto* data = buffer.getWritePointer (0);
+            for (int i = 0; i < totalSamples; ++i)
+                data[i] += amplitudes[n] * std::sin (increment * (float) i);
+        }
+        return buffer;
+    }
+
+    /** Deterministic broadband test source (fixed frequency/phase set,
+        no randomness) - used for the 0 ST A/B comparison against a
+        latency-aligned dry copy. */
+    juce::AudioBuffer<float> generateBroadband (int totalSamples, double sampleRate)
+    {
+        const std::vector<float> freqs { 40.0f, 80.0f, 150.0f, 300.0f, 600.0f, 1200.0f, 2500.0f, 5000.0f, 9000.0f, 14000.0f };
+        std::vector<float> amps (freqs.size(), 0.09f);
+        return generateChord (totalSamples, sampleRate, freqs, amps);
     }
 }
 
@@ -3914,6 +3952,465 @@ public:
 };
 
 static UNI76PitchIntegrationTests uni76PitchIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Closing out the real gaps flagged after the initial PITCH pass: exact
+// latency accounting, a real 0 ST A/B against a latency-aligned dry copy,
+// deterministic polyphonic material (bass+harmonics, low dyads, triads, a
+// dense chord, and the especially critical bass+chord case), and stereo
+// coherence with genuinely non-identical L/R content (not just dual-mono).
+class UNI76PitchPolyphonicTests final : public juce::UnitTest
+{
+public:
+    UNI76PitchPolyphonicTests() : juce::UnitTest ("uni76::dsp::PitchProcessor polyphonic/coherence", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Exact latency table: PITCH alone vs PREAMP+EQ+SAT vs total plugin, at 44.1/48/96/192kHz");
+        {
+            const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+
+            std::cout << "\n=== PITCH / total plugin latency table ===" << std::endl;
+
+            for (auto sr : rates)
+            {
+                uni76::dsp::PitchProcessor pitchAlone;
+                pitchAlone.prepare (sr, 512, 2);
+                const auto pitchLatency = pitchAlone.getLatencySamples();
+
+                uni76::dsp::PreampProcessor preamp;
+                preamp.prepare (sr, 512, 2);
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (sr, 512, 2);
+                uni76::dsp::SatProcessor sat;
+                sat.prepare (sr, 512, 2);
+                const auto preEqSatLatency = preamp.getLatencySamples() + eq.getLatencySamples() + sat.getLatencySamples();
+
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 512);
+                const auto totalLatency = processor.getLatencySamples();
+
+                std::cout << "  " << sr << "Hz: PITCH=" << pitchLatency << "smp/" << (1000.0 * pitchLatency / sr)
+                           << "ms  PREAMP+EQ+SAT=" << preEqSatLatency << "smp/" << (1000.0 * preEqSatLatency / sr)
+                           << "ms  TOTAL=" << totalLatency << "smp/" << (1000.0 * totalLatency / sr) << "ms" << std::endl;
+
+                expectEquals (totalLatency, pitchLatency + preEqSatLatency, "total plugin latency must equal PITCH + PREAMP+EQ+SAT");
+            }
+            std::cout << "=== end latency table ===" << std::endl << std::endl;
+        }
+
+        beginTest ("0 ST A/B vs a latency-aligned dry copy: broadband RMS diff, max diff, frequency-response deviation");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (sr, blockSize, 1);
+            const auto latency = pitch.getLatencySamples();
+
+            const auto totalSamples = latency + (int) (2.0 * sr);
+            auto input = generateBroadband (totalSamples, sr);
+            auto output = runPitchProcessor (pitch, input, blockSize, 0, true);
+
+            double sumSq = 0.0, maxAbs = 0.0;
+            int count = 0;
+            for (int i = latency + 2000; i < totalSamples; ++i)
+            {
+                const auto diff = (double) output.getSample (0, i) - (double) input.getSample (0, i - latency);
+                sumSq += diff * diff;
+                maxAbs = juce::jmax (maxAbs, std::abs (diff));
+                ++count;
+            }
+            const auto rmsDiff = count > 0 ? std::sqrt (sumSq / (double) count) : 0.0;
+
+            std::cout << "\n=== PITCH 0 ST A/B vs latency-aligned dry (broadband) ===" << std::endl;
+            std::cout << "  RMS diff = " << rmsDiff << "  max diff = " << maxAbs << std::endl;
+
+            const float freqs[] { 40.0f, 80.0f, 150.0f, 300.0f, 600.0f, 1200.0f, 2500.0f, 5000.0f, 9000.0f, 14000.0f };
+            for (auto freqHz : freqs)
+            {
+                const auto win = juce::jmin (totalSamples - latency - 2000, periodicAnalysisLength (sr, freqHz, 30));
+                const auto inMag  = goertzelMagnitude (input,  0, totalSamples - win, win, sr, freqHz);
+                const auto outMag = goertzelMagnitude (output, 0, totalSamples - win, win, sr, freqHz);
+                const auto devDb = 20.0f * std::log10 (juce::jmax (outMag, 1.0e-9f) / juce::jmax (inMag, 1.0e-9f));
+                std::cout << "  " << freqHz << "Hz: deviation = " << devDb << " dB" << std::endl;
+                expect (std::abs (devDb) < 1.0f, juce::String ("0 ST frequency-response deviation too large at ") + juce::String (freqHz) + "Hz");
+            }
+            std::cout << "=== end 0 ST A/B ===" << std::endl << std::endl;
+
+            expect (rmsDiff < 0.05, "0 ST RMS difference vs latency-aligned dry too large");
+            expect (maxAbs < 0.5, "0 ST max sample difference vs latency-aligned dry too large");
+        }
+
+        beginTest ("Polyphonic A: bass + harmonics (60/120/180Hz) - whole material shifts together, bass stays stable");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const std::vector<float> freqs { 60.0f, 120.0f, 180.0f };
+            const std::vector<float> amps  { 0.3f, 0.15f, 0.08f };
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== Polyphonic A: bass + harmonics ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto settle = latency + (int) (0.15 * sr);
+                const auto totalSamples = settle + (int) (0.6 * sr);
+
+                auto input = generateChord (totalSamples, sr, freqs, amps);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                for (size_t n = 0; n < freqs.size(); ++n)
+                {
+                    const auto target = freqs[n] * std::pow (2.0f, (float) st / 12.0f);
+                    const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, target);
+                    expect (stability.numWindows > 2, "not enough windows for component " + juce::String ((int) n));
+
+                    const auto errPercent = target > 0.0f ? 100.0 * std::abs (stability.freqMean - (double) target) / (double) target : 0.0;
+                    std::cout << "  " << st << "ST partial " << freqs[n] << "Hz->" << target << "Hz: freqMean=" << stability.freqMean
+                               << "Hz err=" << errPercent << "% ampDbStd=" << stability.ampDbStd << "dB rmsModDepth=" << stability.rmsModDepth << std::endl;
+
+                    expect (errPercent < 4.0, "component drifted off its expected shifted frequency");
+
+                    if (n == 0) // the bass fundamental - full stability bar
+                    {
+                        const auto freqDevPercent = target > 0.0f ? 100.0 * stability.freqStd / (double) target : 0.0;
+                        expect (freqDevPercent < 3.0, "bass fundamental wobbles too much in a polyphonic mix");
+                        expect (stability.ampDbStd < 2.5, "bass fundamental amplitude-modulates too much in a polyphonic mix");
+                        expect (stability.rmsModDepth < 0.2, "bass fundamental RMS modulates too much in a polyphonic mix");
+
+                        const auto sidebands = analyzeSidebands (output, 0, settle, totalSamples - settle, sr, target, 25.0f);
+                        expect (sidebands.belowDb < -15.0, "bass fundamental has an unexpectedly strong sideband below it");
+                        expect (sidebands.aboveDb < -15.0, "bass fundamental has an unexpectedly strong sideband above it");
+                    }
+                }
+            }
+            std::cout << "=== end Polyphonic A ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Polyphonic B: two simultaneous low tones (55/110Hz, an octave) - neither wobbles, neither disappears");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            // An exact octave (not an arbitrary/close interval): the
+            // combined dry waveform is still perfectly periodic with no
+            // beat envelope of its own, so any amplitude modulation
+            // measured in the *output* is attributable to the algorithm,
+            // not to real acoustic beating between two unrelated tones
+            // (which an earlier, closer-interval version of this test
+            // measured and which is physics, not a PITCH defect).
+            const std::vector<float> freqs { 55.0f, 110.0f };
+            const std::vector<float> amps  { 0.25f, 0.25f };
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== Polyphonic B: two low tones ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto settle = latency + (int) (0.15 * sr);
+                const auto totalSamples = settle + (int) (0.6 * sr);
+
+                auto input = generateChord (totalSamples, sr, freqs, amps);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                for (size_t n = 0; n < freqs.size(); ++n)
+                {
+                    const auto target = freqs[n] * std::pow (2.0f, (float) st / 12.0f);
+                    const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, target);
+                    expect (stability.numWindows > 2, "not enough windows for low tone " + juce::String ((int) n));
+
+                    const auto freqDevPercent = target > 0.0f ? 100.0 * stability.freqStd / (double) target : 0.0;
+                    std::cout << "  " << st << "ST tone " << freqs[n] << "Hz->" << target << "Hz: freqMean=" << stability.freqMean
+                               << "Hz freqStd%=" << freqDevPercent << " ampDbStd=" << stability.ampDbStd
+                               << "dB rmsModDepth=" << stability.rmsModDepth << std::endl;
+
+                    expect (freqDevPercent < 3.0, "a low tone wobbles too much when another low tone plays simultaneously");
+                    expect (stability.ampDbStd < 2.5, "a low tone amplitude-modulates too much (possible beating) with another low tone present");
+                    expect (stability.rmsModDepth < 0.2, "a low tone's RMS modulates too much with another low tone present");
+                }
+            }
+            std::cout << "=== end Polyphonic B ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Polyphonic C: major and minor triads - all three notes shift together, chord doesn't smear");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            struct Triad { const char* name; std::vector<float> freqs; };
+            const Triad triads[] {
+                { "A major", { 220.0f, 277.18f, 329.63f } },
+                { "A minor", { 220.0f, 261.63f, 329.63f } },
+            };
+
+            std::cout << "\n=== Polyphonic C: triads ===" << std::endl;
+
+            for (const auto& triad : triads)
+            {
+                const std::vector<float> amps (triad.freqs.size(), 0.2f);
+
+                for (auto st : semitones)
+                {
+                    uni76::dsp::PitchProcessor pitch;
+                    pitch.prepare (sr, blockSize, 1);
+                    const auto latency = pitch.getLatencySamples();
+                    const auto settle = latency + (int) (0.15 * sr);
+                    const auto totalSamples = settle + (int) (0.5 * sr);
+
+                    auto input = generateChord (totalSamples, sr, triad.freqs, amps);
+                    auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                    for (size_t n = 0; n < triad.freqs.size(); ++n)
+                    {
+                        const auto target = triad.freqs[n] * std::pow (2.0f, (float) st / 12.0f);
+                        // A minor third's frequency gap is <1 Goertzel bin
+                        // wide at the default 4-cycle window at *any*
+                        // register (the gap and the resolution both scale
+                        // with the target frequency) - 14 cycles gives
+                        // enough margin to actually separate adjacent
+                        // triad tones instead of measuring cross-leakage.
+                        const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, target, 14);
+                        expect (stability.numWindows > 2, juce::String (triad.name) + ": not enough windows for note " + juce::String ((int) n));
+
+                        const auto errPercent = target > 0.0f ? 100.0 * std::abs (stability.freqMean - (double) target) / (double) target : 0.0;
+                        expect (errPercent < 4.0, juce::String (triad.name) + " " + juce::String (st) + "ST: a chord tone drifted off its expected shifted frequency");
+
+                        if (n == 0)
+                        {
+                            const auto freqDevPercent = target > 0.0f ? 100.0 * stability.freqStd / (double) target : 0.0;
+                            std::cout << "  " << triad.name << " " << st << "ST root " << triad.freqs[0] << "Hz->" << target
+                                       << "Hz: freqStd%=" << freqDevPercent << " ampDbStd=" << stability.ampDbStd << "dB" << std::endl;
+                            expect (freqDevPercent < 3.0, juce::String (triad.name) + ": chord root wobbles too much");
+                            expect (stability.ampDbStd < 2.5, juce::String (triad.name) + ": chord root amplitude-modulates too much");
+                        }
+                    }
+                }
+            }
+            std::cout << "=== end Polyphonic C ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Polyphonic D: dense 5-note chord (Cmaj9-voicing) stays coherent under shift");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const std::vector<float> freqs { 130.81f, 164.81f, 196.00f, 246.94f, 293.66f };
+            const std::vector<float> amps  { 0.15f, 0.15f, 0.15f, 0.15f, 0.15f };
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== Polyphonic D: dense 5-note chord ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto settle = latency + (int) (0.15 * sr);
+                const auto totalSamples = settle + (int) (0.5 * sr);
+
+                auto input = generateChord (totalSamples, sr, freqs, amps);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+                expect (bufferIsFinite (output), "dense chord produced non-finite output");
+
+                float peak = 0.0f;
+                for (int i = 0; i < totalSamples; ++i) peak = juce::jmax (peak, std::abs (output.getSample (0, i)));
+                expect (peak < 3.0f, "dense chord caused a gain explosion");
+
+                for (size_t n = 0; n < freqs.size(); ++n)
+                {
+                    const auto target = freqs[n] * std::pow (2.0f, (float) st / 12.0f);
+                    // Adjacent notes in this voicing are thirds apart - see
+                    // the comment on the triad test above for why that
+                    // needs a wider analysis window than an isolated tone.
+                    const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, target, 14);
+                    expect (stability.numWindows > 2, "not enough windows for chord note " + juce::String ((int) n));
+
+                    const auto errPercent = target > 0.0f ? 100.0 * std::abs (stability.freqMean - (double) target) / (double) target : 0.0;
+                    expect (errPercent < 4.0, "dense chord note drifted off its expected shifted frequency");
+
+                    if (n == 0)
+                    {
+                        const auto freqDevPercent = target > 0.0f ? 100.0 * stability.freqStd / (double) target : 0.0;
+                        std::cout << "  " << st << "ST lowest note " << freqs[0] << "Hz->" << target
+                                   << "Hz: freqStd%=" << freqDevPercent << " ampDbStd=" << stability.ampDbStd << "dB" << std::endl;
+                        expect (freqDevPercent < 3.5, "dense chord's lowest note wobbles too much");
+                    }
+                }
+            }
+            std::cout << "=== end Polyphonic D ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Polyphonic E (especially critical): bass note + chord together - bass never disappears or wobbles");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const std::vector<float> freqs { 60.0f, 220.0f, 277.18f, 329.63f };
+            const std::vector<float> amps  { 0.3f, 0.15f, 0.15f, 0.15f };
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== Polyphonic E: bass + chord (critical) ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto settle = latency + (int) (0.15 * sr);
+                const auto totalSamples = settle + (int) (0.7 * sr);
+
+                auto input = generateChord (totalSamples, sr, freqs, amps);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                const auto bassTarget = freqs[0] * std::pow (2.0f, (float) st / 12.0f);
+                const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, bassTarget);
+                expect (stability.numWindows > 3, "not enough windows for bass-under-chord analysis");
+
+                const auto freqDevPercent = bassTarget > 0.0f ? 100.0 * stability.freqStd / (double) bassTarget : 0.0;
+                const auto errPercent = bassTarget > 0.0f ? 100.0 * std::abs (stability.freqMean - (double) bassTarget) / (double) bassTarget : 0.0;
+
+                std::cout << "  " << st << "ST bass 60Hz->" << bassTarget << "Hz: freqMean=" << stability.freqMean
+                           << "Hz err=" << errPercent << "% freqStd%=" << freqDevPercent << " ampDbStd=" << stability.ampDbStd
+                           << "dB rmsModDepth=" << stability.rmsModDepth << std::endl;
+
+                // This is the scenario the product brief calls out by name
+                // as especially critical - hold it to the same bar as the
+                // pure-bass matrix, not a relaxed one.
+                expect (errPercent < 2.0, "bass note drifted off its expected shifted frequency under a chord");
+                expect (freqDevPercent < 3.0, "bass note wobbles under a chord (spectral swimming)");
+                expect (stability.ampDbStd < 2.5, "bass note amplitude-modulates under a chord (periodic beating/breathing)");
+                expect (stability.rmsModDepth < 0.2, "bass note's RMS is unstable under a chord (disappearing/reappearing)");
+
+                const auto sidebands = analyzeSidebands (output, 0, settle, totalSamples - settle, sr, bassTarget, 25.0f);
+                expect (sidebands.belowDb < -15.0, "bass-under-chord: unexpectedly strong sideband below the bass fundamental");
+                expect (sidebands.aboveDb < -15.0, "bass-under-chord: unexpectedly strong sideband above the bass fundamental");
+
+                // Chord tones should also land on their shifted targets, not
+                // smear. Adjacent chord tones here are thirds apart - see
+                // the comment on the triad test above for why that needs a
+                // wider analysis window than an isolated tone.
+                for (size_t n = 1; n < freqs.size(); ++n)
+                {
+                    const auto target = freqs[n] * std::pow (2.0f, (float) st / 12.0f);
+                    const auto chordStability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, target, 14);
+                    if (chordStability.numWindows > 2)
+                    {
+                        const auto chordErrPercent = target > 0.0f ? 100.0 * std::abs (chordStability.freqMean - (double) target) / (double) target : 0.0;
+                        expect (chordErrPercent < 4.0, "chord tone drifted off its expected shifted frequency under a bass note");
+                    }
+                }
+            }
+            std::cout << "=== end Polyphonic E ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Polyphonic E in stereo (dual-mono): bit-identical L/R holds for real musical material too");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const std::vector<float> freqs { 60.0f, 220.0f, 277.18f, 329.63f };
+            const std::vector<float> amps  { 0.3f, 0.15f, 0.15f, 0.15f };
+
+            for (auto st : { -12, 7, 12 })
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = pitch.getLatencySamples() + (int) sr;
+                auto mono = generateChord (totalSamples, sr, freqs, amps);
+                juce::AudioBuffer<float> input (2, totalSamples);
+                input.copyFrom (0, 0, mono, 0, 0, totalSamples);
+                input.copyFrom (1, 0, mono, 0, 0, totalSamples);
+
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                double maxAbsDiff = 0.0;
+                for (int i = 0; i < totalSamples; ++i)
+                    maxAbsDiff = juce::jmax (maxAbsDiff, (double) std::abs (output.getSample (0, i) - output.getSample (1, i)));
+
+                expect (maxAbsDiff < 1.0e-6, juce::String (st) + " ST: polyphonic dual-mono must still produce bit-identical stereo output, maxAbsDiff=" + juce::String (maxAbsDiff));
+            }
+        }
+
+        beginTest ("Non-identical stereo material: shared bass + different chord voicing per channel");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const int semitones[] { -12, 7, 12 };
+
+            // L: bass + A major triad. R: the SAME bass + A minor triad -
+            // genuinely different per-channel content (not dual-mono),
+            // sharing only the bass note so its measured frequency/level
+            // can be meaningfully compared between the two independent
+            // per-channel engines.
+            const std::vector<float> freqsL { 60.0f, 220.0f, 277.18f, 329.63f };
+            const std::vector<float> ampsL  { 0.3f, 0.15f, 0.15f, 0.15f };
+            const std::vector<float> freqsR { 60.0f, 220.0f, 261.63f, 329.63f };
+            const std::vector<float> ampsR  { 0.3f, 0.15f, 0.15f, 0.15f };
+
+            std::cout << "\n=== Non-identical stereo (shared bass, different chords) ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 2);
+                const auto latency = pitch.getLatencySamples();
+                const auto settle = latency + (int) (0.15 * sr);
+                const auto totalSamples = settle + (int) (0.6 * sr);
+
+                auto monoL = generateChord (totalSamples, sr, freqsL, ampsL);
+                auto monoR = generateChord (totalSamples, sr, freqsR, ampsR);
+                juce::AudioBuffer<float> input (2, totalSamples);
+                input.copyFrom (0, 0, monoL, 0, 0, totalSamples);
+                input.copyFrom (1, 0, monoR, 0, 0, totalSamples);
+
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+                expect (bufferIsFinite (output), "non-identical stereo material produced non-finite output");
+
+                const auto bassTarget = 60.0f * std::pow (2.0f, (float) st / 12.0f);
+                const auto statsL = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, bassTarget);
+                const auto statsR = analyzeBassStability (output, 1, settle, totalSamples - settle, sr, bassTarget);
+
+                if (statsL.numWindows > 2 && statsR.numWindows > 2)
+                {
+                    const auto errL = 100.0 * std::abs (statsL.freqMean - (double) bassTarget) / (double) bassTarget;
+                    const auto errR = 100.0 * std::abs (statsR.freqMean - (double) bassTarget) / (double) bassTarget;
+                    const auto errDiff = std::abs (errL - errR);
+
+                    std::cout << "  " << st << "ST bass->" << bassTarget << "Hz: L err=" << errL << "% R err=" << errR
+                               << "%  |L-R| err diff=" << errDiff << "%" << std::endl;
+
+                    expect (errL < 2.5, "L channel bass pitch error too large with non-identical stereo content");
+                    expect (errR < 2.5, "R channel bass pitch error too large with non-identical stereo content");
+                    expect (errDiff < 1.0, "L/R bass pitch error differs too much between the two independent engines");
+                }
+
+                // Level match: RMS of the shared bass component's own
+                // Goertzel magnitude should track closely between channels
+                // across the run (no L/R level mismatch or wandering image
+                // introduced purely by running two separate engines).
+                const auto win = juce::jmin (totalSamples - settle, periodicAnalysisLength (sr, bassTarget, 20));
+                const auto magL = goertzelMagnitude (output, 0, totalSamples - win, win, sr, bassTarget);
+                const auto magR = goertzelMagnitude (output, 1, totalSamples - win, win, sr, bassTarget);
+                const auto levelDiffDb = 20.0f * std::log10 (juce::jmax (magL, 1.0e-9f) / juce::jmax (magR, 1.0e-9f));
+                std::cout << "  " << st << "ST bass level: L/R = " << levelDiffDb << " dB" << std::endl;
+                expect (std::abs (levelDiffDb) < 0.5f, "shared bass component's level differs too much between L and R engines");
+
+                // Latency is a single scalar for the whole (stereo) instance
+                // by construction - re-confirm it stayed the same value.
+                expectEquals (pitch.getLatencySamples(), latency, "latency must stay identical with non-identical stereo content");
+            }
+            std::cout << "=== end non-identical stereo ===" << std::endl << std::endl;
+        }
+    }
+};
+
+static UNI76PitchPolyphonicTests uni76PitchPolyphonicTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

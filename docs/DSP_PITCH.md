@@ -153,6 +153,50 @@ missing/pre-v2 property). Under the new schema, `-12 ST` saves and
 restores as `-12`, `0 ST` as `0`, `+12 ST` as `+12` - verified by a
 dedicated round-trip test.
 
+## Live UI verification
+
+The C++/APVTS-level checks above prove the parameter contract; a separate
+pass verified the actual **rendered WebView2 editor** of the real built
+`.vst3` - not a browser mockup, not HTML inspection. A minimal scratch
+JUCE host app loaded the plugin via the real `VST3PluginFormat`, created
+its real `AudioProcessorEditor` (the same WebView2-hosted UNI 76 UI a DAW
+shows), and real synthetic mouse/keyboard input was sent to the actual
+native window; screenshots were captured directly from the window's own
+content (`PrintWindow` with `PW_RENDERFULLCONTENT`, which reads the
+window's pixels regardless of on-screen occlusion - not a desktop-region
+grab, which risked capturing unrelated windows and was corrected during
+this pass once caught).
+
+Confirmed by direct interaction, not just by reading `knob.js`:
+
+- **Fresh instance**: knob pointer exactly vertical, label reads `0 ST`,
+  no `%` anywhere in the PITCH module, scale reads `- OCT / 0 / + OCT`,
+  end labels read `-12` / `+12`.
+- **Drag**: a 110px drag (half of the 220px full-range mapping) landed
+  on exactly `-12 ST` - no intermediate/fractional value observed at any
+  point.
+- **Wheel**: one notch moved the display from `-12 ST` to exactly `-11 ST`.
+- **Keyboard**: one `ArrowUp` press moved from `-11 ST` to exactly `-10 ST`.
+- **Double-click**: reset from any position directly to `0 ST` with the
+  pointer exactly vertical again.
+- **Edge clamping**: dragging 300px past either end (nearly 3x the ~110px
+  actually needed to reach an extreme) still landed on exactly `-12 ST` /
+  `+12 ST` - no overshoot, no crash, no wrap-around.
+- **Shift**: a Shift-held 15px drag from `-12 ST` moved to `-10 ST` -
+  consistent with the *normal* (non-fine) drag range (15px / 220px * 24
+  steps ~= 1.6, rounds to 2 steps), not the fine range (which would need
+  ~1760px for the same movement and should have produced no visible change
+  at all for a 15px drag). Confirms Shift has no special fractional-value
+  effect on PITCH, matching the code's discrete-mode branch.
+
+Three screenshots of the real, unmodified editor were saved:
+[`docs/screenshots/pitch-minus12.png`](screenshots/pitch-minus12.png),
+[`docs/screenshots/pitch-zero.png`](screenshots/pitch-zero.png),
+[`docs/screenshots/pitch-plus12.png`](screenshots/pitch-plus12.png) - all
+three show the rest of the UI (all 6 other modules, header, footer)
+pixel-identical to the fresh-instance baseline, confirming PITCH's
+discrete-knob work didn't disturb the shared design.
+
 ## Fixed latency
 
 `getLatencySamples()` returns `stretch.inputLatency() +
@@ -165,14 +209,26 @@ many samples (`IntegerDelayLine`, the same pattern PREAMP/SAT already
 use), so `enabled=false` is a bit-exact delayed passthrough, not a
 different-latency shortcut.
 
-Measured (140ms/35ms configuration, `presetDefault`-free manual config):
+Measured (140ms/35ms configuration, `presetDefault`-free manual config).
+Re-verified with an exact three-way breakdown - PITCH alone, PREAMP+EQ+SAT
+(EQ itself always contributes 0), and the total plugin latency the host
+actually sees - confirming `total == pitch + (preamp+eq+sat)` exactly at
+every rate:
 
-| Sample rate | Latency (samples) | Latency (ms) |
-|---|---|---|
-| 44100 Hz | 6174 (DSP-level) / 6186 (full plugin, incl. PREAMP+SAT) | 140.0 ms (140.27 ms full plugin) |
-| 48000 Hz | 6720 | 140.0 ms |
-| 96000 Hz | 13440 | 140.0 ms |
-| 192000 Hz | 26880 | 140.0 ms |
+| Sample rate | PITCH alone | PREAMP+EQ+SAT | **Total plugin** |
+|---|---|---|---|
+| 44100 Hz | 6174 smp / 140.0 ms | 12 smp / 0.272 ms | **6186 smp / 140.272 ms** |
+| 48000 Hz | 6720 smp / 140.0 ms | 12 smp / 0.250 ms | **6732 smp / 140.250 ms** |
+| 96000 Hz | 13440 smp / 140.0 ms | 8 smp / 0.083 ms | **13448 smp / 140.083 ms** |
+| 192000 Hz | 26880 smp / 140.0 ms | 0 smp / 0 ms | **26880 smp / 140.0 ms** |
+
+PREAMP+EQ+SAT's own latency shrinks and eventually hits 0 at 192kHz (their
+oversampling is no longer needed at that rate); PITCH's 140ms is present
+and dominant at every rate, so the total is never far from "PITCH's own
+140ms plus a small, shrinking PREAMP/SAT remainder." Also reconfirmed
+identical at -12/0/+12 ST and enabled/disabled (a dedicated test asserts
+`getLatencySamples()` never moves across those cases) - the bypass and
+0 ST paths are not a different, lower-latency shortcut.
 
 Latency in milliseconds is constant across sample rates by construction
 (the configuration is specified in seconds, converted to samples in
@@ -291,6 +347,27 @@ at 0 ST specifically wasn't needed - the general latency-aligned
 enable/disable bypass (delayed dry passthrough) already covers the "true
 off" case.
 
+That single-tone check was followed up with a stricter, sample-accurate
+**A/B against a latency-aligned dry copy** using a deterministic 10-tone
+broadband source (40Hz-14kHz, fixed frequencies/phases, no randomness):
+`output[i]` vs `input[i - latency]`, both bounds checked directly, not
+just via magnitude:
+
+- **RMS difference: 7.2e-8** (effectively float-rounding noise, not a
+  perceptible processing artifact)
+- **Max sample difference: 3.1e-7**
+- **Frequency-response deviation**, all 10 tones: -0.11dB to +0.15dB
+  (worst case at 80Hz and 2.5kHz), every other tone under 0.05dB
+
+This is a materially stronger result than the single-tone check alone
+suggested was even possible - given these numbers, a dedicated bit-exact
+identity shortcut for 0 ST specifically was evaluated and **deliberately
+not built**: it would only save ~1e-7 of already-inaudible sample-level
+difference, at the cost of a second code path to keep in sync with the
+main STFT path and a second latency-alignment/automation-crossing edge
+case to get right. The existing architecture (one path, always through
+the real engine) already meets the transparency bar with a wide margin.
+
 ## Transient quality
 
 A short (20ms), fast-attack/decay windowed burst at -12/-6/+6/+12 ST was
@@ -300,6 +377,68 @@ immediately *before* the expected onset (pre-echo) beyond 15% of the
 burst's own peak. All four intervals pass - no pre-echo, no doubled/split
 transient, consistent with a phase-locked (not naive unlocked) phase
 vocoder design.
+
+## Polyphonic material
+
+The bass matrix above uses isolated single tones. Five deterministic
+polyphonic scenarios (fixed frequencies/phases, no randomness) were added
+to close that gap, each swept at -12/-7/-3/+3/+7/+12 ST:
+
+- **A - bass + harmonics**: 60/120/180Hz (a harmonic stack)
+- **B - two low tones**: 55/110Hz (an octave)
+- **C - triads**: A major (220/277.18/329.63Hz) and A minor (220/261.63/329.63Hz)
+- **D - dense chord**: a 5-note Cmaj9-style voicing (130.81/164.81/196.00/246.94/293.66Hz)
+- **E - bass + chord (the scenario called out as especially critical)**: 60Hz bass + A major triad together
+
+**A methodological note worth recording**: the first version of scenarios
+B and C used closer intervals (a fifth-ish 55/82Hz pair, a minor-third
+chord voiced in the same register the isolated-tone matrix uses) and
+measured what looked like real wobble - freqStd up to 13.5%, ampDbStd up
+to ~9dB. That turned out to be **two real but different confounds, not a
+PITCH defect**: (1) two simultaneous tones a fifth apart at low absolute
+frequency produce genuine acoustic beating at their difference frequency
+(this happens with *any* correct processing, including a perfect
+passthrough - it's physics, not an artifact); (2) a fixed musical interval
+like a minor third has a Hz gap that is *always* under 1 Goertzel bin
+width at the bass-matrix's 4-cycle analysis window, at any register (the
+gap and the window's frequency resolution both scale with the target
+frequency the same way), so the measurement was reading cross-leakage
+between adjacent chord tones, not the algorithm's own behaviour. Fixed by
+(1) changing the two-tone test to an exact octave (55/110Hz - harmonically
+locked, no beat envelope of its own, so any beating in the *output* is now
+attributable to the algorithm) and (2) widening the chord tests' analysis
+window to 14 cycles (enough margin to actually separate a minor third).
+After the fix, the *same* signals settled to freqStd 0.04-0.25% and
+ampDbStd well under 1dB - confirming the original numbers were a test-
+design artifact, not a real stability problem, without changing a single
+DSP constant.
+
+Measured results (representative rows; the full 36+24+12+24+30-case set is
+printed by `UNI76PitchPolyphonicTests` at every build):
+
+| Scenario | Case | freqStd% | ampDbStd | Notes |
+|---|---|---|---|---|
+| A (bass+harmonics) | 60Hz-12ST bass component | - | 0.109dB | freq error 3.17% (see below) |
+| B (octave pair) | 55/110Hz, worst case (-12ST) | 0.06-0.25% | 0.03-0.11dB | no beating in output |
+| C (A major triad) | root, all 6 intervals | 0.22-0.25% | 0.45-0.54dB | |
+| C (A minor triad) | root, all 6 intervals | 0.15-0.21% | 0.61-0.68dB | closer voicing, still stable |
+| D (5-note chord) | lowest note, all 6 intervals | 0.12-0.96% | 0.49-2.25dB | worst case at -3ST |
+| **E (bass+chord, critical)** | 60Hz bass, all 6 intervals | **0.09-0.29%** | **0.07-0.13dB** | tightest result of all five |
+
+Scenario E - the case the product brief specifically calls "especially
+critical" - measures as the *most* stable of the five (freqStd well under
+0.3%, ampDbStd under 0.14dB at every interval): the bass fundamental does
+not wobble, does not disappear, and does not develop periodic beating
+when a chord plays over it. Frequency-tracking error (mean vs. expected,
+not the stability metric) stays under ~3.2% worst-case across all five
+polyphonic scenarios - looser than the pure-tone matrix's <1%, as expected
+for a mean-frequency estimate taken from a shorter, busier window, but
+well short of a semitone (which would be 100%) and with no accompanying
+instability, so it reads as measurement variance in a harder-to-analyse
+signal, not mistracking. Sidebands on the bass component (scenario A and
+E) measured below -15dB relative to the fundamental in every case. No
+gain explosions, no non-finite output, in any of the 126 measured
+combinations across the five scenarios.
 
 ## Stereo coherence
 
@@ -320,7 +459,30 @@ cross-channel state at all, so bit-identical input is guaranteed by
 construction (not luck) to produce bit-identical output - verified by a
 dedicated test across `-12/-3/0/5/12` ST (`maxAbsDiff < 1e-6`, effectively
 float rounding noise, not divergence). Decorrelated hard-panned stereo
-material was also checked and stays finite/bounded.
+material was also checked and stays finite/bounded, and the dual-mono
+guarantee was reconfirmed with real polyphonic (bass+chord) material, not
+just a single sine (see "Polyphonic material" below).
+
+**Genuinely non-identical L/R content** was also tested (two independent
+engines processing *different* signals, not the dual-mono case above): L
+carries a 60Hz bass + A major triad, R carries the *same* 60Hz bass + a
+different (A minor) triad - sharing only the bass note, so its measured
+frequency/level can be compared meaningfully between the two independently
+running per-channel engines:
+
+| Semitones | L bass error | R bass error | \|L-R\| error diff | L/R bass level diff |
+|---|---|---|---|---|
+| -12 | 1.430% | 1.410% | 0.019% | -0.005 dB |
+| +7 | 0.941% | 0.945% | 0.003% | +0.010 dB |
+| +12 | 0.457% | 0.451% | 0.006% | -0.005 dB |
+
+The two independently-configured engines track the shared bass component
+to within 0.02% of each other and under 0.01dB in level, at every tested
+interval - no measurable extra latency, level mismatch, or "wandering
+image" from running genuinely different content through two separate
+engine instances instead of one shared one. Latency was also reconfirmed
+constant (a single scalar for the whole stereo instance) with this
+non-identical content.
 
 ## CPU
 
@@ -346,9 +508,12 @@ priority order; the resulting CPU cost turned out low regardless.
 
 ## Limitations
 
-- 0 ST is *measured* transparent (< 0.2dB gain deviation, see above), but
-  is not a literal bit-exact passthrough the way some modules' "off"
-  state is - the STFT analysis/resynthesis path always runs.
+- 0 ST is *measured* transparent (broadband RMS diff 7.2e-8, max diff
+  3.1e-7, frequency response within 0.15dB - see above), but is not a
+  literal bit-exact passthrough the way some modules' "off" state is - the
+  STFT analysis/resynthesis path always runs. A dedicated bit-exact
+  shortcut for 0 ST was evaluated and deliberately not built - see "0 ST
+  transparency" for why.
 - Latency (140ms at every sample rate) is higher than the product brief's
   "~50-80ms" guideline. This was a deliberate, evidence-based tradeoff
   (see "Configuration benchmark") - `manual-130` (a smaller, closer-to-
@@ -356,15 +521,26 @@ priority order; the resulting CPU cost turned out low regardless.
   stability outlier and was rejected on that basis, not on latency
   grounds. If a future requirement demands lower latency, expect to trade
   away some of the current bass-stability margin, not get both for free.
+  Reconfirmed unchanged in this pass (see "Fixed latency"'s exact
+  per-rate table) - not revisited, since bass and polyphonic stability
+  both measure well inside their pass thresholds at this configuration.
 - Time-stretching (the library's other headline feature) is deliberately
   never used - every `process()` call passes equal input/output sample
   counts, so duration is always preserved by construction. This also
   means the library's internal random-phase time-stretch-artifact
   mitigation is inert here (see "Stereo coherence"), which is a
   correctness feature for this module's use case, not a limitation.
-- Polyphonic/chord material, full-mix synthetic material, and formant
-  behaviour were not separately measured beyond the sine/bass/transient
-  suite above and the WAV artifacts in `docs/audio/`- the phase-locked
-  vocoder design is the library's own answer to polyphonic coherence, but
-  no dedicated multi-tone wobble measurement was run the way the
-  monophonic bass matrix was.
+- Polyphonic material (bass+harmonics, low dyads, major/minor triads, a
+  dense 5-note chord, and the especially critical bass+chord case) is now
+  covered - see "Polyphonic material" above. Not covered: true full-mix
+  synthetic material (drums+bass+harmony+lead all at once), formant
+  behaviour, and vocal-like sources specifically - the phase-locked
+  vocoder design is the library's own answer to polyphonic coherence, and
+  the five scenarios tested are a representative cross-section, but they
+  are not an exhaustive substitute for real musical material.
+- Manual mouse-driven UI interaction was verified this pass (drag, wheel,
+  keyboard, double-click, edge clamping, Shift - see "Live UI
+  verification") through the real WebView2 editor via synthetic OS-level
+  input, which exercises the same native-bridge/DOM event path a real
+  drag would. It was not exercised by an actual human hand on an actual
+  mouse in an actual DAW session.

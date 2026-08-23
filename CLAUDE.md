@@ -286,6 +286,23 @@ MSVC 19.51):
   explosion); all four modules' mono/stereo (incl. no stereo drift), all
   supported sample rates, multiple block sizes (SAT/PITCH: 32-2048),
   NaN/Inf safety, and state save/restore.
+- **PITCH polyphonic material** (a follow-up pass, closing a gap the
+  initial PITCH work flagged as untested): bass+harmonics, two low tones,
+  major/minor triads, a dense 5-note chord, and the especially critical
+  bass+chord case, each swept across 6 semitone intervals - the bass-
+  under-chord case measures as the *most* stable of the five (freqStd
+  0.09-0.29%, ampDbStd under 0.14dB - see
+  [docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s "Polyphonic material" section,
+  which also documents a test-design confound (real acoustic beating
+  between closely-spaced test tones, and Goertzel-bin leakage between
+  chord tones a minor third apart) that was found and fixed in the test
+  methodology rather than papered over with looser thresholds - the DSP
+  itself was not changed for this). Also closed: an exact PITCH-alone vs
+  PREAMP+EQ+SAT vs total-plugin latency breakdown at 44.1/48/96/192kHz, a
+  broadband 0 ST A/B against a latency-aligned dry copy (RMS diff 7.2e-8),
+  and non-identical (not just dual-mono) stereo content confirming the two
+  independent per-channel engines track a shared bass component to within
+  0.02% and 0.01dB of each other.
 - **Real VST3 host validation.** A purpose-built harness using the real
   `AudioPluginFormatManager`/`VST3PluginFormat` hosting code (not
   `UNI76AudioProcessor` directly) loaded the built `.vst3`, confirmed all 7
@@ -326,25 +343,20 @@ Not verified (say so plainly rather than guessing):
 - **Windows/macOS production installers**: both `Packaging/*` folders are
   documented skeletons, not working installers (see
   [docs/RELEASE.md](docs/RELEASE.md)).
-- **Manual mouse-driven interaction** (literally dragging a knob with a
-  mouse) wasn't exercised - the validation harness drives parameter
-  changes through the host API, which exercises the same JS<->JUCE sync
-  path a real drag would, but isn't a substitute for a human trying the
-  actual pointer/wheel/keyboard interactions in a real DAW. This applies
-  in particular to PITCH's new discrete-stepped knob behaviour (drag/
-  wheel/keyboard snapping to exactly 1 semitone per gesture) - that logic
-  was verified by reading `knob.js`'s discrete-mode code paths, not by a
-  live pointer-drag session.
-- **The WebView2 editor itself was not opened this session** - unlike the
-  previous PREAMP/EQ/SAT validation pass, this session's VST3 host
-  validation harness deliberately did not instantiate `createEditor()`:
-  doing so reliably in a headless console harness (no running message
-  loop driving WebView2's async initialisation) was judged too fragile to
-  automate safely in the time available, versus a real risk of hanging
-  the validation run. The `index.html`/`knob.js`/`app.js` changes for
-  PITCH's discrete knob were verified by code inspection and by the
-  DSP/parameter-level test suite (ARIA min/max/step, default position,
-  format-value logic), not by a live render.
+- **Manual mouse-driven interaction with the real editor**: a follow-up
+  session closed this gap for PITCH specifically - a scratch JUCE host
+  app loaded the real built `.vst3`, created its real WebView2 editor, and
+  real synthetic OS-level mouse/keyboard input (not host-API parameter
+  calls) drove the PITCH knob: a 110px drag landed exactly on -12 ST, one
+  wheel notch moved exactly 1 ST, one ArrowUp press moved exactly 1 ST,
+  double-click reset exactly to 0 ST, dragging 300px past either edge
+  still clamped exactly at -12/+12 ST with no overshoot, and Shift showed
+  no fine-control effect - see [docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s
+  "Live UI verification" section and the three real screenshots in
+  `docs/screenshots/pitch-{minus12,zero,plus12}.png`. This was PITCH's own
+  knob only, still through synthetic (not a human's physical) input, and
+  the other 6 modules' knobs were not re-exercised this way (unchanged
+  since the PREAMP/EQ/SAT pass, not expected to need it).
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

@@ -169,6 +169,16 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
         // so the new -12..+12 AudioParameterInt falls back to its own
         // default (0 ST) instead of clamping/misreading the old value.
         // A user who never touched PITCH keeps hearing 0 ST after update.
+        //
+        // This is a DELIBERATE, breaking semantic migration - not an
+        // oversight. The old `pitch` never had any audible effect (it
+        // predates PitchProcessor entirely, see CLAUDE.md's DSP history),
+        // so no saved project's *sound* depends on its old raw value in
+        // any way; the only thing that could go wrong is silently
+        // reinterpreting an old UI-only number as a real semitone shift
+        // and having an old project suddenly transpose itself on load.
+        // Forcing every pre-v3 state to 0 ST is what guarantees that
+        // can't happen - it is intentionally not "best effort" preserved.
         if (loadedSchemaVersion < uni76::pitchDiscreteSchemaVersion)
         {
             auto pitchParam = newState.getChildWithProperty ("id", juce::var (uni76::ParamID::pitch));
