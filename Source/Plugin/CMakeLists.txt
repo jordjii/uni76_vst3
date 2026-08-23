@@ -46,7 +46,9 @@ target_sources(UNI76
         ../DSP/SatCurves.h
         ../DSP/SatProcessor.h
         ../DSP/SatProcessor.cpp
-        ../DSP/Pitch.h
+        ../DSP/PitchCurves.h
+        ../DSP/PitchProcessor.h
+        ../DSP/PitchProcessor.cpp
         ../DSP/Panorama.h
         ../DSP/Reverb.h
         ../DSP/Imager.h
@@ -58,7 +60,13 @@ target_sources(UNI76
 
 target_include_directories(UNI76
     PRIVATE
-        "${CMAKE_CURRENT_SOURCE_DIR}/..")
+        "${CMAKE_CURRENT_SOURCE_DIR}/.."
+        # Vendored MIT-licensed pitch/time library (PitchProcessor.cpp's
+        # PIMPL Engine only - not exposed via any UNI76 public header, so
+        # PRIVATE is correct here; Tests/PluginTests.cpp never needs this
+        # path). See ThirdParty/signalsmith-stretch/ and docs/DSP_PITCH.md.
+        "${CMAKE_SOURCE_DIR}/ThirdParty/signalsmith-stretch"
+        "${CMAKE_SOURCE_DIR}/ThirdParty/signalsmith-linear/include")
 
 # Embedded web UI (Resources/Web/*) compiled into the binary via JUCE's
 # normal binary-data resource pipeline. The running plugin never reads from

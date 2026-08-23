@@ -1,4 +1,7 @@
 #include "PluginProcessor.h"
+
+#include <cmath>
+
 #include "Core/PluginIdentity.h"
 #include "Parameters/ParameterIDs.h"
 #include "Parameters/ParameterLayout.h"
@@ -14,6 +17,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     preampParameter = apvts.getRawParameterValue (uni76::ParamID::preamp);
     eqParameter = apvts.getRawParameterValue (uni76::ParamID::eq);
     saturationParameter = apvts.getRawParameterValue (uni76::ParamID::saturation);
+    pitchParameter = apvts.getRawParameterValue (uni76::ParamID::pitch);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -26,16 +30,17 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     preampProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     eqProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     satProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    pitchProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ adds no algorithmic latency (getLatencySamples() == 0). PREAMP
-    // and SAT each own an independent oversampling instance and each
-    // report their own real latency - the plugin's total declared latency
-    // is their sum, since the two run in series in the signal chain and a
-    // host's plugin-delay-compensation needs the combined delay, not just
-    // one stage's.
+    // EQ adds no algorithmic latency (getLatencySamples() == 0). PREAMP,
+    // SAT and PITCH each own independent processing with their own real
+    // latency - the plugin's total declared latency is their sum, since
+    // all four run in series in the signal chain and a host's plugin-
+    // delay-compensation needs the combined delay, not just one stage's.
     setLatencySamples (preampProcessor.getLatencySamples()
                         + eqProcessor.getLatencySamples()
-                        + satProcessor.getLatencySamples());
+                        + satProcessor.getLatencySamples()
+                        + pitchProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
@@ -43,6 +48,7 @@ void UNI76AudioProcessor::releaseResources()
     preampProcessor.reset();
     eqProcessor.reset();
     satProcessor.reset();
+    pitchProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -80,8 +86,17 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     satProcessor.process (buffer, satHeat, satEnabled);
 
-    // Pitch/Panorama/Reverb/Imager remain a strict passthrough at this
-    // stage - see CLAUDE.md.
+    // PITCH's raw parameter value is already an integer semitone count
+    // (-12..+12, see ParameterLayout.cpp's AudioParameterInt) - round
+    // rather than truncate so float rounding on the atomic load can never
+    // read e.g. 6.999999 as 6.
+    const auto pitchSemitones = pitchParameter != nullptr ? (int) std::lround (pitchParameter->load()) : 0;
+    const auto pitchEnabled = moduleEnableState.isEnabled (3); // index 3 = pitch, see ModuleEnableState::propertyNames
+
+    pitchProcessor.process (buffer, pitchSemitones, pitchEnabled);
+
+    // Panorama/Reverb/Imager remain a strict passthrough at this stage -
+    // see CLAUDE.md.
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.
@@ -143,9 +158,23 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
         if (! newState.isValid() || newState.getType() != apvts.state.getType())
             return;
 
-        // Future preset migrations branch on this property if needed.
-        [[maybe_unused]] const int loadedSchemaVersion =
+        const int loadedSchemaVersion =
             newState.getProperty (uni76::stateSchemaVersionProperty, 1);
+
+        // Pre-v3 states saved `pitch` as a raw 0..100 number under the
+        // old percent-based parameter - it has no semitone meaning and
+        // must never be reinterpreted as one (verified against the real
+        // APVTS save format - see docs/DSP_PITCH.md's "Parameter and
+        // state migration" section). Strip it before apvts.replaceState()
+        // so the new -12..+12 AudioParameterInt falls back to its own
+        // default (0 ST) instead of clamping/misreading the old value.
+        // A user who never touched PITCH keeps hearing 0 ST after update.
+        if (loadedSchemaVersion < uni76::pitchDiscreteSchemaVersion)
+        {
+            auto pitchParam = newState.getChildWithProperty ("id", juce::var (uni76::ParamID::pitch));
+            if (pitchParam.isValid())
+                pitchParam.setProperty ("value", 0.0, nullptr);
+        }
 
         // A pre-v2 (or otherwise missing) flag defaults to enabled=true -
         // that's the correct migration for state saved before this flag

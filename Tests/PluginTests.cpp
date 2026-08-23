@@ -13,6 +13,8 @@
 #include "DSP/EqCurves.h"
 #include "DSP/SatProcessor.h"
 #include "DSP/SatCurves.h"
+#include "DSP/PitchProcessor.h"
+#include "DSP/PitchCurves.h"
 
 #include <array>
 #include <cmath>
@@ -112,7 +114,12 @@ public:
                 // Every other parameter was never touched before the save,
                 // so it should restore to its own construction-time default
                 // (EQ 50%, everything else 0%) - not a single shared value.
-                const auto expectedDefault = std::strcmp (id, uni76::ParamID::eq) == 0 ? 0.5f : 0.0f;
+                // PITCH is special-cased to 0.5f too: its default (0 ST)
+                // sits at the *normalised* midpoint of its -12..+12 range,
+                // same as EQ's PHONE default sits at the midpoint of 0..100.
+                const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
+                                             || std::strcmp (id, uni76::ParamID::pitch) == 0;
+                const auto expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
 
                 if (auto* param = apvts.getParameter (id))
                     expectWithinAbsoluteError (param->getValue(), expectedDefault, 0.001f, id);
@@ -138,7 +145,11 @@ public:
                 { 48000.0, 512,  true },
                 { 96000.0, 1,    true },
                 { 44100.0, 4096, true },
-                { 192000.0, 512, false },
+                // PREAMP/SAT drop their oversampling latency at 176.4kHz+,
+                // but PITCH's STFT latency scales with sample rate and
+                // never reaches zero (see docs/DSP_PITCH.md) - so total
+                // plugin latency is nonzero at every sample rate now.
+                { 192000.0, 512, true },
             };
 
             juce::Random random (1234);
@@ -688,6 +699,189 @@ namespace
         }
 
         return result;
+    }
+
+    // ---- PITCH test helpers -------------------------------------------
+
+    juce::AudioBuffer<float> generateSine (int numChannels, int totalSamples, double sampleRate,
+                                            float freqHz, float amplitude)
+    {
+        juce::AudioBuffer<float> buffer (numChannels, totalSamples);
+        const auto increment = juce::MathConstants<float>::twoPi * freqHz / (float) sampleRate;
+
+        for (int ch = 0; ch < numChannels; ++ch)
+        {
+            auto p = 0.0f;
+            for (int i = 0; i < totalSamples; ++i)
+            {
+                buffer.setSample (ch, i, amplitude * std::sin (p));
+                p += increment;
+            }
+        }
+        return buffer;
+    }
+
+    /** Feeds an already-built buffer through `pitch` in fixed-size blocks,
+        mirroring exactly how PluginProcessor::processBlock() calls
+        PitchProcessor::process() - the block size used here is deliberately
+        a test parameter (not tied to how the buffer was generated), so
+        tests can confirm behaviour doesn't depend on host chunking. */
+    juce::AudioBuffer<float> runPitchProcessor (uni76::dsp::PitchProcessor& pitch, const juce::AudioBuffer<float>& input,
+                                                 int blockSize, int semitones, bool enabled)
+    {
+        const auto numChannels = input.getNumChannels();
+        const auto totalSamples = input.getNumSamples();
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+
+        int done = 0;
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                block.copyFrom (ch, 0, input, ch, done, thisBlock);
+
+            pitch.process (block, semitones, enabled);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+
+            done += thisBlock;
+        }
+        return result;
+    }
+
+    struct BassStability
+    {
+        double freqMean = 0.0, freqStd = 0.0;
+        double ampDbStd = 0.0;    // amplitude-modulation depth across windows, in dB
+        double rmsModDepth = 0.0; // std/mean of RMS across windows
+        int numWindows = 0;
+    };
+
+    /** Phase-vocoder frequency-reassignment analysis: splits
+        [startSample, startSample+usableSamples) into overlapping windows
+        sized to resolve targetFreqHz (>= 4 full cycles, >= 15ms), and for
+        each hop measures the instantaneous frequency via the correct
+        phase-advance formula - deviation = measured phase step minus the
+        analysis bin's own expected phase advance over one hop, i.e.
+        `(phase - prevPhase) - omega*hopLen` - plus the Goertzel magnitude
+        and time-domain RMS in that window. This is exactly the failure
+        mode the product brief calls out: a shifted bass tone whose
+        fundamental frequency or level cyclically "breathes"/floats with
+        the algorithm's own hop/window period - an ordinary single-shot
+        FFT/Goertzel measurement over the whole tone cannot see this. */
+    BassStability analyzeBassStability (const juce::AudioBuffer<float>& buffer, int channel, int startSample,
+                                         int usableSamples, double sampleRate, float targetFreqHz)
+    {
+        const auto windowLen = juce::jmax ((int) std::round (sampleRate * 0.015),
+                                            (int) std::round (4.0 * sampleRate / (double) targetFreqHz));
+        const auto hopLen = juce::jmax (1, windowLen / 3);
+
+        std::vector<double> instFreqs, ampDb, rmsValues;
+
+        bool havePrev = false;
+        double prevPhase = 0.0;
+        int pos = 0;
+
+        while (pos + windowLen <= usableSamples)
+        {
+            const auto k = (int) (0.5 + (double) windowLen * (double) targetFreqHz / sampleRate);
+            const auto omega = (2.0 * juce::MathConstants<double>::pi * (double) k) / (double) windowLen;
+            const auto coeff = 2.0 * std::cos (omega);
+
+            double s0 = 0.0, s1 = 0.0, s2 = 0.0, rmsAcc = 0.0;
+            for (int i = 0; i < windowLen; ++i)
+            {
+                const auto x = (double) buffer.getSample (channel, startSample + pos + i);
+                s0 = x + coeff * s1 - s2;
+                s2 = s1; s1 = s0;
+                rmsAcc += x * x;
+            }
+
+            const auto real = s1 - s2 * std::cos (omega);
+            const auto imag = s2 * std::sin (omega);
+            const auto mag = std::sqrt (real * real + imag * imag) / ((double) windowLen / 2.0);
+            const auto phase = std::atan2 (imag, real);
+            const auto rms = std::sqrt (rmsAcc / (double) windowLen);
+
+            if (havePrev)
+            {
+                auto dPhase = (phase - prevPhase) - omega * (double) hopLen;
+                while (dPhase >  juce::MathConstants<double>::pi) dPhase -= 2.0 * juce::MathConstants<double>::pi;
+                while (dPhase < -juce::MathConstants<double>::pi) dPhase += 2.0 * juce::MathConstants<double>::pi;
+
+                const auto binHz = (double) k * sampleRate / (double) windowLen;
+                const auto instFreq = binHz + dPhase / (2.0 * juce::MathConstants<double>::pi) * (sampleRate / (double) hopLen);
+                instFreqs.push_back (instFreq);
+            }
+
+            ampDb.push_back (20.0 * std::log10 (juce::jmax (mag, 1.0e-9)));
+            rmsValues.push_back (rms);
+
+            prevPhase = phase;
+            havePrev = true;
+            pos += hopLen;
+        }
+
+        BassStability stats;
+        stats.numWindows = (int) instFreqs.size();
+
+        if (! instFreqs.empty())
+        {
+            double sum = 0.0;
+            for (auto f : instFreqs) sum += f;
+            stats.freqMean = sum / (double) instFreqs.size();
+
+            double variance = 0.0;
+            for (auto f : instFreqs) variance += (f - stats.freqMean) * (f - stats.freqMean);
+            stats.freqStd = std::sqrt (variance / (double) instFreqs.size());
+        }
+        if (! ampDb.empty())
+        {
+            double sum = 0.0;
+            for (auto v : ampDb) sum += v;
+            const auto mean = sum / (double) ampDb.size();
+            double variance = 0.0;
+            for (auto v : ampDb) variance += (v - mean) * (v - mean);
+            stats.ampDbStd = std::sqrt (variance / (double) ampDb.size());
+        }
+        if (! rmsValues.empty())
+        {
+            double sum = 0.0;
+            for (auto v : rmsValues) sum += v;
+            const auto mean = sum / (double) rmsValues.size();
+            double variance = 0.0;
+            for (auto v : rmsValues) variance += (v - mean) * (v - mean);
+            const auto sd = std::sqrt (variance / (double) rmsValues.size());
+            stats.rmsModDepth = mean > 1.0e-9 ? sd / mean : 0.0;
+        }
+
+        return stats;
+    }
+
+    /** Magnitude at freqOffsetHz above/below targetFreqHz, relative to the
+        target's own magnitude (dB) - the classic phase-vocoder artifact
+        signature (energy leaking into bins spaced around the true
+        fundamental) is what's usually heard as wobble/warble beyond what
+        the frequency-deviation measurement alone captures. */
+    struct SidebandResult { double belowDb, aboveDb; };
+
+    SidebandResult analyzeSidebands (const juce::AudioBuffer<float>& buffer, int channel, int startSample,
+                                      int usableSamples, double sampleRate, float targetFreqHz, float offsetHz)
+    {
+        const auto win = juce::jmin (usableSamples, periodicAnalysisLength (sampleRate, targetFreqHz, 20));
+
+        const auto targetMag = goertzelMagnitude (buffer, channel, startSample, win, sampleRate, targetFreqHz);
+        const auto belowMag  = goertzelMagnitude (buffer, channel, startSample, win, sampleRate, targetFreqHz - offsetHz);
+        const auto aboveMag  = goertzelMagnitude (buffer, channel, startSample, win, sampleRate, targetFreqHz + offsetHz);
+
+        const auto targetDb = 20.0 * std::log10 (juce::jmax ((double) targetMag, 1.0e-9));
+        return {
+            20.0 * std::log10 (juce::jmax ((double) belowMag, 1.0e-9)) - targetDb,
+            20.0 * std::log10 (juce::jmax ((double) aboveMag, 1.0e-9)) - targetDb
+        };
     }
 }
 
@@ -2905,7 +3099,7 @@ public:
             expect (peak < 1.2f, "EQ PHONE + SAT HOT should stay bounded/musical, not spike into fuzz");
         }
 
-        beginTest ("Total plugin latency is the sum of PREAMP's and SAT's own latencies (EQ adds none)");
+        beginTest ("Total plugin latency is the sum of PREAMP's, SAT's and PITCH's own latencies (EQ adds none)");
         {
             UNI76AudioProcessor processor;
             processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
@@ -2915,8 +3109,11 @@ public:
             referencePreamp.prepare (44100.0, 512, 2);
             uni76::dsp::SatProcessor referenceSat;
             referenceSat.prepare (44100.0, 512, 2);
+            uni76::dsp::PitchProcessor referencePitch;
+            referencePitch.prepare (44100.0, 512, 2);
 
-            expectEquals (processor.getLatencySamples(), referencePreamp.getLatencySamples() + referenceSat.getLatencySamples());
+            expectEquals (processor.getLatencySamples(),
+                           referencePreamp.getLatencySamples() + referenceSat.getLatencySamples() + referencePitch.getLatencySamples());
         }
 
         beginTest ("SAT value round-trips through a real getStateInformation()/setStateInformation() save+restore (0/50/100)");
@@ -3016,6 +3213,707 @@ public:
 };
 
 static UNI76SatAnalysisTests uni76SatAnalysisTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// PITCH / VARISPEED - see Source/DSP/PitchProcessor.h and docs/DSP_PITCH.md.
+// Pure pitch-shift only (duration always preserved): two independent mono
+// Signalsmith Stretch engines, 140ms/35ms STFT configuration, latency-
+// aligned bypass. Priority order per the product brief: low-frequency
+// stability first, then absence of wobble/sidebands/distortion, then
+// pitch accuracy, transients, stereo coherence, latency, CPU last.
+class UNI76PitchProcessorTests final : public juce::UnitTest
+{
+public:
+    UNI76PitchProcessorTests() : juce::UnitTest ("uni76::dsp::PitchProcessor", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Construct/prepare/reset does not crash; latency is positive and constant for the configured sample rate");
+        {
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (44100.0, 512, 2);
+            expect (pitch.getLatencySamples() > 0, "PITCH must report nonzero algorithmic latency");
+            pitch.reset();
+
+            juce::AudioBuffer<float> buffer (2, 512);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 512; ++i)
+                    buffer.setSample (ch, i, 0.2f * std::sin (0.1f * (float) i));
+
+            pitch.process (buffer, 0, true);
+            expect (bufferIsFinite (buffer), "process() produced non-finite output right after prepare()");
+        }
+
+        beginTest ("Latency is fixed across all 6 sample rates and does not depend on host block size (32..2048)");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+            const int blockSizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+
+            std::cout << "\n=== PITCH latency by sample rate ===" << std::endl;
+
+            for (auto sr : rates)
+            {
+                int latencyAtFirstBlockSize = -1;
+
+                for (auto blockSize : blockSizes)
+                {
+                    uni76::dsp::PitchProcessor pitch;
+                    pitch.prepare (sr, blockSize, 2);
+
+                    if (latencyAtFirstBlockSize < 0)
+                        latencyAtFirstBlockSize = pitch.getLatencySamples();
+                    else
+                        expectEquals (pitch.getLatencySamples(), latencyAtFirstBlockSize,
+                                      "PITCH latency must not depend on host block size");
+                }
+
+                if (sr == 44100.0 || sr == 48000.0 || sr == 96000.0 || sr == 192000.0)
+                    std::cout << "  " << sr << "Hz: " << latencyAtFirstBlockSize << " samples ("
+                               << (1000.0 * latencyAtFirstBlockSize / sr) << " ms)" << std::endl;
+            }
+            std::cout << "=== end PITCH latency by sample rate ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Latency is identical at -12/0/+12 ST and enabled/disabled");
+        {
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (44100.0, 512, 2);
+            const auto latency = pitch.getLatencySamples();
+
+            const int semitones[] { -12, -7, 0, 7, 12 };
+            for (auto st : semitones)
+                for (auto enabled : { true, false })
+                {
+                    juce::AudioBuffer<float> buffer (2, 512);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < 512; ++i)
+                            buffer.setSample (ch, i, 0.3f * std::sin (0.05f * (float) i));
+
+                    pitch.process (buffer, st, enabled);
+                    expectEquals (pitch.getLatencySamples(), latency,
+                                  "getLatencySamples() must stay constant for correct host plugin-delay-compensation");
+                }
+        }
+
+        beginTest ("Bypass (enabled=false) converges to an exact latency-aligned dry passthrough");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (sr, blockSize, 1);
+            const auto latency = pitch.getLatencySamples();
+
+            const auto totalSamples = latency + (int) sr; // 1s past full settle
+            auto input = generateSine (1, totalSamples, sr, 220.0f, 0.4f);
+            auto output = runPitchProcessor (pitch, input, blockSize, 3, false);
+
+            // Settled dry output at sample i should equal input[i - latency]
+            // exactly (IntegerDelayLine is a pure copy, no processing).
+            double maxAbsDiff = 0.0;
+            for (int i = latency + 1000; i < totalSamples; ++i)
+                maxAbsDiff = juce::jmax (maxAbsDiff, (double) std::abs (output.getSample (0, i) - input.getSample (0, i - latency)));
+
+            expect (maxAbsDiff < 1.0e-5, "disabled PITCH should be a bit-exact (delayed) passthrough, maxAbsDiff=" + juce::String (maxAbsDiff));
+        }
+
+        beginTest ("0 ST is maximally transparent across 40Hz/60Hz/100Hz/440Hz/1kHz/10kHz");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const float freqs[] { 40.0f, 60.0f, 100.0f, 440.0f, 1000.0f, 10000.0f };
+
+            std::cout << "\n=== PITCH 0 ST transparency ===" << std::endl;
+
+            for (auto freqHz : freqs)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+
+                const auto totalSamples = latency + (int) sr;
+                auto input = generateSine (1, totalSamples, sr, freqHz, 0.3f);
+                auto output = runPitchProcessor (pitch, input, blockSize, 0, true);
+
+                const auto win = juce::jmin (totalSamples - latency - 1000, periodicAnalysisLength (sr, freqHz, 30));
+                const auto inMag  = goertzelMagnitude (input,  0, totalSamples - win, win, sr, freqHz);
+                const auto outMag = goertzelMagnitude (output, 0, totalSamples - win, win, sr, freqHz);
+
+                const auto ratioDb = 20.0f * std::log10 (juce::jmax (outMag, 1.0e-9f) / juce::jmax (inMag, 1.0e-9f));
+                std::cout << "  " << freqHz << "Hz: 0 ST gain = " << ratioDb << " dB" << std::endl;
+
+                expect (std::abs (ratioDb) < 1.0f, juce::String ("0 ST should be near-transparent at ") + juce::String (freqHz) + "Hz, got " + juce::String (ratioDb) + "dB");
+            }
+            std::cout << "=== end PITCH 0 ST transparency ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Pitch accuracy at -12/-7/-3/+3/+7/+12 ST for a 440Hz tone");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float freqHz = 440.0f;
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== PITCH accuracy (440Hz) ===" << std::endl;
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto expectedFreq = freqHz * std::pow (2.0f, (float) st / 12.0f);
+
+                const auto totalSamples = latency + (int) sr;
+                auto input = generateSine (1, totalSamples, sr, freqHz, 0.3f);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                const auto stability = analyzeBassStability (output, 0, latency + 2000, totalSamples - latency - 2000, sr, expectedFreq);
+                expect (stability.numWindows > 3, "not enough analysis windows for a reliable pitch-accuracy measurement");
+
+                const auto errorPercent = 100.0 * std::abs (stability.freqMean - (double) expectedFreq) / (double) expectedFreq;
+                std::cout << "  " << st << " ST: expected=" << expectedFreq << "Hz measured=" << stability.freqMean
+                           << "Hz error=" << errorPercent << "%" << std::endl;
+
+                expect (errorPercent < 1.0, juce::String (st) + " ST pitch error too large: " + juce::String (errorPercent) + "%");
+            }
+            std::cout << "=== end PITCH accuracy ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Bass stability matrix: 40/50/60/80/100/120Hz x -12/-7/-3/+3/+7/+12 ST - no wobble, no floating fundamental");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const float bassFreqs[] { 40.0f, 50.0f, 60.0f, 80.0f, 100.0f, 120.0f };
+            const int semitones[] { -12, -7, -3, 3, 7, 12 };
+
+            std::cout << "\n=== PITCH bass stability matrix ===" << std::endl;
+
+            for (auto baseFreq : bassFreqs)
+            {
+                for (auto st : semitones)
+                {
+                    uni76::dsp::PitchProcessor pitch;
+                    pitch.prepare (sr, blockSize, 1);
+                    const auto latency = pitch.getLatencySamples();
+                    const auto expectedFreq = baseFreq * std::pow (2.0f, (float) st / 12.0f);
+
+                    const auto settle = latency + (int) (0.15 * sr);
+                    const auto analysisSamples = (int) (0.6 * sr);
+                    const auto totalSamples = settle + analysisSamples;
+
+                    auto input = generateSine (1, totalSamples, sr, baseFreq, 0.35f);
+                    auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                    const auto stability = analyzeBassStability (output, 0, settle, totalSamples - settle, sr, expectedFreq);
+
+                    const auto freqDeviationPercent = expectedFreq > 0.0f
+                        ? 100.0 * stability.freqStd / (double) expectedFreq : 0.0;
+
+                    std::cout << "  " << baseFreq << "Hz " << (st > 0 ? "+" : "") << st << "ST -> " << expectedFreq
+                               << "Hz: freqMean=" << stability.freqMean << "Hz freqStd=" << stability.freqStd
+                               << "Hz (" << freqDeviationPercent << "%) ampDbStd=" << stability.ampDbStd
+                               << "dB rmsModDepth=" << stability.rmsModDepth << " windows=" << stability.numWindows << std::endl;
+
+                    expect (stability.numWindows > 3, "not enough analysis windows in bass stability matrix");
+                    // Hard-reject thresholds per the product brief: no
+                    // noticeable bass wobble/floating fundamental/AM.
+                    expect (freqDeviationPercent < 3.0, "bass fundamental floats too much (wobble) at "
+                            + juce::String (baseFreq) + "Hz " + juce::String (st) + "ST");
+                    expect (stability.ampDbStd < 2.5, "bass amplitude modulates too much (breathing) at "
+                            + juce::String (baseFreq) + "Hz " + juce::String (st) + "ST");
+                    expect (stability.rmsModDepth < 0.2, "bass RMS modulates too much at "
+                            + juce::String (baseFreq) + "Hz " + juce::String (st) + "ST");
+                }
+            }
+            std::cout << "=== end PITCH bass stability matrix ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Sideband suppression near the shifted fundamental (60Hz+12ST->120Hz, 100Hz-12ST->50Hz)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            struct Case { float baseFreq; int semitones; };
+            const Case cases[] { { 60.0f, 12 }, { 100.0f, -12 }, { 40.0f, 12 }, { 120.0f, -12 } };
+
+            std::cout << "\n=== PITCH sideband suppression ===" << std::endl;
+
+            for (const auto& c : cases)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+                const auto targetFreq = c.baseFreq * std::pow (2.0f, (float) c.semitones / 12.0f);
+
+                const auto settle = latency + (int) (0.2 * sr);
+                const auto totalSamples = settle + (int) (0.8 * sr);
+                auto input = generateSine (1, totalSamples, sr, c.baseFreq, 0.35f);
+                auto output = runPitchProcessor (pitch, input, blockSize, c.semitones, true);
+
+                // Sidebands (if any) show up spaced around the analysis
+                // hop rate (~1/intervalSeconds) - 25Hz is a representative
+                // offset for the chosen 35ms interval.
+                const auto sidebands = analyzeSidebands (output, 0, settle, totalSamples - settle, sr, targetFreq, 25.0f);
+
+                std::cout << "  " << c.baseFreq << "Hz " << (c.semitones > 0 ? "+" : "") << c.semitones << "ST -> "
+                           << targetFreq << "Hz: sideband below=" << sidebands.belowDb << "dB above=" << sidebands.aboveDb << "dB" << std::endl;
+
+                expect (sidebands.belowDb < -20.0, "sideband below the target fundamental too strong");
+                expect (sidebands.aboveDb < -20.0, "sideband above the target fundamental too strong");
+            }
+            std::cout << "=== end PITCH sideband suppression ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Transient quality: single clean onset, no pre-echo/double-hit at -12/-6/+6/+12 ST");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const int semitones[] { -12, -6, 6, 12 };
+
+            for (auto st : semitones)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+
+                // Silence, then a sharp burst (a few cycles of a mid tone
+                // windowed by a fast attack/decay), then silence again.
+                const auto totalSamples = latency + (int) (1.2 * sr);
+                const auto onsetSample = latency + (int) (0.4 * sr);
+                const auto burstLength = (int) (0.02 * sr);
+
+                juce::AudioBuffer<float> input (1, totalSamples);
+                input.clear();
+                for (int i = 0; i < burstLength; ++i)
+                {
+                    const auto env = std::sin (juce::MathConstants<float>::pi * (float) i / (float) burstLength); // fast in/out
+                    input.setSample (0, onsetSample + i, env * 0.6f * std::sin (juce::MathConstants<float>::twoPi * 600.0f * (float) i / (float) sr));
+                }
+
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                // Expected onset in the output lands at onsetSample + latency
+                // (the module's own added algorithmic delay). Pre-echo
+                // check: no significant energy should appear meaningfully
+                // earlier than that (beyond a small tolerance for the
+                // engine's own analysis-window smear).
+                const auto expectedOnset = onsetSample + latency;
+                const auto preEchoWindowStart = juce::jmax (0, expectedOnset - (int) (0.05 * sr));
+                const auto preEchoWindowEnd   = juce::jmax (0, expectedOnset - (int) (0.005 * sr));
+
+                float preEchoPeak = 0.0f;
+                for (int i = preEchoWindowStart; i < preEchoWindowEnd; ++i)
+                    preEchoPeak = juce::jmax (preEchoPeak, std::abs (output.getSample (0, i)));
+
+                float burstPeak = 0.0f;
+                for (int i = expectedOnset; i < juce::jmin (totalSamples, expectedOnset + burstLength * 4); ++i)
+                    burstPeak = juce::jmax (burstPeak, std::abs (output.getSample (0, i)));
+
+                expect (bufferIsFinite (output), "transient test produced non-finite output");
+                expect (burstPeak > 0.05f, "transient burst should be clearly audible in the output");
+                expect (preEchoPeak < 0.15f * burstPeak, juce::String (st) + " ST: pre-echo energy too strong relative to the burst");
+            }
+        }
+
+        beginTest ("Mono processing stays finite across -12/0/+12 ST");
+        {
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (44100.0, 512, 1);
+
+            for (auto st : { -12, 0, 12 })
+            {
+                auto input = generateSine (1, 44100 * 2, 44100.0, 300.0f, 0.4f);
+                auto output = runPitchProcessor (pitch, input, 512, st, true);
+                expect (bufferIsFinite (output), "mono processing produced non-finite samples");
+            }
+        }
+
+        beginTest ("Stereo: identical L/R input produces bit-identical L/R output (no wandering centre)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            for (auto st : { -12, -3, 0, 5, 12 })
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 2);
+
+                const auto totalSamples = pitch.getLatencySamples() + (int) sr;
+                juce::AudioBuffer<float> input (2, totalSamples);
+                const auto mono = generateSine (1, totalSamples, sr, 250.0f, 0.35f);
+                input.copyFrom (0, 0, mono, 0, 0, totalSamples);
+                input.copyFrom (1, 0, mono, 0, 0, totalSamples);
+
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                double maxAbsDiff = 0.0;
+                for (int i = 0; i < totalSamples; ++i)
+                    maxAbsDiff = juce::jmax (maxAbsDiff, (double) std::abs (output.getSample (0, i) - output.getSample (1, i)));
+
+                expect (maxAbsDiff < 1.0e-6, juce::String (st) + " ST: dual-mono input must produce bit-identical stereo output, maxAbsDiff=" + juce::String (maxAbsDiff));
+            }
+        }
+
+        beginTest ("Stereo: decorrelated hard-panned material stays finite and doesn't blow up");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = pitch.getLatencySamples() + (int) sr;
+            juce::AudioBuffer<float> input (2, totalSamples);
+            input.copyFrom (0, 0, generateSine (1, totalSamples, sr, 220.0f, 0.4f), 0, 0, totalSamples);
+            input.copyFrom (1, 0, generateSine (1, totalSamples, sr, 330.0f, 0.4f), 0, 0, totalSamples);
+
+            auto output = runPitchProcessor (pitch, input, blockSize, 7, true);
+            expect (bufferIsFinite (output), "decorrelated stereo material produced non-finite output");
+
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < totalSamples; ++i)
+                    peak = juce::jmax (peak, std::abs (output.getSample (ch, i)));
+            expect (peak < 2.0f, "decorrelated stereo material should not cause a gain explosion");
+        }
+
+        beginTest ("All 6 supported sample rates process finite audio without crashing");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+
+            for (auto sr : rates)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, 512, 2);
+
+                const auto totalSamples = pitch.getLatencySamples() + (int) (0.3 * sr);
+                juce::AudioBuffer<float> input (2, totalSamples);
+                auto mono = generateSine (1, totalSamples, sr, 220.0f, 0.4f);
+                input.copyFrom (0, 0, mono, 0, 0, totalSamples);
+                input.copyFrom (1, 0, mono, 0, 0, totalSamples);
+
+                auto output = runPitchProcessor (pitch, input, 512, 5, true);
+                expect (bufferIsFinite (output), juce::String ("non-finite output at ") + juce::String (sr) + "Hz");
+            }
+        }
+
+        beginTest ("All required block sizes (32..2048) give the same settled pitch accuracy regardless of host chunking");
+        {
+            constexpr double sr = 44100.0;
+            constexpr float freqHz = 440.0f;
+            constexpr int st = 7;
+            const int blockSizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+            const auto expectedFreq = freqHz * std::pow (2.0f, (float) st / 12.0f);
+
+            for (auto blockSize : blockSizes)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, juce::jmax (blockSize, 512), 1); // maximumBlockSize must cover the largest block used
+                const auto latency = pitch.getLatencySamples();
+
+                const auto totalSamples = latency + (int) sr;
+                auto input = generateSine (1, totalSamples, sr, freqHz, 0.3f);
+                auto output = runPitchProcessor (pitch, input, blockSize, st, true);
+
+                const auto stability = analyzeBassStability (output, 0, latency + 2000, totalSamples - latency - 2000, sr, expectedFreq);
+                const auto errorPercent = 100.0 * std::abs (stability.freqMean - (double) expectedFreq) / (double) expectedFreq;
+
+                expect (errorPercent < 1.0, "block size " + juce::String (blockSize) + " should not change settled pitch accuracy, error=" + juce::String (errorPercent) + "%");
+            }
+        }
+
+        beginTest ("Silence produces silence (no self-noise/garbage) and reset() clears internal state");
+        {
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (44100.0, 512, 1);
+
+            juce::AudioBuffer<float> silence (1, 44100 * 2);
+            silence.clear();
+            auto output = runPitchProcessor (pitch, silence, 512, 7, true);
+
+            float peak = 0.0f;
+            for (int i = 0; i < output.getNumSamples(); ++i)
+                peak = juce::jmax (peak, std::abs (output.getSample (0, i)));
+
+            expect (peak < 1.0e-4f, "silent input should produce silent (or near-silent) output, peak=" + juce::String (peak));
+
+            pitch.reset();
+
+            juce::AudioBuffer<float> afterReset (1, 512);
+            afterReset.clear();
+            pitch.process (afterReset, 0, true);
+            expect (bufferIsFinite (afterReset), "process() after reset() produced non-finite output");
+        }
+
+        beginTest ("NaN/Inf input samples are sanitized and don't permanently poison internal state");
+        {
+            uni76::dsp::PitchProcessor pitch;
+            pitch.prepare (44100.0, 256, 1);
+
+            juce::AudioBuffer<float> poisoned (1, 256);
+            for (int i = 0; i < 256; ++i)
+                poisoned.setSample (0, i, (i % 2 == 0) ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN());
+
+            pitch.process (poisoned, 5, true);
+            expect (bufferIsFinite (poisoned), "NaN/Inf input samples leaked through to the output");
+
+            // Prepared with maximumBlockSize=256 above, so the follow-up
+            // clean signal must be fed in <=256-sample blocks too, same as
+            // any real host call - runPitchProcessor() enforces that.
+            auto clean = generateSine (1, 44100, 44100.0, 300.0f, 0.3f);
+            auto cleanOutput = runPitchProcessor (pitch, clean, 256, 5, true);
+            expect (bufferIsFinite (cleanOutput), "filter/engine state remained poisoned after a NaN/Inf block");
+        }
+
+        beginTest ("Discrete automation transitions (0->+1, +1->+2, 0->-1, -12->+12, +12->-12) are click-free and settle exactly");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr float freqHz = 300.0f;
+
+            struct Transition { int from, to; };
+            const Transition transitions[] { { 0, 1 }, { 1, 2 }, { 0, -1 }, { -12, 12 }, { 12, -12 } };
+
+            for (const auto& t : transitions)
+            {
+                uni76::dsp::PitchProcessor pitch;
+                pitch.prepare (sr, blockSize, 1);
+                const auto latency = pitch.getLatencySamples();
+
+                const auto preSwitchSamples = latency + (int) (0.3 * sr);
+                const auto postSwitchSamples = (int) (0.5 * sr);
+                const auto totalSamples = preSwitchSamples + postSwitchSamples;
+
+                auto input = generateSine (1, totalSamples, sr, freqHz, 0.3f);
+
+                juce::AudioBuffer<float> output (1, totalSamples);
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (1, thisBlock);
+                    block.copyFrom (0, 0, input, 0, done, thisBlock);
+
+                    const auto semitones = done < preSwitchSamples ? t.from : t.to;
+                    pitch.process (block, semitones, true);
+
+                    output.copyFrom (0, done, block, 0, 0, thisBlock);
+                    done += thisBlock;
+                }
+
+                expect (bufferIsFinite (output), "automation transition produced non-finite output");
+
+                // Click-free: no single-sample derivative spike far beyond
+                // the signal's own amplitude anywhere in the run (a hard
+                // discontinuity, not the STFT's internal smoothing).
+                float maxJump = 0.0f;
+                for (int i = 1; i < totalSamples; ++i)
+                    maxJump = juce::jmax (maxJump, std::abs (output.getSample (0, i) - output.getSample (0, i - 1)));
+                expect (maxJump < 0.5f, juce::String (t.from) + "->" + juce::String (t.to) + " ST: transition produced a click (maxJump=" + juce::String (maxJump) + ")");
+
+                // Settles exactly on the new target semitone after the switch.
+                const auto expectedFreq = freqHz * std::pow (2.0f, (float) t.to / 12.0f);
+                const auto settleStart = preSwitchSamples + latency + (int) (0.05 * sr);
+                const auto stability = analyzeBassStability (output, 0, settleStart, totalSamples - settleStart, sr, expectedFreq);
+
+                if (stability.numWindows > 2)
+                {
+                    const auto errorPercent = 100.0 * std::abs (stability.freqMean - (double) expectedFreq) / (double) expectedFreq;
+                    expect (errorPercent < 2.0, juce::String (t.from) + "->" + juce::String (t.to) + " ST: did not settle on the new target, error=" + juce::String (errorPercent) + "%");
+                }
+            }
+        }
+    }
+};
+
+static UNI76PitchProcessorTests uni76PitchProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Full-chain / APVTS-level PITCH coverage: discrete parameter identity,
+// state migration from the old 0..100% pitch parameter, and integration
+// with PREAMP/EQ/SAT through the real UNI76AudioProcessor.
+class UNI76PitchIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76PitchIntegrationTests() : juce::UnitTest ("UNI76AudioProcessor + PITCH", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("PITCH parameter is genuinely discrete: 25 states, range -12..+12, default 0 ST");
+        {
+            UNI76AudioProcessor processor;
+            auto* rangedParam = processor.getValueTreeState().getParameter (uni76::ParamID::pitch);
+            auto* param = dynamic_cast<juce::AudioParameterInt*> (rangedParam);
+            expect (param != nullptr, "pitch must be an AudioParameterInt");
+
+            if (param != nullptr && rangedParam != nullptr)
+            {
+                expectEquals (param->getRange().getStart(), -12);
+                expectEquals (param->getRange().getEnd(), 12);
+                expectEquals (param->get(), 0);
+                // 25 valid states (-12..+12 inclusive) - getNumSteps() is a
+                // private override in AudioParameterInt, so it must be
+                // called through the RangedAudioParameter base pointer.
+                expectEquals (rangedParam->getNumSteps(), 25);
+            }
+        }
+
+        beginTest ("Fresh instance opens at 0 ST (normalised 0.5, the range's midpoint)");
+        {
+            UNI76AudioProcessor processor;
+            auto* param = processor.getValueTreeState().getParameter (uni76::ParamID::pitch);
+            expect (param != nullptr);
+            if (param != nullptr)
+                expectWithinAbsoluteError (param->getValue(), 0.5f, 0.001f);
+        }
+
+        beginTest ("New-schema state round-trips pitch exactly at -12/0/+12 ST");
+        {
+            for (int st : { -12, 0, 12 })
+            {
+                UNI76AudioProcessor processor;
+                auto& apvts = processor.getValueTreeState();
+                auto* param = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (uni76::ParamID::pitch));
+                expect (param != nullptr);
+                if (param == nullptr) continue;
+
+                param->setValueNotifyingHost (param->convertTo0to1 ((float) st));
+
+                juce::MemoryBlock saved;
+                processor.getStateInformation (saved);
+
+                UNI76AudioProcessor reloaded;
+                reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+                auto* reloadedParam = dynamic_cast<juce::AudioParameterInt*> (reloaded.getValueTreeState().getParameter (uni76::ParamID::pitch));
+                expect (reloadedParam != nullptr);
+                if (reloadedParam != nullptr)
+                    expectEquals (reloadedParam->get(), st);
+            }
+        }
+
+        beginTest ("Legacy (pre-v3) saved state migrates pitch to 0 ST regardless of its old raw percent value");
+        {
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+
+            // Hand-build a v2-shaped state (the real old format, confirmed
+            // by direct experiment - APVTS stores each parameter's raw,
+            // denormalised value as `value="X"` in its own declared range,
+            // which for the old pitch was 0..100). A user who set the old
+            // percent-based pitch to 73% and never touched it again must
+            // not suddenly hear -12..+12-range garbage after the update -
+            // and specifically must land on the new default, 0 ST.
+            auto legacyState = apvts.copyState();
+            legacyState.setProperty (uni76::stateSchemaVersionProperty, 2, nullptr); // pre-v3
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                legacyState.setProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true, nullptr);
+
+            auto legacyPitchParam = legacyState.getChildWithProperty ("id", juce::var (uni76::ParamID::pitch));
+            expect (legacyPitchParam.isValid());
+            legacyPitchParam.setProperty ("value", 73.0, nullptr); // old raw 0..100% value
+
+            if (auto xml = legacyState.createXml())
+            {
+                juce::MemoryBlock data;
+                juce::AudioProcessor::copyXmlToBinary (*xml, data);
+                processor.setStateInformation (data.getData(), (int) data.getSize());
+            }
+
+            auto* param = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (uni76::ParamID::pitch));
+            expect (param != nullptr);
+            if (param != nullptr)
+                expectEquals (param->get(), 0);
+        }
+
+        beginTest ("Legacy state with pitch untouched (old default 0.0) also migrates cleanly to 0 ST");
+        {
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+
+            auto legacyState = apvts.copyState();
+            legacyState.setProperty (uni76::stateSchemaVersionProperty, 1, nullptr); // pre-v2, pre-v3
+
+            if (auto xml = legacyState.createXml())
+            {
+                juce::MemoryBlock data;
+                juce::AudioProcessor::copyXmlToBinary (*xml, data);
+                processor.setStateInformation (data.getData(), (int) data.getSize());
+            }
+
+            auto* param = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (uni76::ParamID::pitch));
+            expect (param != nullptr);
+            if (param != nullptr)
+                expectEquals (param->get(), 0);
+
+            // Missing module-enabled flags (pre-v2) still default to enabled.
+            expect (processor.getModuleEnableState().isEnabled (3));
+        }
+
+        beginTest ("pitchEnabled flag (moduleEnableState index 3) persists across save/restore");
+        {
+            UNI76AudioProcessor processor;
+            processor.getModuleEnableState().setEnabled (3, false);
+
+            juce::MemoryBlock saved;
+            processor.getStateInformation (saved);
+
+            UNI76AudioProcessor reloaded;
+            reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+            expect (! reloaded.getModuleEnableState().isEnabled (3), "pitchEnabled=false should survive save/restore");
+        }
+
+        beginTest ("Full chain PREAMP+EQ+SAT+PITCH stays finite/stable for representative parameter combinations");
+        {
+            struct Combo { float preamp, eq, sat; int pitchSt; };
+            const Combo combos[] {
+                { 0.0f, 0.5f, 0.0f, 0 }, { 0.0f, 0.5f, 0.5f, 12 }, { 0.5f, 0.5f, 0.5f, -12 },
+                { 0.5f, 1.0f, 0.75f, 7 }, { 0.75f, 0.5f, 1.0f, -7 },
+            };
+
+            for (const auto& combo : combos)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (44100.0, 512);
+
+                processor.getValueTreeState().getParameter (uni76::ParamID::preamp)->setValueNotifyingHost (combo.preamp);
+                processor.getValueTreeState().getParameter (uni76::ParamID::eq)->setValueNotifyingHost (combo.eq);
+                processor.getValueTreeState().getParameter (uni76::ParamID::saturation)->setValueNotifyingHost (combo.sat);
+
+                auto* pitchParam = dynamic_cast<juce::AudioParameterInt*> (processor.getValueTreeState().getParameter (uni76::ParamID::pitch));
+                expect (pitchParam != nullptr);
+                if (pitchParam != nullptr)
+                    pitchParam->setValueNotifyingHost (pitchParam->convertTo0to1 ((float) combo.pitchSt));
+
+                juce::MidiBuffer midi;
+                juce::AudioBuffer<float> buffer (2, 512);
+                bool finite = true;
+                float peak = 0.0f;
+
+                for (int b = 0; b < 25; ++b)
+                {
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int s = 0; s < 512; ++s)
+                            buffer.setSample (ch, s, 0.35f * std::sin (juce::MathConstants<float>::twoPi * 500.0f
+                                                                        * (float) (b * 512 + s) / 44100.0f));
+                    processor.processBlock (buffer, midi);
+                    if (! bufferIsFinite (buffer)) finite = false;
+                }
+
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int s = 0; s < 512; ++s)
+                        peak = juce::jmax (peak, std::abs (buffer.getSample (ch, s)));
+
+                const juce::String label = "PREAMP=" + juce::String (combo.preamp) + " EQ=" + juce::String (combo.eq)
+                                          + " SAT=" + juce::String (combo.sat) + " PITCH=" + juce::String (combo.pitchSt) + "ST";
+                expect (finite, "non-finite output for " + label);
+                expect (peak < 4.0f, "unexpected gain explosion for " + label);
+            }
+        }
+    }
+};
+
+static UNI76PitchIntegrationTests uni76PitchIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

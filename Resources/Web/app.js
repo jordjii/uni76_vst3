@@ -13,13 +13,15 @@ import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
 import { initMeters } from "./meters.js";
 import { initModulePower } from "./module_power.js";
 
-// One full octave down/up, matching the "-OCT ... 0 ... +OCT" scale label
-// printed under the PITCH knob - display only, the underlying parameter is
-// still the same plain 0..100% APVTS float as every other module.
+// PITCH is a discrete -12..+12 semitone APVTS int parameter (25 positions,
+// step 1) - unlike every other module's plain 0..100% float. `scaled`
+// already arrives as the real semitone value via the JUCE bridge, so this
+// is just presentation, not unit conversion.
 const PITCH_SEMITONE_RANGE = 12;
+const PITCH_STEPS = PITCH_SEMITONE_RANGE * 2; // 24 intervals = 25 positions
 
 function formatPitchSemitones(scaled) {
-  const semitones = Math.round((scaled / 100) * (PITCH_SEMITONE_RANGE * 2) - PITCH_SEMITONE_RANGE);
+  const semitones = Math.round(scaled);
   return semitones === 0 ? "0 ST" : `${semitones > 0 ? "+" : ""}${semitones} ST`;
 }
 
@@ -30,13 +32,20 @@ const MODULES = [
   { id: "preamp", control: "DRIVE", name: "Preamp", defaultNormalised: 0 },
   { id: "eq", control: "TONE", name: "EQ", defaultNormalised: 0.5 },
   { id: "saturation", control: "HEAT", name: "Saturation", defaultNormalised: 0 },
-  { id: "pitch", control: "SHIFT", name: "Pitch", defaultNormalised: 0, formatValue: formatPitchSemitones },
+  // Discrete: 25 fixed integer semitone positions (-12..+12), default 0 ST
+  // (dead centre) - not a percentage like every other module. See
+  // Source/Parameters/ParameterLayout.cpp, the source of truth this must
+  // stay in sync with.
+  {
+    id: "pitch", control: "SHIFT", name: "Pitch", defaultNormalised: 0.5, formatValue: formatPitchSemitones,
+    discrete: { steps: PITCH_STEPS, ariaMin: -PITCH_SEMITONE_RANGE, ariaMax: PITCH_SEMITONE_RANGE, ariaStep: 1 },
+  },
   { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0 },
   { id: "reverb", control: "SPACE", name: "Reverb", defaultNormalised: 0 },
   { id: "imager", control: "IMAGE", name: "Imager", defaultNormalised: 0 },
 ];
 
-function initModule({ id, control, name, defaultNormalised, formatValue }) {
+function initModule({ id, control, name, defaultNormalised, formatValue, discrete }) {
   const section = document.querySelector(`.module[data-param="${id}"]`);
   if (!section) return;
 
@@ -59,8 +68,16 @@ function initModule({ id, control, name, defaultNormalised, formatValue }) {
     valueElement,
     defaultNormalised,
     formatValue,
-    onChange: (_normalised, scaled) => {
-      if (auxUpdate) auxUpdate(scaled);
+    steps: discrete ? discrete.steps : null,
+    ariaMin: discrete ? discrete.ariaMin : 0,
+    ariaMax: discrete ? discrete.ariaMax : 100,
+    ariaStep: discrete ? discrete.ariaStep : null,
+    onChange: (normalised, _scaled) => {
+      // Always feed derived (purely visual) indicators a 0..100 percent
+      // position, not the module's own real units - for every module
+      // except PITCH those are numerically identical anyway (scaled ===
+      // normalised*100 on a plain 0..100% linear parameter).
+      if (auxUpdate) auxUpdate(normalised * 100);
     },
   });
 }

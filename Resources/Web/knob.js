@@ -25,13 +25,26 @@ function clamp01(value) {
 const defaultFormatValue = (scaled) => `${scaled}%`;
 
 export class ParameterKnob {
-  constructor({ element, sliderState, ariaLabel, valueElement, onChange, defaultNormalised = 0.5, formatValue = defaultFormatValue }) {
+  constructor({
+    element, sliderState, ariaLabel, valueElement, onChange,
+    defaultNormalised = 0.5, formatValue = defaultFormatValue,
+    // Discrete mode (PITCH only - see app.js): steps = number of intervals
+    // across the full range (24 for -12..+12 semitones = 25 positions).
+    // When set, drag/wheel/keyboard snap exactly to 1/steps of the range,
+    // Shift fine-control is ignored (no fractional semitones exist), and
+    // ARIA reports the real min/max/step instead of a 0..100 percent range.
+    steps = null, ariaMin = 0, ariaMax = 100, ariaStep = null,
+  }) {
     this.element = element;
     this.state = sliderState;
     this.valueElement = valueElement;
     this.onChange = onChange;
     this.defaultNormalised = defaultNormalised;
     this.formatValue = formatValue;
+    this.steps = steps;
+    this.ariaMin = ariaMin;
+    this.ariaMax = ariaMax;
+    this.ariaStep = ariaStep;
 
     this.dragging = false;
     this.dragStartY = 0;
@@ -70,7 +83,9 @@ export class ParameterKnob {
     const container = this.element.querySelector(".knob__ticks");
     if (!container) return;
 
-    const tickCount = 11; // every 10%, including both ends
+    // Discrete knobs (PITCH) get one tick per real step (25 for -12..+12);
+    // continuous knobs keep the original 11 (every 10%).
+    const tickCount = this.steps != null ? this.steps + 1 : 11;
 
     for (let i = 0; i < tickCount; i++) {
       const fraction = i / (tickCount - 1);
@@ -93,14 +108,26 @@ export class ParameterKnob {
     this.element.setAttribute("role", "slider");
     this.element.setAttribute("tabindex", "0");
     this.element.setAttribute("aria-orientation", "vertical");
-    this.element.setAttribute("aria-valuemin", "0");
-    this.element.setAttribute("aria-valuemax", "100");
+    this.element.setAttribute("aria-valuemin", String(this.ariaMin));
+    this.element.setAttribute("aria-valuemax", String(this.ariaMax));
+    if (this.ariaStep != null) this.element.setAttribute("aria-valuestep", String(this.ariaStep));
     // Matches the HTML/CSS-authored resting state until the first real
-    // valueChangedEvent arrives - see the comment in the constructor.
-    const restingScaled = Math.round(this.defaultNormalised * 100);
+    // valueChangedEvent arrives - see the comment in the constructor. For
+    // a discrete knob the resting scaled value is real units (e.g.
+    // semitones), not a 0..100 percent.
+    const restingScaled = this.steps != null
+      ? Math.round(this.ariaMin + this.defaultNormalised * (this.ariaMax - this.ariaMin))
+      : Math.round(this.defaultNormalised * 100);
     this.element.setAttribute("aria-valuenow", String(restingScaled));
     this.element.setAttribute("aria-valuetext", this.formatValue(restingScaled));
     if (ariaLabel) this.element.setAttribute("aria-label", ariaLabel);
+  }
+
+  /** Discrete-mode only: snaps a normalised (0..1) value to the nearest of
+      `steps` equal intervals, computed from a step *index* (not repeated
+      float addition) so repeated stepping can never drift off-grid. */
+  _snapToStep(normalised) {
+    return Math.round(normalised * this.steps) / this.steps;
   }
 
   _bindEvents() {
@@ -132,8 +159,11 @@ export class ParameterKnob {
     if (!this.dragging) return;
 
     const deltaY = this.dragStartY - event.clientY; // dragging up increases the value
-    const range = event.shiftKey ? DRAG_PIXELS_FOR_FULL_RANGE_FINE : DRAG_PIXELS_FOR_FULL_RANGE;
-    const next = clamp01(this.dragStartNormalised + deltaY / range);
+    // Discrete knobs have no fractional positions, so Shift fine-control
+    // doesn't apply - always use the normal (coarser) drag range.
+    const range = this.steps != null || !event.shiftKey ? DRAG_PIXELS_FOR_FULL_RANGE : DRAG_PIXELS_FOR_FULL_RANGE_FINE;
+    let next = clamp01(this.dragStartNormalised + deltaY / range);
+    if (this.steps != null) next = this._snapToStep(next);
 
     this.state.setNormalisedValue(next);
   }
@@ -157,7 +187,6 @@ export class ParameterKnob {
   _onWheel(event) {
     event.preventDefault();
 
-    const step = event.shiftKey ? STEP_FINE : STEP_NORMAL;
     const direction = event.deltaY < 0 ? 1 : -1;
 
     if (!this.wheelGestureActive) {
@@ -165,7 +194,9 @@ export class ParameterKnob {
       this.state.sliderDragStarted();
     }
 
-    const next = clamp01(this.state.getNormalisedValue() + step * direction);
+    const next = this.steps != null
+      ? this._stepFromCurrent(direction)
+      : clamp01(this.state.getNormalisedValue() + (event.shiftKey ? STEP_FINE : STEP_NORMAL) * direction);
     this.state.setNormalisedValue(next);
 
     clearTimeout(this.wheelIdleTimer);
@@ -182,17 +213,16 @@ export class ParameterKnob {
   }
 
   _onKeyDown(event) {
-    const step = event.shiftKey ? STEP_FINE : STEP_NORMAL;
-    let delta = 0;
+    let direction = 0;
 
     switch (event.key) {
       case "ArrowUp":
       case "ArrowRight":
-        delta = step;
+        direction = 1;
         break;
       case "ArrowDown":
       case "ArrowLeft":
-        delta = -step;
+        direction = -1;
         break;
       default:
         return;
@@ -205,8 +235,17 @@ export class ParameterKnob {
       this.state.sliderDragStarted();
     }
 
-    const next = clamp01(this.state.getNormalisedValue() + delta);
+    const next = this.steps != null
+      ? this._stepFromCurrent(direction)
+      : clamp01(this.state.getNormalisedValue() + (event.shiftKey ? STEP_FINE : STEP_NORMAL) * direction);
     this.state.setNormalisedValue(next);
+  }
+
+  /** Discrete-mode only: moves exactly one step from the current (assumed
+      already-snapped) position, by step *index* so it can't drift. */
+  _stepFromCurrent(direction) {
+    const currentStep = Math.round(this.state.getNormalisedValue() * this.steps);
+    return clamp01((currentStep + direction) / this.steps);
   }
 
   _onKeyUp(event) {

@@ -6,6 +6,7 @@
 #include "DSP/PreampProcessor.h"
 #include "DSP/EqProcessor.h"
 #include "DSP/SatProcessor.h"
+#include "DSP/PitchProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -19,13 +20,14 @@
         timer, running on the message thread, is what actually reads those
         meters and talks to the WebView - the audio thread itself never
         touches the UI.
-      - PREAMP, EQ and SAT are the only modules with real DSP so far (see
-        Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
-        Source/DSP/EqProcessor.h + docs/DSP_EQ.md, and
-        Source/DSP/SatProcessor.h + docs/DSP_SAT.md). Pitch, Panorama,
-        Reverb and Imager remain a strict passthrough - their parameters
-        exist and are DAW-automation compatible via APVTS, but do not yet
-        influence the audio signal.
+      - PREAMP, EQ, SAT and PITCH are the only modules with real DSP so far
+        (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
+        Source/DSP/EqProcessor.h + docs/DSP_EQ.md,
+        Source/DSP/SatProcessor.h + docs/DSP_SAT.md, and
+        Source/DSP/PitchProcessor.h + docs/DSP_PITCH.md). Panorama, Reverb
+        and Imager remain a strict passthrough - their parameters exist and
+        are DAW-automation compatible via APVTS, but do not yet influence
+        the audio signal.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -93,6 +95,7 @@ private:
     uni76::dsp::PreampProcessor preampProcessor;
     uni76::dsp::EqProcessor eqProcessor;
     uni76::dsp::SatProcessor satProcessor;
+    uni76::dsp::PitchProcessor pitchProcessor;
 
     // Cached raw parameter pointers (juce::AudioProcessorValueTreeState's
     // documented realtime-safe way to read a parameter's current value
@@ -100,6 +103,7 @@ private:
     std::atomic<float>* preampParameter = nullptr;
     std::atomic<float>* eqParameter = nullptr;
     std::atomic<float>* saturationParameter = nullptr;
+    std::atomic<float>* pitchParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };
