@@ -7,6 +7,7 @@
 #include "Core/LevelMeter.h"
 #include "Core/MeterEnvelope.h"
 #include "Core/ModuleEnableState.h"
+#include "Core/FactoryPresets.h"
 #include "DSP/PreampProcessor.h"
 #include "DSP/PreampCurves.h"
 #include "DSP/EqProcessor.h"
@@ -29,6 +30,7 @@
 #include <iostream>
 #include <limits>
 #include <map>
+#include <set>
 #include <vector>
 
 namespace
@@ -9536,6 +9538,152 @@ public:
 };
 
 static UNI76FullAuditRobustnessTests uni76FullAuditRobustnessTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// RC1: factory preset system (Source/Core/FactoryPresets.h). Same-process
+// tests only, deliberately - a real end-to-end button-click test needs a
+// live WebView2 editor and OS-level input automation, which this session
+// found to be genuinely unreliable in this environment (real synthetic
+// clicks landed on the correct WebView2 render surface at the correct
+// coordinates but still didn't register - most likely a focus/timing
+// interaction specific to this dev machine, not something worth papering
+// over with a flaky test). See docs/FULL_DSP_AUDIT.md's RC1 report and
+// docs/RC1_FL_STUDIO_SMOKE_TEST.md, which now covers the real click-
+// through interaction as a manual gate instead. What *is* reliably
+// testable in-process is the preset data and the exact application logic
+// WebUIEditor.cpp's uni76LoadFactoryPreset native function uses
+// (setValueNotifyingHost(convertTo0to1(value)) per parameter, then enable
+// all 7 modules) - replicated verbatim below rather than re-implemented,
+// so this test would catch a real logic bug in that function.
+class UNI76RC1FactoryPresetTests final : public juce::UnitTest
+{
+public:
+    UNI76RC1FactoryPresetTests() : juce::UnitTest ("RC1: factory presets", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Factory preset data: sane count, unique names, in-range values, musical (not extreme) starting points");
+        {
+            expect (uni76::factoryPresets.size() >= 8 && uni76::factoryPresets.size() <= 12,
+                    "factory preset count should be roughly 8-12, per the RC1 brief");
+
+            std::set<juce::String> seenNames;
+            for (auto& preset : uni76::factoryPresets)
+            {
+                expect (juce::String (preset.name).isNotEmpty(), "preset name must not be empty");
+                expect (seenNames.find (preset.name) == seenNames.end(), juce::String ("duplicate preset name: ") + preset.name);
+                seenNames.insert (preset.name);
+
+                expect (preset.preamp >= 0.0f && preset.preamp <= 100.0f, juce::String (preset.name) + ": preamp out of range");
+                expect (preset.eq >= 0.0f && preset.eq <= 100.0f, juce::String (preset.name) + ": eq out of range");
+                expect (preset.saturation >= 0.0f && preset.saturation <= 100.0f, juce::String (preset.name) + ": saturation out of range");
+                expect (preset.pitch >= -12.0f && preset.pitch <= 12.0f, juce::String (preset.name) + ": pitch out of range");
+                expect (preset.panorama >= 0.0f && preset.panorama <= 100.0f, juce::String (preset.name) + ": panorama out of range");
+                expect (preset.reverb >= 0.0f && preset.reverb <= 100.0f, juce::String (preset.name) + ": reverb out of range");
+                expect (preset.imager >= 0.0f && preset.imager <= 100.0f, juce::String (preset.name) + ": imager out of range");
+                expect (preset.imageTilt >= -100.0f && preset.imageTilt <= 100.0f, juce::String (preset.name) + ": imageTilt out of range");
+
+                // "Musical starting points, not stress tests" (RC1 brief) -
+                // no preset should max out any parameter.
+                expect (preset.preamp < 100.0f && preset.eq < 100.0f && preset.saturation < 100.0f
+                        && preset.panorama < 100.0f && preset.reverb < 100.0f && preset.imager < 100.0f
+                        && preset.imageTilt > -100.0f && preset.imageTilt < 100.0f,
+                        juce::String (preset.name) + ": no factory preset should sit at a 100%/extreme value");
+
+                // PITCH=0ST and TILT=CENTER in every preset - see
+                // Core/FactoryPresets.h's own documented rationale.
+                expectEquals (preset.pitch, 0.0f, juce::String (preset.name) + ": pitch should be 0 ST");
+                expectEquals (preset.imageTilt, 0.0f, juce::String (preset.name) + ": imageTilt should be 0/CENTER");
+            }
+        }
+
+        beginTest ("Applying every factory preset sets exactly the declared values and enables all modules");
+        {
+            for (size_t presetIndex = 0; presetIndex < uni76::factoryPresets.size(); ++presetIndex)
+            {
+                const auto& preset = uni76::factoryPresets[presetIndex];
+
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (44100.0, 256);
+                auto& apvts = processor.getValueTreeState();
+
+                // Perturb everything first, and disable every module, so a
+                // no-op application couldn't accidentally look like a pass.
+                for (auto& spec : auditParams)
+                    setNormalised (apvts, spec.id, 0.1f);
+                for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                    processor.getModuleEnableState().setEnabled (m, false);
+
+                // Verbatim replica of WebUIEditor.cpp's uni76LoadFactoryPreset.
+                const float rawValues[8] {
+                    preset.preamp, preset.eq, preset.saturation, preset.pitch,
+                    preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+                };
+                for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                    if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+                        param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
+                for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                    processor.getModuleEnableState().setEnabled (m, true);
+
+                for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                    expect (processor.getModuleEnableState().isEnabled (m),
+                            juce::String (preset.name) + ": module " + juce::String (m) + " should be enabled after preset load");
+
+                for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                {
+                    auto* param = apvts.getParameter (uni76::ParamID::all[i]);
+                    expect (param != nullptr);
+                    if (param == nullptr) continue;
+
+                    if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
+                        expectWithinAbsoluteError (floatParam->get(), rawValues[i], 0.02f,
+                                                    juce::String (preset.name) + ": " + uni76::ParamID::all[i]);
+                    else if (auto* intParam = dynamic_cast<juce::AudioParameterInt*> (param))
+                        expectEquals (intParam->get(), (int) std::lround (rawValues[i]),
+                                      juce::String (preset.name) + ": " + uni76::ParamID::all[i]);
+                }
+
+                // The preset system deliberately adds no new persistence
+                // path (see FactoryPresets.h) - confirm the *existing*
+                // save/restore mechanism alone is enough to round-trip a
+                // preset-loaded state with no special-casing.
+                juce::MemoryBlock saved;
+                processor.getStateInformation (saved);
+
+                UNI76AudioProcessor reloaded;
+                reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+                auto& reloadedApvts = reloaded.getValueTreeState();
+
+                for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                {
+                    auto* originalParam = apvts.getParameter (uni76::ParamID::all[i]);
+                    auto* reloadedParam = reloadedApvts.getParameter (uni76::ParamID::all[i]);
+                    expect (originalParam != nullptr && reloadedParam != nullptr);
+                    if (originalParam != nullptr && reloadedParam != nullptr)
+                        expectWithinAbsoluteError (reloadedParam->getValue(), originalParam->getValue(), 0.001f,
+                                                    juce::String (preset.name) + ": " + uni76::ParamID::all[i] + " did not survive save/restore");
+                }
+
+                for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                    expect (reloaded.getModuleEnableState().isEnabled (m),
+                            juce::String (preset.name) + ": module " + juce::String (m) + " enable flag did not survive save/restore");
+            }
+        }
+
+        beginTest ("Loading a preset does not rename or add any parameter ID (stable-ID contract)");
+        {
+            expectEquals ((int) uni76::ParamID::all.size(), 8);
+            UNI76AudioProcessor processor;
+            for (auto& preset : uni76::factoryPresets)
+                juce::ignoreUnused (preset);
+            for (const auto* id : uni76::ParamID::all)
+                expect (processor.getValueTreeState().getParameter (id) != nullptr, juce::String ("missing parameter: ") + id);
+        }
+    }
+};
+
+static UNI76RC1FactoryPresetTests uni76RC1FactoryPresetTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

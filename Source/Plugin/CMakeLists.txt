@@ -31,6 +31,7 @@ target_sources(UNI76
         ../Core/LevelMeter.h
         ../Core/ModuleEnableState.h
         ../Core/MeterEnvelope.h
+        ../Core/FactoryPresets.h
 
         ../Parameters/ParameterIDs.h
         ../Parameters/ParameterLayout.h
@@ -97,6 +98,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/aux_visuals.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/meters.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/module_power.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/header_controls.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76

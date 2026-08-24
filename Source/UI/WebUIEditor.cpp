@@ -3,6 +3,7 @@
 #include "Plugin/PluginProcessor.h"
 #include "Parameters/ParameterIDs.h"
 #include "Core/MeterEnvelope.h"
+#include "Core/FactoryPresets.h"
 
 namespace
 {
@@ -28,7 +29,8 @@ namespace
         juce::WebSliderRelay& imager,
         juce::WebSliderRelay& imageTilt,
         juce::WebControlParameterIndexReceiver& indexReceiver,
-        UNI76AudioProcessor& processor)
+        UNI76AudioProcessor& processor,
+        UNI76AudioProcessorEditor& editor)
     {
         using Options = juce::WebBrowserComponent::Options;
         using Completion = juce::WebBrowserComponent::NativeFunctionCompletion;
@@ -79,6 +81,61 @@ namespace
 
                     complete (juce::var (states));
                 })
+            // RC1 factory presets (see Core/FactoryPresets.h) - a preset is
+            // just a named set of values for the existing 8 parameters +
+            // the 7 module-enable flags, applied through the exact same
+            // setValueNotifyingHost()/ModuleEnableState::setEnabled() paths
+            // a user's own gesture already exercises. No new saved-state
+            // format, no new parameter.
+            .withNativeFunction ("uni76GetFactoryPresetNames",
+                [] (const juce::Array<juce::var>&, Completion complete)
+                {
+                    juce::Array<juce::var> names;
+                    for (auto& preset : uni76::factoryPresets)
+                        names.add (juce::String (preset.name));
+
+                    complete (juce::var (names));
+                })
+            .withNativeFunction ("uni76LoadFactoryPreset",
+                [&processor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    if (args.size() >= 1)
+                    {
+                        const auto index = (int) args[0];
+                        if (index >= 0 && index < (int) uni76::factoryPresets.size())
+                        {
+                            const auto& preset = uni76::factoryPresets[(size_t) index];
+                            auto& apvts = processor.getValueTreeState();
+
+                            const float rawValues[8] {
+                                preset.preamp, preset.eq, preset.saturation, preset.pitch,
+                                preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+                            };
+
+                            for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                            {
+                                if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+                                    param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
+                            }
+
+                            // Every factory preset ships with all modules
+                            // enabled (see Core/FactoryPresets.h's own
+                            // rationale) - a preset is a starting sound,
+                            // not a workflow shortcut for muting modules.
+                            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                                processor.getModuleEnableState().setEnabled (i, true);
+                        }
+                    }
+
+                    complete (juce::var());
+                })
+            // RC1 A/B (see WebUIEditor.h's ABSnapshot comment) - session-
+            // local only, not persisted.
+            .withNativeFunction ("uni76ToggleAB",
+                [&editor] (const juce::Array<juce::var>&, Completion complete)
+                {
+                    complete (juce::var (editor.toggleAB()));
+                })
             .withResourceProvider (&uni76::ui::getWebResource);
     }
 }
@@ -95,7 +152,7 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
                                     panoramaRelay, reverbRelay, imagerRelay, imageTiltRelay,
-                                    controlParameterIndexReceiver, p)),
+                                    controlParameterIndexReceiver, p, *this)),
       preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
                              preampRelay, processor.getValueTreeState().undoManager),
       eqAttachment         (*processor.getValueTreeState().getParameter (uni76::ParamID::eq),
@@ -133,9 +190,54 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     // and forwards a smoothed value to the WebView. Purely a UI concern;
     // the audio thread never waits on or calls into this.
     startTimerHz (30);
+
+    // A/B starts with both slots identical to whatever the processor
+    // already holds (fresh defaults, or a just-loaded state) - the first
+    // toggle simply flips to an editable copy of the same sound, not to
+    // silence/defaults.
+    abSlotA = abSlotB = captureSnapshot();
 }
 
 UNI76AudioProcessorEditor::~UNI76AudioProcessorEditor() = default;
+
+UNI76AudioProcessorEditor::ABSnapshot UNI76AudioProcessorEditor::captureSnapshot() const
+{
+    ABSnapshot snapshot;
+    auto& apvts = processor.getValueTreeState();
+
+    for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+        if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+            snapshot.values[i] = param->getValue();
+
+    for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+        snapshot.moduleEnabled[(size_t) i] = processor.getModuleEnableState().isEnabled (i);
+
+    return snapshot;
+}
+
+void UNI76AudioProcessorEditor::applySnapshot (const ABSnapshot& snapshot)
+{
+    auto& apvts = processor.getValueTreeState();
+
+    for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+        if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+            param->setValueNotifyingHost (snapshot.values[i]);
+
+    for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+        processor.getModuleEnableState().setEnabled (i, snapshot.moduleEnabled[(size_t) i]);
+}
+
+juce::String UNI76AudioProcessorEditor::toggleAB()
+{
+    // Capture whatever the user has tweaked since the last toggle into
+    // the slot that's *currently* active, then switch to the other one -
+    // so neither slot silently loses in-progress edits.
+    (abActiveIsA ? abSlotA : abSlotB) = captureSnapshot();
+    abActiveIsA = ! abActiveIsA;
+    applySnapshot (abActiveIsA ? abSlotA : abSlotB);
+
+    return abActiveIsA ? "A" : "B";
+}
 
 void UNI76AudioProcessorEditor::resized()
 {

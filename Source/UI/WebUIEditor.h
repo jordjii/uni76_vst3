@@ -3,6 +3,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <juce_gui_extra/juce_gui_extra.h>
 
+#include <array>
+
 class UNI76AudioProcessor;
 
 /*
@@ -35,8 +37,34 @@ public:
 
     int getControlParameterIndex (Component&) override;
 
+    // ---- A/B (RC1 minimal implementation - see docs/FULL_DSP_AUDIT.md's
+    // RC1 report) - two in-memory snapshots of the 8 parameters + 7
+    // module-enable flags, live only for this editor's lifetime. Not part
+    // of getStateInformation()/setStateInformation() and not persisted -
+    // a session-local comparison aid, the same way a DAW's own undo
+    // history isn't saved into the project either. Toggling captures the
+    // currently-active slot's live values (so in-progress edits aren't
+    // lost) before applying the other slot. Public (not just called from
+    // this class) because the native-function bridge lambda in
+    // WebUIEditor.cpp's makeWebViewOptions() is a free function, not a
+    // member - the same reason getControlParameterIndex() above is a
+    // public override rather than private.
+    juce::String toggleAB();
+
 private:
     void timerCallback() override;
+
+    struct ABSnapshot
+    {
+        std::array<float, 8> values {};
+        std::array<bool, 7> moduleEnabled {};
+    };
+
+    ABSnapshot captureSnapshot() const;
+    void applySnapshot (const ABSnapshot&);
+
+    ABSnapshot abSlotA, abSlotB;
+    bool abActiveIsA = true;
     // Only ever navigates to our own embedded resource root - the frontend
     // cannot be redirected to an external site.
     struct SinglePageBrowser final : juce::WebBrowserComponent

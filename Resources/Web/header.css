@@ -67,6 +67,11 @@
   display: flex;
   align-items: center;
   gap: var(--space-sm);
+  position: relative;
+}
+
+.header__btn--preset {
+  position: relative;
 }
 
 /* Cream-outline style: no filled button chrome, just an outline + cream
@@ -105,4 +110,44 @@
 .header__btn:not(:disabled):focus-visible {
   outline: 2px solid var(--focus-ring-on-dark);
   outline-offset: 1px;
+}
+
+/* RC1 factory-preset dropdown - flat list, same cream-outline-on-dark
+   language as the header buttons themselves (no glass/glow/shadow-heavy
+   chrome, matching the project's "no 3D" UI rule). Anchored to
+   .header__controls (the nearest positioned ancestor), right-aligned
+   under the PRESET button. */
+.preset-menu {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  margin-top: var(--space-xs);
+  min-width: 12rem;
+  max-height: 60vh;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-header);
+  border: 1.5px solid var(--control-outline);
+  border-radius: var(--radius-sm);
+  z-index: 10;
+}
+
+.preset-menu__item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  font-size: var(--fs-header-btn);
+  font-weight: 600;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-primary);
+  padding: 0.6em 1em;
+  border: none;
+  background: transparent;
+}
+
+.preset-menu__item:hover,
+.preset-menu__item:focus-visible {
+  background: rgba(255, 255, 255, 0.08);
+  outline: none;
 }
