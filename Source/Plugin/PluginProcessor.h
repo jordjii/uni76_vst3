@@ -62,6 +62,15 @@ public:
     bool acceptsMidi() const override;
     bool producesMidi() const override;
     bool isMidiEffect() const override;
+
+    /** VERB is the only module with a genuine decaying tail (the FDN
+        plate tank) - every other module is a pure gain/filter morph or
+        fixed-latency processing chain, not a source of output that
+        continues after input stops. Computed dynamically from VERB's
+        current wet amount and enabled state (see VerbCurves.h's
+        verbDecaySeconds) rather than a fixed constant, so a host doesn't
+        truncate a real, audible tail at DEEP/100% - see docs/DSP_VERB.md
+        and docs/FULL_DSP_AUDIT.md's "VERB tail" section. */
     double getTailLengthSeconds() const override;
 
     //==============================================================================

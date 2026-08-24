@@ -164,7 +164,19 @@ const juce::String UNI76AudioProcessor::getName() const
 bool UNI76AudioProcessor::acceptsMidi() const     { return false; }
 bool UNI76AudioProcessor::producesMidi() const    { return false; }
 bool UNI76AudioProcessor::isMidiEffect() const    { return false; }
-double UNI76AudioProcessor::getTailLengthSeconds() const { return 0.0; }
+double UNI76AudioProcessor::getTailLengthSeconds() const
+{
+    const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
+    const auto reverbEnabled = moduleEnableState.isEnabled (5); // index 5 = reverb
+
+    // verbWetGain(0) == 0.0 exactly (VerbCurves.h) - at reverbWet == 0 there
+    // is no wet signal at all, so there is nothing decaying regardless of
+    // what verbDecaySeconds(0) itself evaluates to.
+    if (! reverbEnabled || reverbWet <= 0.0f)
+        return 0.0;
+
+    return (double) uni76::dsp::verbDecaySeconds (reverbWet);
+}
 
 //==============================================================================
 int UNI76AudioProcessor::getNumPrograms()                            { return 1; }
