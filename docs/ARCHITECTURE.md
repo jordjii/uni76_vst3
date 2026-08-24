@@ -9,7 +9,11 @@ sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
 [docs/DSP_VERB.md](DSP_VERB.md)) + IMAGE DSP (see
 [docs/DSP_IMAGE.md](DSP_IMAGE.md)). All 7 modules now have real DSP.
 See root [CLAUDE.md](../CLAUDE.md) for the living project log and the
-rules this architecture exists to enforce.
+rules this architecture exists to enforce, and
+[docs/FULL_DSP_AUDIT.md](FULL_DSP_AUDIT.md) for the full pre-release
+technical audit (signal path, parameter contract, migration, gain
+staging, stress matrices, spatial integration, robustness, GUI, and real
+host validation) run once every module's DSP was frozen.
 
 ## Layers
 
@@ -208,6 +212,12 @@ for decorrelated stereo width), an analog return stage (tiny tanh +
 soft bandwidth ceiling), and a second, lighter 350Hz safety highpass on
 the wet output. Adds no latency (pre-delay/tank recirculation are
 wet-path effects, not a lookahead on the direct signal).
+`UNI76AudioProcessor::getTailLengthSeconds()` reports this module's own
+current RT60 (`VerbCurves.h`'s `verbDecaySeconds()`, evaluated at the
+current `reverb` value, `0` if disabled or at 0%) rather than a fixed
+constant - a real bug (always reporting `0`, found in the full pre-
+release audit, see docs/FULL_DSP_AUDIT.md) that would have made a host
+cut VERB's tail off immediately on bounce/clip-end even at DEEP/100%.
 
 `Source/DSP/ImagerProcessor.*` implements `07 IMAGE / STEREO IMAGE` - see
 docs/DSP_IMAGE.md for the full topology and measured data. The one

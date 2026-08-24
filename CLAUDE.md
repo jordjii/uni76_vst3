@@ -805,6 +805,74 @@ MSVC 19.51):
   persistence path needed. Screenshots at
   `docs/screenshots/image-pad-{center,wide-center,wide-left,wide-right}.png`.
 
+- **Full pre-release technical audit** (see
+  [docs/FULL_DSP_AUDIT.md](docs/FULL_DSP_AUDIT.md) for the complete
+  37-section report) - a verification-only pass across the whole plugin
+  as one commercial VST3, run from commit `39ab854` with every module's
+  DSP and the current UI frozen: signal path/parameter contract/defaults
+  reconfirmed via a real VST3 host; every real historical state-schema
+  version walked through migration with an *audible*, not just numeric,
+  check (an old project genuinely can't gain pitch-shift/mono-ness/PAN
+  motion/VERB/IMAGE/FIELD bias on load); a genuine technical-neutral
+  state defined and measured (PREAMP/SAT/PITCH/PAN/VERB/IMAGE/TILT at 0,
+  EQ disabled rather than given a fake "flat" value) - found to be
+  *near-* rather than *bit-*transparent by design (PREAMP/SAT's own
+  nonzero minimum drive-gain floors, `preampDriveGainMin=0.05`/
+  `satDriveGainMin=0.08`, already present before this audit); full-chain
+  gain staging across 8 source types x 5 levels; a 65-combination
+  extreme parameter matrix (no NaN/Inf/poisoned state at any
+  combination); hot-nonlinear input bounded at every tested case;
+  integrated low-end/high-end stress confirming PITCH accuracy holds and
+  no aliasing/fold-back explosion, while honestly documenting that
+  PAN=100%+VERB=100%+IMAGE=100%+TILT=+-100% *simultaneously* (a combined
+  extreme no single module's own tuning specifically targeted) shows
+  more Side/decorrelation than any one module alone - VERB's own
+  reverb tail is itself genuinely decorrelated stereo by design above
+  ~120-160Hz; PITCH full-chain-vs-alone regression within a documented
+  tolerance; PAN+IMAGE+FIELD integration confirming PAN's LFO period/
+  motion survive IMAGE/TILT unperturbed and TILT alone never creates new
+  motion; true mono-bus processing confirmed to leave TILT bit-identical-
+  neutral (no second channel to bias between); a full latency table
+  across all 6 supported sample rates cross-checked between the real
+  host and the in-process processor (identical); module-bypass timing,
+  automation torture (all 8 params + all 7 enable flags simultaneously),
+  NaN/Inf-boundary robustness, prepare/process/release lifecycle across
+  rates and all 7 standard block sizes, a zero-dynamic-allocation proof
+  for `processBlock()` under the heaviest exercised configuration, a
+  Release CPU benchmark (worst case ~5.5x faster than real time on this
+  machine), bit-identical determinism across two independent runs, and
+  16/8-instance independence (in-process and real-VST3-hosted) all
+  passed. **One real, commercial-release-blocking bug found and fixed**:
+  `UNI76AudioProcessor::getTailLengthSeconds()` unconditionally returned
+  `0.0` regardless of VERB's actual wet amount, meaning a host would cut
+  VERB's audible tail off immediately (e.g. on bounce, or when a clip
+  ends) even at DEEP/100% (~6s target RT60) - fixed to read the same
+  `reverb`/`reverbEnabled` state `processBlock()` already uses and return
+  `VerbCurves.h`'s own `verbDecaySeconds()`, verified via both the
+  in-process test suite and a real VST3 host (`0s -> 2.6s -> 6.0s` at
+  VERB `0/50/100%`, matching `verbDecayAnchors` exactly) - a host-
+  metadata fix that changes no audio sample, so it didn't require the
+  "proven regression" DSP-change protocol below. GUI re-verified via
+  real WebView2 screenshots at all 3 sizes plus host-automation-sync,
+  two-simultaneous-editors independence, and state-reopen-from-fresh-
+  instance. Windows DLL dependencies and bundle contents both confirmed
+  clean (no debug/dev-only DLL, no `WebView2Loader.dll` per the existing
+  static-link design, bundle contains only the binary + moduleinfo.json).
+  WebView native-bridge reviewed and confirmed to expose exactly the two
+  documented functions with no filesystem/shell/network access. Official
+  Tracktion `pluginval` was built from source this session (not a
+  production dependency) and confirmed functional against a real
+  third-party plugin, but does not currently complete against UNI 76 for
+  reasons not fully root-caused this session (see
+  docs/FULL_DSP_AUDIT.md's section 36) - flagged as an open follow-up,
+  not a pass or a known defect. No third-party DAW smoke test was
+  performed (no desktop-GUI-automation tool available this session,
+  despite FL Studio 21 being genuinely installed) - the mandatory real-
+  VST3-host harness already covers the same underlying hosting API. No
+  new effects, no UI redesign, no new listening WAVs, and no presets/
+  installer/signing/licensing/release work were started, per the audit's
+  own scope.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

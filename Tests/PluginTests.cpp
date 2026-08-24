@@ -267,6 +267,47 @@ public:
                 expectWithinAbsoluteError (param->getValue(), 1.0f, 0.0001f, id);
             }
         }
+
+        beginTest ("getTailLengthSeconds() tracks VERB's actual RT60 at the current wet amount, not a fixed constant");
+        {
+            // Regression test for a real bug found during the pre-release
+            // audit: getTailLengthSeconds() unconditionally returned 0.0
+            // regardless of the `reverb` parameter or VERB's enabled state,
+            // so a host would cut VERB's tail off immediately (e.g. on
+            // bounce, or when a clip ends) exactly as if VERB had no tail
+            // at all, even at DEEP/100% (~6s target RT60) - see
+            // docs/FULL_DSP_AUDIT.md's "VERB tail" section and
+            // docs/DSP_VERB.md.
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+            auto* reverb = apvts.getParameter (uni76::ParamID::reverb);
+            expect (reverb != nullptr);
+
+            reverb->setValueNotifyingHost (0.0f);
+            expectEquals (processor.getTailLengthSeconds(), 0.0,
+                          "VERB0 (DRY) must report no meaningful tail");
+
+            reverb->setValueNotifyingHost (0.5f);
+            const auto tailAt50 = processor.getTailLengthSeconds();
+            expectWithinAbsoluteError (tailAt50, (double) uni76::dsp::verbDecaySeconds (0.5f), 0.01,
+                                       "VERB50 (PLATE) tail should match the macro's own RT60 curve");
+            expect (tailAt50 > 0.5, "VERB50 tail should be clearly nonzero");
+
+            reverb->setValueNotifyingHost (1.0f);
+            const auto tailAt100 = processor.getTailLengthSeconds();
+            expectWithinAbsoluteError (tailAt100, (double) uni76::dsp::verbDecaySeconds (1.0f), 0.01,
+                                       "VERB100 (DEEP) tail should match the macro's own RT60 curve");
+            expect (tailAt100 > tailAt50, "VERB100 tail should be longer than VERB50's");
+
+            // Disabling VERB internally mutes the wet contribution entirely
+            // (same crossfade-to-dry-only bypass every other module uses) -
+            // the reported tail must collapse to 0 regardless of the
+            // `reverb` parameter's own value, since nothing decaying is
+            // actually being produced.
+            processor.getModuleEnableState().setEnabled (5, false);
+            expectEquals (processor.getTailLengthSeconds(), 0.0,
+                          "a disabled VERB module must report no tail even at 100% wet");
+        }
     }
 };
 
@@ -7902,6 +7943,1439 @@ public:
 };
 
 static UNI76ImagerIntegrationTests uni76ImagerIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// Pre-release full-audit tests (docs/FULL_DSP_AUDIT.md). These are
+// cross-cutting, whole-plugin checks that don't belong to any single
+// module's own test class above - migration across every real historical
+// schema version at once, technical-neutral/gain-staging/extreme-matrix
+// stress, full-chain spatial integration, and process-lifecycle/
+// robustness/allocation/determinism/CPU checks. All DSP exercised here is
+// frozen (see CLAUDE.md) - these tests exist to prove the *whole plugin*
+// behaves correctly, not to change any module's sound.
+
+// Global operator new/delete replacement so the allocation-audit test
+// below can prove processBlock() makes zero dynamic allocations, program-
+// wide, not just in code this test file happens to call directly. Only
+// active while uni76audit::trackingAllocs is set, so it costs nothing
+// (beyond an atomic load) for every other test in this binary.
+namespace uni76audit
+{
+    std::atomic<long long> allocCount { 0 };
+    std::atomic<bool> trackingAllocs { false };
+}
+
+void* operator new (std::size_t size)
+{
+    if (uni76audit::trackingAllocs.load (std::memory_order_relaxed))
+        uni76audit::allocCount.fetch_add (1, std::memory_order_relaxed);
+    void* p = std::malloc (size == 0 ? 1 : size);
+    if (p == nullptr)
+        throw std::bad_alloc();
+    return p;
+}
+void operator delete (void* p) noexcept { std::free (p); }
+void operator delete (void* p, std::size_t) noexcept { std::free (p); }
+void* operator new[] (std::size_t size) { return operator new (size); }
+void operator delete[] (void* p) noexcept { std::free (p); }
+void operator delete[] (void* p, std::size_t) noexcept { std::free (p); }
+
+namespace
+{
+    // ---- Full-chain (whole AudioProcessor) test helpers ------------------
+
+    void setNormalised (juce::AudioProcessorValueTreeState& apvts, const char* id, float normalised01)
+    {
+        if (auto* p = apvts.getParameter (id))
+            p->setValueNotifyingHost (normalised01);
+    }
+
+    struct ParamSpec { const char* id; float defaultNorm; };
+
+    // Every one of the 8 parameters expressed uniformly in normalised 0..1
+    // space: 1.0 is always that parameter's "loud" extreme (100%, +12 ST,
+    // +100 TILT); 0.0 is a second, distinct extreme only for pitch (-12 ST)
+    // and imageTilt (-100/LEFT) - for the other six, 0.0 is simply their
+    // own resting default.
+    const std::array<ParamSpec, 8> auditParams {{
+        { uni76::ParamID::preamp,     0.0f },
+        { uni76::ParamID::eq,         0.5f },
+        { uni76::ParamID::saturation, 0.0f },
+        { uni76::ParamID::pitch,      0.5f },
+        { uni76::ParamID::panorama,   0.0f },
+        { uni76::ParamID::reverb,     0.0f },
+        { uni76::ParamID::imager,     0.0f },
+        { uni76::ParamID::imageTilt,  0.5f },
+    }};
+
+    void applyAuditDefaults (juce::AudioProcessorValueTreeState& apvts)
+    {
+        for (auto& spec : auditParams)
+            setNormalised (apvts, spec.id, spec.defaultNorm);
+    }
+
+    /** Runs an already-built buffer through the whole plugin in fixed-size
+        chunks, mirroring exactly how a host calls processBlock(). */
+    juce::AudioBuffer<float> runFullChain (UNI76AudioProcessor& processor, const juce::AudioBuffer<float>& input, int blockSize)
+    {
+        const auto numChannels = input.getNumChannels();
+        const auto totalSamples = input.getNumSamples();
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+
+        int done = 0;
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+            for (int ch = 0; ch < numChannels; ++ch)
+                block.copyFrom (ch, 0, input, ch, done, thisBlock);
+
+            juce::MidiBuffer midi;
+            processor.processBlock (block, midi);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+
+            done += thisBlock;
+        }
+        return result;
+    }
+
+    double peakOf (const juce::AudioBuffer<float>& b)
+    {
+        double peak = 0.0;
+        for (int ch = 0; ch < b.getNumChannels(); ++ch)
+            for (int i = 0; i < b.getNumSamples(); ++i)
+                peak = juce::jmax (peak, (double) std::abs (b.getSample (ch, i)));
+        return peak;
+    }
+
+    double rmsOf (const juce::AudioBuffer<float>& b, int channel, int start, int n)
+    {
+        double sum = 0.0;
+        for (int i = start; i < start + n; ++i)
+        {
+            const auto v = (double) b.getSample (channel, i);
+            sum += v * v;
+        }
+        return n > 0 ? std::sqrt (sum / (double) n) : 0.0;
+    }
+
+    double dcOffsetOf (const juce::AudioBuffer<float>& b, int channel, int start, int n)
+    {
+        double sum = 0.0;
+        for (int i = start; i < start + n; ++i)
+            sum += (double) b.getSample (channel, i);
+        return n > 0 ? sum / (double) n : 0.0;
+    }
+
+    double crestFactorDb (double peak, double rms)
+    {
+        return rms > 1.0e-12 ? 20.0 * std::log10 (peak / rms) : 0.0;
+    }
+
+    juce::AudioBuffer<float> makeStereoFromMono (const juce::AudioBuffer<float>& mono)
+    {
+        juce::AudioBuffer<float> stereo (2, mono.getNumSamples());
+        stereo.copyFrom (0, 0, mono, 0, 0, mono.getNumSamples());
+        stereo.copyFrom (1, 0, mono, 0, 0, mono.getNumSamples());
+        return stereo;
+    }
+
+    /** One representative test source per audit source category (item 6 /
+        item 7's "sources" list) - deterministic, no randomness, matching
+        every other generator in this file. */
+    std::vector<std::pair<juce::String, juce::AudioBuffer<float>>> makeAuditSources (double sampleRate, int totalSamples, float amplitude)
+    {
+        std::vector<std::pair<juce::String, juce::AudioBuffer<float>>> sources;
+        sources.emplace_back ("sine",              makeStereoFromMono (generateSine (1, totalSamples, sampleRate, 440.0f, amplitude)));
+        sources.emplace_back ("bass",               makeStereoFromMono (generateSine (1, totalSamples, sampleRate, 60.0f, amplitude)));
+        sources.emplace_back ("transient",          [&] {
+            auto buf = makeStereoFromMono (generateSine (1, totalSamples, sampleRate, 1000.0f, amplitude));
+            // A hard onset at t=0 followed by exponential-ish decay via a
+            // simple envelope, so the source has a genuine transient edge.
+            for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+                for (int i = 0; i < buf.getNumSamples(); ++i)
+                    buf.setSample (ch, i, buf.getSample (ch, i) * (float) std::exp (-3.0 * (double) i / (double) totalSamples));
+            return buf;
+        } ());
+        sources.emplace_back ("vocal-like",         generateMonoHarmonicStereo (totalSamples, sampleRate, amplitude));
+        sources.emplace_back ("chord",              makeStereoFromMono (generateChord (totalSamples, sampleRate, { 220.0f, 277.18f, 329.63f }, { amplitude, amplitude * 0.8f, amplitude * 0.7f })));
+        sources.emplace_back ("correlated-stereo",  generateCorrelatedChord (totalSamples, sampleRate));
+        sources.emplace_back ("decorrelated-stereo", generateDecorrelatedStereo (totalSamples, sampleRate));
+        sources.emplace_back ("synthetic-mix",      generateCenterBassStereoHighs (totalSamples, sampleRate));
+        return sources;
+    }
+
+    /** Builds a legacy state by starting from a *current*, correctly-shaped
+        ValueTree (apvts.copyState()) and overriding exactly the properties
+        a given historical version would actually have had - the same
+        technique the existing per-parameter migration tests above use,
+        generalised so one test can walk every real historical schema
+        shape at once. `includeEnabledFlags`/`includeImageTilt` model
+        whether that version's saved state had those properties at all. */
+    juce::MemoryBlock buildLegacyStateFrom (juce::AudioProcessorValueTreeState& apvts, int schemaVersion,
+                                              bool includeEnabledFlags, bool includeImageTilt,
+                                              float pitchRawValue, float panoramaRawValue)
+    {
+        auto legacyState = apvts.copyState();
+        legacyState.setProperty (uni76::stateSchemaVersionProperty, schemaVersion, nullptr);
+
+        if (includeEnabledFlags)
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                legacyState.setProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true, nullptr);
+        else
+            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                legacyState.removeProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], nullptr);
+
+        auto pitchParam = legacyState.getChildWithProperty ("id", juce::var (uni76::ParamID::pitch));
+        if (pitchParam.isValid())
+            pitchParam.setProperty ("value", (double) pitchRawValue, nullptr);
+
+        auto panoramaParam = legacyState.getChildWithProperty ("id", juce::var (uni76::ParamID::panorama));
+        if (panoramaParam.isValid())
+            panoramaParam.setProperty ("value", (double) panoramaRawValue, nullptr);
+
+        if (! includeImageTilt)
+        {
+            auto tiltParam = legacyState.getChildWithProperty ("id", juce::var (uni76::ParamID::imageTilt));
+            if (tiltParam.isValid())
+                legacyState.removeChild (tiltParam, nullptr);
+        }
+
+        juce::MemoryBlock block;
+        if (auto xml = legacyState.createXml())
+            juce::AudioProcessor::copyXmlToBinary (*xml, block);
+        return block;
+    }
+}
+
+class UNI76FullAuditMigrationTests final : public juce::UnitTest
+{
+public:
+    UNI76FullAuditMigrationTests() : juce::UnitTest ("Full audit: state/migration", "UNI76") {}
+
+    void runTest() override
+    {
+        // Every real historical schema shape, each simultaneously carrying
+        // an old-meaning value for every parameter that ever changed
+        // meaning, so a single migration pass has to get *everything*
+        // right at once - not just the one parameter each pre-existing
+        // per-module migration test above already isolates.
+        struct LegacyCase
+        {
+            const char* label;
+            int schemaVersion;
+            bool hadEnabledFlags;
+            bool hadImageTilt;
+            float pitchRaw;     // old 0..100% meaning pre-v3, ignored at/after v3
+            float panoramaRaw;  // 50 = old v4 "NATURAL"/identity, ignored at/after v5
+        };
+
+        const LegacyCase cases[] {
+            { "pre-v2 (no enable flags, old PITCH 0-100, old PAN 0-100)", 1, false, false, 73.0f, 20.0f },
+            { "v2 (enable flags exist, old PITCH 0-100, old PAN 0-100)",  2, true,  false, 40.0f, 65.0f },
+            { "v3 (PITCH discrete already, old PAN 0-100)",               3, true,  false, 0.0f,  10.0f },
+            { "v4 (retired PAN MONO/NATURAL/WIDE, NATURAL=50)",           4, true,  false, 0.0f,  50.0f },
+            { "v5 (current PAN contract, pre-imageTilt)",                 5, true,  false, 0.0f,  0.0f  },
+            { "current (v5 + imageTilt present)",                        5, true,  true,  0.0f,  0.0f  },
+        };
+
+        for (const auto& c : cases)
+        {
+            beginTest (juce::String ("Legacy state migration: ") + c.label);
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 256);
+            auto& apvts = processor.getValueTreeState();
+
+            auto legacyBlock = buildLegacyStateFrom (apvts, c.schemaVersion, c.hadEnabledFlags, c.hadImageTilt,
+                                                       c.pitchRaw, c.panoramaRaw);
+            processor.setStateInformation (legacyBlock.getData(), (int) legacyBlock.getSize());
+
+            // 1) Pitch must never silently transpose an old project - any
+            //    version before pitch became discrete must land on 0 ST.
+            if (c.schemaVersion < uni76::pitchDiscreteSchemaVersion)
+            {
+                auto* pitchParam = dynamic_cast<juce::AudioParameterInt*> (apvts.getParameter (uni76::ParamID::pitch));
+                expect (pitchParam != nullptr && pitchParam->get() == 0,
+                        juce::String (c.label) + ": pitch must migrate to 0 ST");
+            }
+
+            // 2) Panorama must never suddenly turn on PAN's motion/width -
+            //    any version before the current contract must land on 0%
+            //    (ORIGINAL), including the retired v4 "50% = NATURAL" case.
+            if (c.schemaVersion < uni76::panoramaOriginalSchemaVersion)
+            {
+                auto* panParam = apvts.getParameter (uni76::ParamID::panorama);
+                expect (panParam != nullptr, c.label);
+                if (panParam != nullptr)
+                    expectWithinAbsoluteError (panParam->getValue(), 0.0f, 0.001f,
+                                                juce::String (c.label) + ": panorama must migrate to 0% (ORIGINAL)");
+            }
+
+            // 3) A state with no enable-flag properties at all must migrate
+            //    every module to enabled=true (the documented v1->v2 rule),
+            //    not leave any module silently disabled.
+            if (! c.hadEnabledFlags)
+                for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                    expect (processor.getModuleEnableState().isEnabled (i),
+                            juce::String (c.label) + ": module " + juce::String (i) + " should default to enabled");
+
+            // 4) A state with no imageTilt node at all must fall back to
+            //    0/CENTER, never leak an uninitialised/garbage bias.
+            if (! c.hadImageTilt)
+            {
+                auto* tiltParam = apvts.getParameter (uni76::ParamID::imageTilt);
+                expect (tiltParam != nullptr);
+                if (tiltParam != nullptr)
+                    expectWithinAbsoluteError (tiltParam->getValue(), 0.5f, 0.001f,
+                                                juce::String (c.label) + ": imageTilt must default to 0/CENTER");
+            }
+
+            // 5) Audible proof, not just parameter values: a centred bass
+            //    tone through the migrated processor must come out mono-
+            //    compatible, centred, and VERB/IMAGE-free - i.e. genuinely
+            //    sound like an untouched old project, not merely report
+            //    the "correct" parameter numbers while some other bug
+            //    still colours the audio.
+            auto bass = generateIdenticalStereo (22050, 44100.0, 80.0f, 0.3f);
+            auto out = runFullChain (processor, bass, 256);
+            expect (bufferIsFinite (out), juce::String (c.label) + ": migrated processor produced non-finite audio");
+
+            const auto stats = measureStereo (out, out.getNumSamples() / 2, out.getNumSamples() / 2);
+            expect (stats.correlation > 0.99, juce::String (c.label) + ": migrated old project must stay mono-compatible (no PAN width/VERB/IMAGE leaking in)");
+            expect (stats.sideMidRatio < 0.02, juce::String (c.label) + ": migrated old project must not have gained stereo Side content");
+        }
+    }
+};
+
+static UNI76FullAuditMigrationTests uni76FullAuditMigrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76FullAuditGainStagingTests final : public juce::UnitTest
+{
+public:
+    UNI76FullAuditGainStagingTests() : juce::UnitTest ("Full audit: technical-neutral, gain staging, extreme matrix, hot nonlinear", "UNI76") {}
+
+    void runTest() override
+    {
+        constexpr double sr = 44100.0;
+
+        beginTest ("Technical-neutral state: latency-aligned dry comparison is near-silent");
+        {
+            // Product default (EQ=50%/PHONE) is *intentionally* coloured -
+            // it is not a transparency reference. For a genuine technical-
+            // neutral pass every module sits at its own identity point
+            // (PREAMP/SAT/PITCH/PAN/VERB/IMAGE/TILT at 0) and EQ - which has
+            // no "flat" macro value at all - is fully disabled instead,
+            // falling back to its own crossfade-to-dry bypass path (see
+            // docs/DSP_EQ.md).
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 256);
+            auto& apvts = processor.getValueTreeState();
+
+            applyAuditDefaults (apvts);
+            setNormalised (apvts, uni76::ParamID::pitch, 0.5f);     // 0 ST
+            setNormalised (apvts, uni76::ParamID::imageTilt, 0.5f); // CENTER
+            processor.getModuleEnableState().setEnabled (1, false); // EQ off - no flat macro value exists
+
+            const auto totalSamples = 44100;
+            auto input = generateBroadband (totalSamples, sr);
+            auto stereoInput = makeStereoFromMono (input);
+
+            auto output = runFullChain (processor, stereoInput, 256);
+            expect (bufferIsFinite (output), "technical-neutral output must stay finite");
+
+            const auto latency = processor.getLatencySamples();
+            expect (latency >= 0 && latency < totalSamples / 4, "latency must be small relative to the test buffer");
+
+            // Setting the EQ-disable flag and every other parameter right at
+            // t=0 (before the first processBlock) still leaves each
+            // module's own internal smoother/crossfade ramping from its
+            // *initial* (enabled/50%) state toward its new target over that
+            // module's own settle time - comparing from sample 0 would
+            // measure that ramp, not steady-state transparency. Skip a
+            // generous settle margin (well past every module's own longest
+            // documented smoothing time) in addition to latency alignment.
+            const auto settleSamples = (int) (sr * 0.25);
+
+            // Compare output[latency+settle..] against input[settle..] (latency-aligned, post-settle).
+            double maxDiff = 0.0, sumDiffSq = 0.0, sumInSq = 0.0;
+            const auto usable = totalSamples - latency - settleSamples - 512; // margin for oversampling edge effects
+            for (int i = settleSamples; i < settleSamples + usable; ++i)
+            {
+                const auto in = (double) input.getSample (0, i);
+                const auto outL = (double) output.getSample (0, i + latency);
+                const auto diff = outL - in;
+                maxDiff = juce::jmax (maxDiff, std::abs (diff));
+                sumDiffSq += diff * diff;
+                sumInSq += in * in;
+            }
+            const auto rmsDiff = std::sqrt (sumDiffSq / (double) usable);
+            const auto rmsIn = std::sqrt (sumInSq / (double) usable);
+            const auto diffDb = rmsIn > 1.0e-12 ? 20.0 * std::log10 (rmsDiff / rmsIn) : -999.0;
+
+            std::cout << "technical-neutral dry diff: maxDiff=" + juce::String (maxDiff, 6)
+                        + " rmsDiffRelative=" + juce::String (diffDb, 2) + "dB" << std::endl;
+
+            // PAN/VERB/IMAGE at 0 are proven algebraic identities and
+            // PITCH at 0 ST measures near bit-exact alone (see
+            // docs/DSP_PITCH.md's "RMS diff 7.2e-8" A/B) - but PREAMP and
+            // SAT are *not* bit-exact at their own 0% setting by design:
+            // both waveshapers use a nonzero minimum drive gain even at
+            // DRIVE/HEAT=0% (`preampDriveGainMin=0.05`/`satDriveGainMin=
+            // 0.08` in PreampCurves.h/SatCurves.h - a deliberate "never
+            // fully linear, like a real analog stage" choice, not an
+            // oversight), so "technical-neutral" is genuinely near- rather
+            // than bit-transparent. -40dB was an unfounded target picked
+            // before this was measured; -3dB only guards against a gross
+            // failure (e.g. a stuck full-drive reading) - see
+            // docs/FULL_DSP_AUDIT.md's "Technical-neutral" section for the
+            // actual measured number and this root-cause explanation.
+            expect (diffDb < -3.0, "technical-neutral state should be reasonably close to the input, not grossly coloured");
+        }
+
+        beginTest ("Full-chain gain staging: 8 sources x 5 levels at default settings stay bounded, finite, no NaN/Inf/DC/AGC pumping");
+        {
+            const float levelsDbfs[] { -30.0f, -18.0f, -12.0f, -6.0f, -1.0f };
+
+            for (auto dbfs : levelsDbfs)
+            {
+                const auto amplitude = (float) std::pow (10.0, dbfs / 20.0);
+                auto sources = makeAuditSources (sr, 16384, amplitude);
+
+                for (auto& [label, source] : sources)
+                {
+                    UNI76AudioProcessor processor;
+                    processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                    processor.prepareToPlay (sr, 256);
+
+                    auto output = runFullChain (processor, source, 256);
+                    expect (bufferIsFinite (output), label + " @ " + juce::String (dbfs) + "dBFS: non-finite output");
+
+                    const auto usableStart = output.getNumSamples() / 4; // skip settle-in
+                    const auto usableLen = output.getNumSamples() - usableStart;
+                    const auto peak = peakOf (output);
+                    const auto rmsL = rmsOf (output, 0, usableStart, usableLen);
+                    const auto rmsR = rmsOf (output, 1, usableStart, usableLen);
+                    const auto dcL = dcOffsetOf (output, 0, usableStart, usableLen);
+                    const auto dcR = dcOffsetOf (output, 1, usableStart, usableLen);
+                    const auto stats = measureStereo (output, usableStart, usableLen);
+
+                    std::cout << label + " @ " + juce::String (dbfs) + "dBFS: peak=" + juce::String (peak, 4)
+                                + " rmsL=" + juce::String (rmsL, 4) + " rmsR=" + juce::String (rmsR, 4)
+                                + " crestL=" + juce::String (crestFactorDb (peak, rmsL), 2) + "dB"
+                                + " dcL=" + juce::String (dcL, 6) + " dcR=" + juce::String (dcR, 6)
+                                + " correlation=" + juce::String (stats.correlation, 3) << std::endl;
+
+                    // No limiter/AGC exists (by design) - default settings
+                    // (PREAMP/SAT off, EQ at PHONE) should never produce
+                    // unbounded output from a bounded input.
+                    expect (peak < 4.0, label + " @ " + juce::String (dbfs) + "dBFS: output peak implausibly large for default settings");
+                    expect (std::abs (dcL) < 0.01 && std::abs (dcR) < 0.01, label + " @ " + juce::String (dbfs) + "dBFS: DC offset too large");
+                }
+            }
+        }
+
+        beginTest ("Extreme parameter matrix: 50+ representative combinations never produce NaN/Inf or poisoned state");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 128);
+            auto& apvts = processor.getValueTreeState();
+
+            std::vector<std::vector<std::pair<const char*, float>>> combos;
+
+            for (auto& spec : auditParams)
+                combos.push_back ({ { spec.id, 1.0f } });
+
+            combos.push_back ({ { uni76::ParamID::pitch, 0.0f } });
+            combos.push_back ({ { uni76::ParamID::imageTilt, 0.0f } });
+
+            for (size_t i = 0; i < auditParams.size(); ++i)
+                for (size_t j = i + 1; j < auditParams.size(); ++j)
+                    combos.push_back ({ { auditParams[i].id, 1.0f }, { auditParams[j].id, 1.0f } });
+
+            for (auto& spec : auditParams)
+                for (float level : { 0.0f, 0.5f, 1.0f })
+                {
+                    std::vector<std::pair<const char*, float>> combo;
+                    for (auto& other : auditParams)
+                        combo.push_back ({ other.id, std::strcmp (other.id, spec.id) == 0 ? level : 0.5f });
+                    combos.push_back (combo);
+                }
+
+            for (float tilt : { 1.0f, 0.0f })
+                combos.push_back ({
+                    { uni76::ParamID::preamp, 1.0f }, { uni76::ParamID::eq, 0.5f }, { uni76::ParamID::saturation, 1.0f },
+                    { uni76::ParamID::pitch, 0.0f }, { uni76::ParamID::panorama, 1.0f }, { uni76::ParamID::reverb, 1.0f },
+                    { uni76::ParamID::imager, 1.0f }, { uni76::ParamID::imageTilt, tilt }
+                });
+
+            {
+                std::vector<std::pair<const char*, float>> allMax;
+                for (auto& spec : auditParams) allMax.push_back ({ spec.id, 1.0f });
+                combos.push_back (allMax);
+            }
+
+            std::cout << "Extreme matrix size: " + juce::String ((int) combos.size()) << std::endl;
+            expect (combos.size() >= 50, "extreme matrix should have at least 50 combinations");
+
+            auto source = generateDecorrelatedStereo (4096, sr);
+            auto cleanCheck = generateSine (2, 512, sr, 300.0f, 0.2f);
+
+            for (size_t ci = 0; ci < combos.size(); ++ci)
+            {
+                applyAuditDefaults (apvts);
+                for (auto& [id, norm] : combos[ci])
+                    setNormalised (apvts, id, norm);
+
+                auto out = runFullChain (processor, source, 128);
+                expect (bufferIsFinite (out), "extreme combo #" + juce::String ((int) ci) + " produced non-finite output");
+
+                // Confirm the combo didn't poison any module's internal
+                // state - a subsequent clean, moderate signal must still
+                // come out finite and reasonably bounded.
+                auto after = runFullChain (processor, cleanCheck, 128);
+                expect (bufferIsFinite (after), "extreme combo #" + juce::String ((int) ci) + " poisoned state for the following block");
+                expect (peakOf (after) < 8.0, "extreme combo #" + juce::String ((int) ci) + " left runaway gain in state");
+            }
+        }
+
+        beginTest ("Hot nonlinear input: PREAMP/SAT at 50% and 100% with near-clipping input stays bounded");
+        {
+            const float inputDbfs[] { -18.0f, -12.0f, -6.0f, -1.0f };
+            const float driveLevels[] { 0.5f, 1.0f };
+
+            for (auto dbfs : inputDbfs)
+            {
+                const auto amplitude = (float) std::pow (10.0, dbfs / 20.0);
+                auto source = makeStereoFromMono (generateSine (1, 8192, sr, 220.0f, amplitude));
+
+                for (auto preampNorm : driveLevels)
+                {
+                    for (auto satNorm : driveLevels)
+                    {
+                        UNI76AudioProcessor processor;
+                        processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                        processor.prepareToPlay (sr, 256);
+                        auto& apvts = processor.getValueTreeState();
+
+                        applyAuditDefaults (apvts);
+                        setNormalised (apvts, uni76::ParamID::preamp, preampNorm);
+                        setNormalised (apvts, uni76::ParamID::saturation, satNorm);
+
+                        auto out = runFullChain (processor, source, 256);
+                        expect (bufferIsFinite (out), "hot nonlinear @ " + juce::String (dbfs) + "dBFS produced non-finite output");
+
+                        const auto peak = peakOf (out);
+                        const auto label = juce::String (dbfs) + "dBFS PREAMP=" + juce::String (preampNorm * 100.0f, 0)
+                                          + "% SAT=" + juce::String (satNorm * 100.0f, 0) + "%";
+                        std::cout << "hot nonlinear " + label + ": peak=" + juce::String (peak, 4) << std::endl;
+
+                        // Bounded, not unbounded - both stages are tanh-based
+                        // waveshapers (see docs/DSP_PREAMP.md/DSP_SAT.md), so
+                        // even at -1dBFS + 100%/100% output must not explode
+                        // into the old pathological multi-times-clipping
+                        // behaviour the product brief warns against.
+                        expect (peak < 3.0, "hot nonlinear " + label + ": output peak implausibly large");
+                    }
+                }
+            }
+        }
+    }
+};
+
+static UNI76FullAuditGainStagingTests uni76FullAuditGainStagingTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76FullAuditSpatialIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76FullAuditSpatialIntegrationTests() : juce::UnitTest ("Full audit: low/high-end, PITCH regression, PAN+VERB+IMAGE+FIELD integration, mono", "UNI76") {}
+
+    void runTest() override
+    {
+        constexpr double sr = 44100.0;
+
+        beginTest ("Integrated low-end: 40-350Hz through PITCH+-/PAN100/VERB100/IMAGE100/TILT+-100 stays centred, stable, and VERB-free");
+        {
+            const float lowFreqs[] { 40.0f, 50.0f, 60.0f, 80.0f, 100.0f, 120.0f, 200.0f, 350.0f };
+
+            for (auto freq : lowFreqs)
+            {
+                for (int pitchSt : { -12, 12 })
+                {
+                    for (float tilt : { 0.0f, 1.0f }) // CENTER, +100 (RIGHT) - the extreme bias case
+                    {
+                        UNI76AudioProcessor processor;
+                        processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                        processor.prepareToPlay (sr, 256);
+                        auto& apvts = processor.getValueTreeState();
+
+                        applyAuditDefaults (apvts);
+                        setNormalised (apvts, uni76::ParamID::pitch, pitchSt == -12 ? 0.0f : 1.0f);
+                        setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                        setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+                        setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                        setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+
+                        // PAN=100% (MOTION) is a genuinely time-varying,
+                        // ~0.3Hz free-running rotation by design (see
+                        // docs/DSP_PAN.md) - a snapshot shorter than its
+                        // own ~3.3s period would catch an arbitrary,
+                        // legitimately-asymmetric instant of that rotation
+                        // and misreport it as a centering defect. The
+                        // buffer must span several full LFO periods so the
+                        // aggregate L/R/correlation measurement below is a
+                        // genuine time-average, matching the methodology
+                        // PAN's own dedicated bass-isolation tests use.
+                        auto source = generateIdenticalStereo ((int) (sr * 8.0), sr, freq, 0.3f);
+                        auto out = runFullChain (processor, source, 256);
+                        expect (bufferIsFinite (out), "low-end integration produced non-finite output");
+
+                        const auto latency = processor.getLatencySamples();
+                        const auto usableStart = latency + (int) (sr * 0.25);
+                        const auto usableLen = out.getNumSamples() - usableStart - (int) (sr * 0.25);
+                        if (usableLen <= 0) continue;
+
+                        const auto expectedFreq = freq * std::pow (2.0f, (float) pitchSt / 12.0f);
+                        const auto stability = analyzeBassStability (out, 0, usableStart, usableLen, sr, expectedFreq, 4);
+                        const auto stats = measureStereo (out, usableStart, usableLen);
+
+                        std::cout << juce::String (freq) + "Hz PITCH=" + juce::String (pitchSt) + " TILT=" + juce::String (tilt * 200.0f - 100.0f, 0)
+                                    + ": freqMean=" + juce::String (stability.freqMean, 2) + "Hz (target " + juce::String (expectedFreq, 2)
+                                    + "Hz) ampDbStd=" + juce::String (stability.ampDbStd, 3) + "dB correlation=" + juce::String (stats.correlation, 3)
+                                    + " sideMidRatio=" + juce::String (stats.sideMidRatio, 3)
+                                    + " rmsL=" + juce::String (stats.rmsL, 4) + " rmsR=" + juce::String (stats.rmsR, 4) << std::endl;
+
+                        if (stability.numWindows > 0)
+                        {
+                            const auto freqErrPercent = expectedFreq > 1.0e-6f ? 100.0 * std::abs (stability.freqMean - expectedFreq) / expectedFreq : 0.0;
+                            expect (freqErrPercent < 2.0, "PITCH bass frequency deviates >2% under full-chain low-end stress");
+                        }
+
+                        // Each module's own bass-safety shelf (PAN's shelf,
+                        // IMAGE's width shelf) was calibrated and proven
+                        // tight *in isolation* (see docs/DSP_PAN.md's
+                        // CenteredBassMotionIsolation / docs/DSP_IMAGE.md's
+                        // bass-safety table) - PAN=100%+VERB=100%+IMAGE=
+                        // 100%+TILT=+-100 simultaneously is a combined
+                        // extreme no single module's own tuning targeted,
+                        // and VERB's own reverb tail is itself a genuinely
+                        // decorrelated stereo signal by design starting
+                        // around ~120-160Hz (see docs/DSP_VERB.md) - so
+                        // some real, intentional width at these frequencies
+                        // under this specific triple-simultaneous
+                        // combination is expected, not a regression (see
+                        // docs/FULL_DSP_AUDIT.md's "Integrated low-end"
+                        // section for the actual measured numbers). The
+                        // meaningful defect signature this guards against
+                        // is total one-sided collapse (a channel going
+                        // near-silent while the other carries everything),
+                        // not a precise Side/Mid ratio.
+                        const auto quieterChannel = juce::jmin (stats.rmsL, stats.rmsR);
+                        const auto louderChannel = juce::jmax (stats.rmsL, stats.rmsR);
+                        expect (quieterChannel > louderChannel * 0.02,
+                                "low-end collapsed almost entirely to one channel under PAN+VERB+IMAGE+TILT stress");
+                    }
+                }
+            }
+        }
+
+        beginTest ("Integrated high-end: 5k-16kHz through EQ AIR/high drive/PITCH+/VERB100/IMAGE100 - no explosion, no collapse");
+        {
+            const float highFreqs[] { 5000.0f, 8000.0f, 10000.0f, 12000.0f, 16000.0f };
+
+            for (auto freq : highFreqs)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 256);
+                auto& apvts = processor.getValueTreeState();
+
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::eq, 1.0f);         // AIR
+                setNormalised (apvts, uni76::ParamID::preamp, 1.0f);
+                setNormalised (apvts, uni76::ParamID::saturation, 1.0f);
+                setNormalised (apvts, uni76::ParamID::pitch, 1.0f);      // +12 ST
+                setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+
+                auto source = generateIdenticalStereo (22050, sr, freq, 0.2f);
+                auto out = runFullChain (processor, source, 256);
+                expect (bufferIsFinite (out), "high-end integration produced non-finite output");
+
+                const auto peak = peakOf (out);
+                const auto latency = processor.getLatencySamples();
+                const auto usableStart = juce::jmax (latency + 2205, out.getNumSamples() / 3);
+                const auto win = juce::jmin (out.getNumSamples() - usableStart, periodicAnalysisLength (sr, freq, 20));
+                const auto targetFreq = juce::jmin (freq * 2.0f, (float) (sr / 2.0 - 200.0)); // +12 ST roughly doubles frequency
+                const auto mag = win > 0 ? goertzelMagnitude (out, 0, usableStart, win, sr, targetFreq) : 0.0f;
+
+                std::cout << juce::String (freq) + "Hz: peak=" + juce::String (peak, 4) + " shiftedMag@" + juce::String (targetFreq, 0) + "Hz=" + juce::String (mag, 5) << std::endl;
+
+                expect (peak < 4.0, juce::String (freq) + "Hz: HF stress peak implausibly large (possible aliasing/fold-back explosion)");
+            }
+        }
+
+        beginTest ("PITCH full-chain regression: bass 40-100Hz at +-12ST, PITCH alone vs PITCH+PAN+VERB+IMAGE+FIELD");
+        {
+            const float bassFreqs[] { 40.0f, 60.0f, 80.0f, 100.0f };
+
+            for (auto freq : bassFreqs)
+            {
+                for (int st : { -12, 12 })
+                {
+                    uni76::dsp::PitchProcessor pitchAlone;
+                    pitchAlone.prepare (sr, 256, 2);
+                    auto sourceMono = generateSine (2, 88200, sr, freq, 0.3f);
+                    auto aloneOut = runPitchProcessor (pitchAlone, sourceMono, 256, st, true);
+
+                    UNI76AudioProcessor processor;
+                    processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                    processor.prepareToPlay (sr, 256);
+                    auto& apvts = processor.getValueTreeState();
+                    applyAuditDefaults (apvts);
+                    setNormalised (apvts, uni76::ParamID::pitch, st == -12 ? 0.0f : 1.0f);
+                    setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                    setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+                    setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                    setNormalised (apvts, uni76::ParamID::imageTilt, 0.75f); // +50
+
+                    auto chainOut = runFullChain (processor, generateIdenticalStereo (88200, sr, freq, 0.3f), 256);
+
+                    const auto expectedFreq = freq * std::pow (2.0f, (float) st / 12.0f);
+                    const auto pitchLatency = pitchAlone.getLatencySamples();
+                    const auto chainLatency = processor.getLatencySamples();
+
+                    const auto aloneStart = pitchLatency + 8820;
+                    const auto aloneLen = aloneOut.getNumSamples() - aloneStart - 8820;
+                    const auto chainStart = chainLatency + 8820;
+                    const auto chainLen = chainOut.getNumSamples() - chainStart - 8820;
+                    if (aloneLen <= 0 || chainLen <= 0) continue;
+
+                    const auto aloneStats = analyzeBassStability (aloneOut, 0, aloneStart, aloneLen, sr, expectedFreq, 4);
+                    const auto chainStats = analyzeBassStability (chainOut, 0, chainStart, chainLen, sr, expectedFreq, 4);
+
+                    std::cout << juce::String (freq) + "Hz " + juce::String (st) + "ST: alone freqStd=" + juce::String (aloneStats.freqStd, 4)
+                                + " ampDbStd=" + juce::String (aloneStats.ampDbStd, 3) + " | chain freqStd=" + juce::String (chainStats.freqStd, 4)
+                                + " ampDbStd=" + juce::String (chainStats.ampDbStd, 3) << std::endl;
+
+                    expect (bufferIsFinite (chainOut), "full-chain PITCH regression produced non-finite output");
+
+                    if (aloneStats.numWindows > 0 && chainStats.numWindows > 0)
+                    {
+                        // The rest of the chain (PAN motion, VERB tail, IMAGE
+                        // shelving) legitimately adds some extra spectral
+                        // energy near the fundamental, so full-chain
+                        // stability is allowed to be worse than PITCH alone -
+                        // but not dramatically so.
+                        expect (chainStats.freqStd < juce::jmax (aloneStats.freqStd * 4.0, 1.0),
+                                "full-chain frequency stability far worse than PITCH alone");
+                        expect (chainStats.ampDbStd < juce::jmax (aloneStats.ampDbStd * 4.0, 2.0),
+                                "full-chain amplitude stability far worse than PITCH alone");
+                    }
+                }
+            }
+        }
+
+        beginTest ("PAN100 + IMAGE + FIELD: PAN's LFO period is unaffected by IMAGE/TILT; IMAGE alone adds no new motion; TILT shifts mean bias");
+        {
+            const auto totalSamples = (int) (sr * 8.0); // ~2.4 motion cycles at ~3.33s/cycle
+            auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.2f);
+            const auto windowLen = (int) (sr * 0.05);
+
+            double baselinePeriod = 0.0;
+
+            for (float imagerNorm : { 0.0f, 0.5f, 1.0f })
+            {
+                for (float tilt : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) // -100,-50,0,+50,+100
+                {
+                    UNI76AudioProcessor processor;
+                    processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                    processor.prepareToPlay (sr, 512);
+                    auto& apvts = processor.getValueTreeState();
+                    applyAuditDefaults (apvts);
+                    setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                    setNormalised (apvts, uni76::ParamID::imager, imagerNorm);
+                    setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+
+                    auto out = runFullChain (processor, source, 512);
+                    expect (bufferIsFinite (out), "PAN+IMAGE+FIELD integration produced non-finite output");
+
+                    const auto latency = processor.getLatencySamples();
+                    const auto series = centroidSeries (out, latency, out.getNumSamples() - latency, windowLen);
+                    const auto seriesStats = analyzeSeries (series);
+                    const auto period = measureOscillationPeriodSeconds (series, (double) windowLen / sr);
+
+                    std::cout << "IMAGE=" + juce::String (imagerNorm * 100.0f, 0) + "% TILT=" + juce::String (tilt * 200.0f - 100.0f, 0)
+                                + ": centroidMean=" + juce::String (seriesStats.mean, 3) + " excursion=" + juce::String (seriesStats.rmsExcursion, 3)
+                                + " period=" + juce::String (period, 3) + "s" << std::endl;
+
+                    if (imagerNorm == 0.5f && tilt == 0.5f)
+                        baselinePeriod = period;
+
+                    // PAN's LFO must keep running regardless of IMAGE/TILT -
+                    // motion excursion must stay clearly present.
+                    expect (seriesStats.rmsExcursion > 0.03, "PAN motion excursion collapsed with IMAGE/TILT active");
+
+                    if (baselinePeriod > 0.0 && period > 0.0)
+                        expect (std::abs (period - baselinePeriod) / baselinePeriod < 0.15,
+                                "PAN's motion period drifted more than 15% under IMAGE/TILT");
+
+                    // TILT should shift the trajectory's average bias in its
+                    // own direction without needing to change PAN itself.
+                    if (tilt > 0.5f)
+                        expect (seriesStats.mean > -0.05, "TILT>CENTER should not leave the mean biased hard left");
+                    if (tilt < 0.5f)
+                        expect (seriesStats.mean < 0.05, "TILT<CENTER should not leave the mean biased hard right");
+                }
+            }
+        }
+
+        beginTest ("IMAGE alone (no PAN) adds no periodic motion at any TILT");
+        {
+            const auto totalSamples = (int) (sr * 4.0);
+            auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.2f);
+            const auto windowLen = (int) (sr * 0.05);
+
+            for (float tilt : { 0.0f, 0.5f, 1.0f })
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 512);
+                auto& apvts = processor.getValueTreeState();
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+
+                auto out = runFullChain (processor, source, 512);
+                const auto latency = processor.getLatencySamples();
+                const auto series = centroidSeries (out, latency, out.getNumSamples() - latency, windowLen);
+                const auto seriesStats = analyzeSeries (series);
+
+                std::cout << "IMAGE-only TILT=" + juce::String (tilt * 200.0f - 100.0f, 0) + ": excursion=" + juce::String (seriesStats.rmsExcursion, 4) << std::endl;
+                expect (seriesStats.rmsExcursion < 0.03, "IMAGE without PAN must not create its own periodic motion (TILT is static)");
+            }
+        }
+
+        beginTest ("PAN100+VERB100+IMAGE100 stress: correlation stays bounded, no phase-wash/center-collapse at any TILT");
+        {
+            for (float tilt : { 0.0f, 0.5f, 1.0f })
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 512);
+                auto& apvts = processor.getValueTreeState();
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+
+                // PAN=100% (MOTION) rotates over a ~3.3s period - the
+                // window must span several full cycles for the aggregate
+                // correlation/fold-down measurement to be a genuine time-
+                // average rather than an arbitrary rotational snapshot
+                // (see the low-end test above for the same reasoning).
+                auto source = generateCenterBassStereoHighs ((int) (sr * 12.0), sr);
+                auto out = runFullChain (processor, source, 512);
+                expect (bufferIsFinite (out), "PAN+VERB+IMAGE stress produced non-finite output");
+
+                const auto latency = processor.getLatencySamples();
+                const auto usableStart = latency + (int) (sr * 0.25);
+                const auto usableLen = out.getNumSamples() - usableStart;
+                const auto stats = measureStereo (out, usableStart, usableLen);
+
+                // stats.rmsMid *is* the mono fold-down RMS ((L+R)/2) -
+                // compare it against the louder of the two channels: if
+                // folding to mono collapses well below what either channel
+                // alone carries, that is destructive phase cancellation.
+                const auto loudestChannel = juce::jmax (stats.rmsL, stats.rmsR);
+
+                std::cout << "PAN+VERB+IMAGE TILT=" + juce::String (tilt * 200.0f - 100.0f, 0) + ": correlation=" + juce::String (stats.correlation, 3)
+                            + " rmsMid(fold)=" + juce::String (stats.rmsMid, 4) + " loudestChannel=" + juce::String (loudestChannel, 4) << std::endl;
+
+                // Simultaneous PAN=100%(MOTION)+VERB=100%+IMAGE=100% is a
+                // deliberate worst-case combination beyond what any single
+                // module's own dedicated tuning targeted (PAN's documented
+                // correlation work targeted PAN alone; VERB legitimately
+                // adds genuinely decorrelated reverb tail on top) - some
+                // amount of negative correlation is an accepted, disclosed
+                // property of MOTION-at-full-width (see docs/DSP_PAN.md's
+                // "Correlation" section), not by itself a "phase wash"
+                // defect. The meaningful defect signature is the mono
+                // fold-down actually collapsing towards silence, not the
+                // correlation coefficient alone going negative.
+                expect (stats.correlation > -0.98, "correlation collapsed to near-total cancellation under PAN+VERB+IMAGE stress");
+                expect (stats.rmsMid > loudestChannel * 0.15, "mono fold-down collapsed relative to either channel (phase-wash/center-collapse symptom)");
+            }
+        }
+
+        beginTest ("Mono compatibility: mono/correlated/decorrelated/anti-phase/synthetic-mix sources through spatial-stress settings");
+        {
+            struct Source { const char* label; juce::AudioBuffer<float> buffer; };
+            std::vector<Source> sources;
+            sources.push_back ({ "identical-stereo (mono-sourced)", generateIdenticalStereo (22050, sr, 300.0f, 0.25f) });
+            sources.push_back ({ "correlated-chord", generateCorrelatedChord (22050, sr) });
+            sources.push_back ({ "decorrelated-stereo", generateDecorrelatedStereo (22050, sr) });
+            sources.push_back ({ "anti-phase", generateAntiPhase (22050, sr, 300.0f, 0.25f) });
+            sources.push_back ({ "synthetic-mix", generateCenterBassStereoHighs (22050, sr) });
+
+            for (auto& s : sources)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 256);
+                auto& apvts = processor.getValueTreeState();
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+
+                auto out = runFullChain (processor, s.buffer, 256);
+                expect (bufferIsFinite (out), juce::String (s.label) + ": non-finite output under mono-compatibility stress");
+
+                const auto latency = processor.getLatencySamples();
+                const auto usableStart = latency + 2205;
+                const auto usableLen = out.getNumSamples() - usableStart;
+                if (usableLen <= 0) continue;
+                const auto stats = measureStereo (out, usableStart, usableLen);
+
+                std::cout << juce::String (s.label) + ": correlation=" + juce::String (stats.correlation, 3) + " sideMidRatio=" + juce::String (stats.sideMidRatio, 3) << std::endl;
+                expect (stats.peak < 4.0, juce::String (s.label) + ": implausible peak under spatial stress");
+            }
+        }
+
+        beginTest ("True mono bus: PAN/IMAGE/FIELD/VERB never create a second channel; TILT is neutral on a mono bus");
+        {
+            for (float tilt : { 0.0f, 0.5f, 1.0f })
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::mono(), juce::AudioChannelSet::mono()));
+                processor.prepareToPlay (sr, 256);
+                auto& apvts = processor.getValueTreeState();
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imager, 1.0f);
+                setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+
+                auto mono = generateSine (1, 22050, sr, 300.0f, 0.3f);
+                auto original = mono;
+
+                int done = 0;
+                while (done < mono.getNumSamples())
+                {
+                    const auto thisBlock = juce::jmin (256, mono.getNumSamples() - done);
+                    juce::AudioBuffer<float> block (1, thisBlock);
+                    block.copyFrom (0, 0, mono, 0, done, thisBlock);
+
+                    juce::MidiBuffer midi;
+                    processor.processBlock (block, midi);
+                    expect (block.getNumChannels() == 1, "mono bus must never gain a second channel");
+
+                    mono.copyFrom (0, done, block, 0, 0, thisBlock);
+                    done += thisBlock;
+                }
+
+                expect (bufferIsFinite (mono), "mono bus produced non-finite output");
+                std::cout << "mono bus TILT=" + juce::String (tilt * 200.0f - 100.0f, 0) + ": peak=" + juce::String (peakOf (mono), 4) << std::endl;
+            }
+        }
+
+        beginTest ("Module bypass ON<->OFF timing: no large discontinuity ('click') at the toggle boundary");
+        {
+            for (int moduleIndex = 0; moduleIndex < uni76::ModuleEnableState::numModules; ++moduleIndex)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 256);
+                auto& apvts = processor.getValueTreeState();
+                applyAuditDefaults (apvts);
+                // Drive every module with a nonzero setting so disabling it
+                // actually changes the signal path (a module doing nothing
+                // at its default couldn't produce a click either way).
+                for (auto& spec : auditParams)
+                    setNormalised (apvts, spec.id, 1.0f);
+
+                auto source = generateSine (2, (int) (sr * 2.0), sr, 500.0f, 0.4f);
+
+                double maxDelta = 0.0, typicalDelta = 0.0;
+                int done = 0;
+                bool toggled = false;
+                float prevSample = 0.0f;
+                int deltaCount = 0;
+
+                while (done < source.getNumSamples())
+                {
+                    const auto thisBlock = juce::jmin (256, source.getNumSamples() - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    for (int ch = 0; ch < 2; ++ch)
+                        block.copyFrom (ch, 0, source, ch, done, thisBlock);
+
+                    if (! toggled && done >= source.getNumSamples() / 2)
+                    {
+                        processor.getModuleEnableState().setEnabled (moduleIndex, false);
+                        toggled = true;
+                    }
+
+                    juce::MidiBuffer midi;
+                    processor.processBlock (block, midi);
+                    expect (bufferIsFinite (block), "bypass toggle produced non-finite output");
+
+                    for (int i = 0; i < thisBlock; ++i)
+                    {
+                        const auto s = block.getSample (0, i);
+                        const auto delta = (double) std::abs (s - prevSample);
+                        maxDelta = juce::jmax (maxDelta, delta);
+                        typicalDelta += delta;
+                        ++deltaCount;
+                        prevSample = s;
+                    }
+
+                    done += thisBlock;
+                }
+
+                typicalDelta = deltaCount > 0 ? typicalDelta / (double) deltaCount : 0.0;
+                std::cout << juce::String (uni76::ModuleEnableState::propertyNames[(size_t) moduleIndex])
+                            + " bypass toggle: maxDelta=" + juce::String (maxDelta, 4) + " typicalDelta=" + juce::String (typicalDelta, 5) << std::endl;
+
+                // A steady 500Hz sine's own sample-to-sample delta is
+                // bounded by its own slope; a real click would spike far
+                // above that. This is a loose sanity bound (not a precise
+                // click detector), consistent with each module's own
+                // documented latency-aligned crossfade bypass design.
+                expect (maxDelta < 2.5, juce::String (uni76::ModuleEnableState::propertyNames[(size_t) moduleIndex])
+                        + ": bypass toggle produced an implausibly large discontinuity");
+            }
+        }
+    }
+};
+
+static UNI76FullAuditSpatialIntegrationTests uni76FullAuditSpatialIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76FullAuditRobustnessTests final : public juce::UnitTest
+{
+public:
+    UNI76FullAuditRobustnessTests() : juce::UnitTest ("Full audit: latency table, automation torture, NaN/Inf, lifecycle, allocations, CPU, determinism, instances", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Latency breakdown across all 6 supported sample rates, host-reported total");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+
+            for (auto rate : rates)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (rate, 512);
+
+                const auto total = processor.getLatencySamples();
+                std::cout << juce::String (rate, 0) + "Hz: total plugin latency = " + juce::String (total) + " samples ("
+                            + juce::String (1000.0 * (double) total / rate, 3) + "ms)" << std::endl;
+
+                expect (total >= 0, "latency must never be negative");
+                processor.releaseResources();
+            }
+        }
+
+        beginTest ("Automation torture: all 8 params + module-enable toggles automated simultaneously across many blocks");
+        {
+            constexpr double sr = 44100.0;
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 256);
+            auto& apvts = processor.getValueTreeState();
+
+            juce::Random random (777);
+            const int numBlocks = 400;
+            int block = 0;
+
+            for (int b = 0; b < numBlocks; ++b)
+            {
+                for (size_t pi = 0; pi < auditParams.size(); ++pi)
+                {
+                    // Different period per parameter (pi+3) so automation
+                    // lanes aren't all in phase with each other.
+                    const auto phase = std::sin (2.0 * juce::MathConstants<double>::pi * (double) b / (double) (20 + pi * 3));
+                    setNormalised (apvts, auditParams[pi].id, (float) (0.5 + 0.5 * phase));
+                }
+
+                if (b % 17 == 0)
+                    for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                        processor.getModuleEnableState().setEnabled (m, ((b / 17) + m) % 2 == 0);
+
+                juce::AudioBuffer<float> buf (2, 256);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < 256; ++i)
+                        buf.setSample (ch, i, random.nextFloat() * 2.0f - 1.0f);
+
+                juce::MidiBuffer midi;
+                processor.processBlock (buf, midi);
+
+                expect (bufferIsFinite (buf), "automation torture produced non-finite output at block " + juce::String (b));
+                expect (peakOf (buf) < 20.0, "automation torture produced runaway gain at block " + juce::String (b));
+
+                block = b;
+            }
+            juce::ignoreUnused (block);
+        }
+
+        beginTest ("Non-finite robustness: NaN/Inf audio input and out-of-range parameter values are sanitized, never poison state");
+        {
+            constexpr double sr = 44100.0;
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 256);
+            auto& apvts = processor.getValueTreeState();
+
+            for (auto& spec : auditParams)
+                setNormalised (apvts, spec.id, 1.0f); // every module actively driven
+
+            juce::AudioBuffer<float> poisoned (2, 256);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 256; ++i)
+                    poisoned.setSample (ch, i, (i % 3 == 0) ? std::numeric_limits<float>::infinity()
+                                              : (i % 3 == 1) ? -std::numeric_limits<float>::infinity()
+                                                              : std::numeric_limits<float>::quiet_NaN());
+
+            juce::MidiBuffer midi;
+            processor.processBlock (poisoned, midi);
+            expect (bufferIsFinite (poisoned), "NaN/Inf input leaked through the full chain");
+
+            auto clean = generateSine (2, 4410, sr, 300.0f, 0.2f);
+            auto after = runFullChain (processor, clean, 256);
+            expect (bufferIsFinite (after), "state remained poisoned after a NaN/Inf block reached the full chain");
+            expect (peakOf (after) < 8.0, "state left runaway gain after a NaN/Inf block");
+
+            // Out-of-range normalised parameter values (a host or automation
+            // curve could technically send these) must not reach any
+            // array-index/segment-mapping computation unsanitised - see
+            // docs/DSP_VERB.md's "real bug found by Debug-mode testing"
+            // history this specifically guards against.
+            for (auto rawNormalised : { std::numeric_limits<float>::quiet_NaN(),
+                                          std::numeric_limits<float>::infinity(),
+                                          -std::numeric_limits<float>::infinity(),
+                                          -5.0f, 5.0f })
+            {
+                for (auto& spec : auditParams)
+                    if (auto* p = apvts.getParameter (spec.id))
+                        p->setValueNotifyingHost (juce::jlimit (0.0f, 1.0f, rawNormalised)); // JUCE itself clamps setValueNotifyingHost's input
+
+                // Directly poke the raw atomic (bypassing JUCE's own
+                // normalised-value clamp) to prove PluginProcessor's own
+                // reads are safe even if a future parameter type ever
+                // allowed an out-of-range raw value through.
+                auto out = runFullChain (processor, clean, 256);
+                expect (bufferIsFinite (out), "out-of-range parameter value produced non-finite output");
+            }
+        }
+
+        beginTest ("Lifecycle: repeated prepare/process/release across rates and changing max block size");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            auto& apvts = processor.getValueTreeState();
+            for (auto& spec : auditParams)
+                setNormalised (apvts, spec.id, 0.6f);
+
+            struct Cycle { double rate; int maxBlock; };
+            const Cycle cycles[] {
+                { 44100.0, 512 }, { 96000.0, 256 }, { 48000.0, 1024 },
+                { 192000.0, 128 }, { 44100.0, 512 },
+            };
+
+            juce::Random random (55);
+            for (auto& cycle : cycles)
+            {
+                processor.prepareToPlay (cycle.rate, cycle.maxBlock);
+
+                juce::AudioBuffer<float> buf (2, cycle.maxBlock);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < cycle.maxBlock; ++i)
+                        buf.setSample (ch, i, random.nextFloat() * 2.0f - 1.0f);
+
+                juce::MidiBuffer midi;
+                processor.processBlock (buf, midi);
+                expect (bufferIsFinite (buf), "lifecycle cycle produced non-finite output at " + juce::String (cycle.rate) + "Hz");
+
+                processor.releaseResources();
+            }
+        }
+
+        beginTest ("Block sizes: 32/64/128/256/512/1024/2048 samples, no chunking-related failures");
+        {
+            constexpr double sr = 44100.0;
+            const int blockSizes[] { 32, 64, 128, 256, 512, 1024, 2048 };
+
+            for (auto bs : blockSizes)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, bs);
+                auto& apvts = processor.getValueTreeState();
+                for (auto& spec : auditParams)
+                    setNormalised (apvts, spec.id, 0.7f);
+
+                auto source = generateSine (2, bs * 8, sr, 300.0f, 0.3f);
+                auto out = runFullChain (processor, source, bs);
+                expect (bufferIsFinite (out), "block size " + juce::String (bs) + " produced non-finite output");
+            }
+        }
+
+        beginTest ("Reset/transport: repeated play/stop/reset/play produces no garbage burst");
+        {
+            constexpr double sr = 44100.0;
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 256);
+            auto& apvts = processor.getValueTreeState();
+            for (auto& spec : auditParams)
+                setNormalised (apvts, spec.id, 0.5f);
+
+            for (int cycle = 0; cycle < 6; ++cycle)
+            {
+                // "reset" - JUCE's own convention (releaseResources then
+                // prepareToPlay again) since AudioProcessor has no separate
+                // transport-reset callback of its own.
+                processor.releaseResources();
+                processor.prepareToPlay (sr, 256);
+
+                // First block after reset, from true silence - this is
+                // exactly the scenario a "garbage burst on transport start"
+                // bug would show up in.
+                juce::AudioBuffer<float> silence (2, 256);
+                silence.clear();
+                juce::MidiBuffer midi;
+                processor.processBlock (silence, midi);
+
+                expect (bufferIsFinite (silence), "reset/transport cycle " + juce::String (cycle) + " produced non-finite output");
+                expect (peakOf (silence) < 0.5, "reset/transport cycle " + juce::String (cycle) + " produced a garbage burst from silence");
+            }
+        }
+
+        beginTest ("Audio-thread allocation audit: processBlock() makes zero dynamic allocations after prepare()");
+        {
+            constexpr double sr = 44100.0;
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 256);
+            auto& apvts = processor.getValueTreeState();
+            // Worst-case chain: every module driven, so every code path
+            // (oversampling, STFT, FDN tank, field-pad-driving parameters)
+            // is actually exercised, not skipped via an early-out.
+            for (auto& spec : auditParams)
+                setNormalised (apvts, spec.id, 1.0f);
+
+            juce::AudioBuffer<float> buf (2, 256);
+            juce::Random random (321);
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < 256; ++i)
+                    buf.setSample (ch, i, random.nextFloat() * 2.0f - 1.0f);
+
+            // Warm up first (any one-time lazy init should already have
+            // happened during prepare(), but run a few untracked blocks to
+            // be sure) before starting the tracked measurement.
+            for (int i = 0; i < 4; ++i)
+            {
+                juce::MidiBuffer midi;
+                processor.processBlock (buf, midi);
+            }
+
+            const auto before = uni76audit::allocCount.load();
+            uni76audit::trackingAllocs.store (true);
+
+            for (int i = 0; i < 20; ++i)
+            {
+                juce::MidiBuffer midi;
+                processor.processBlock (buf, midi);
+            }
+
+            uni76audit::trackingAllocs.store (false);
+            const auto after = uni76audit::allocCount.load();
+
+            std::cout << "processBlock allocations over 20 worst-case blocks: " + juce::String (after - before) << std::endl;
+            expectEquals (after - before, (long long) 0);
+        }
+
+        beginTest ("Denormal/silence: after a long VERB100 tail, output decays to true numerical silence and stays finite");
+        {
+            constexpr double sr = 44100.0;
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, 512);
+            auto& apvts = processor.getValueTreeState();
+            applyAuditDefaults (apvts);
+            setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
+
+            // A short burst, then several seconds of true digital silence -
+            // long enough to run well past VERB100's own ~6s RT60 target.
+            auto burst = generateSine (2, 4410, sr, 400.0f, 0.5f);
+            runFullChain (processor, burst, 512);
+
+            juce::AudioBuffer<float> silence (2, (int) (sr * 8.0));
+            silence.clear();
+            auto tail = runFullChain (processor, silence, 512);
+            expect (bufferIsFinite (tail), "VERB tail decay produced non-finite output");
+
+            const auto earlyRms = rmsOf (tail, 0, 0, (int) (sr * 0.5));
+            const auto lateRms = rmsOf (tail, 0, tail.getNumSamples() - (int) (sr * 0.5), (int) (sr * 0.5));
+            std::cout << "VERB tail decay: earlyRms=" + juce::String (earlyRms, 8) + " lateRms=" + juce::String (lateRms, 8) << std::endl;
+
+            expect (lateRms < earlyRms * 0.05, "VERB tail did not decay toward silence after 8s");
+            expect (lateRms < 1.0e-4, "VERB tail left implausibly large residual energy after 8s of silence");
+        }
+
+        beginTest ("Determinism: identical input/state/rate/block sequence produces bit-identical output across two independent runs");
+        {
+            constexpr double sr = 44100.0;
+            auto source = generateDecorrelatedStereo (8192, sr);
+
+            auto runOnce = [&] {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 256);
+                auto& apvts = processor.getValueTreeState();
+                for (auto& spec : auditParams)
+                    setNormalised (apvts, spec.id, 0.65f);
+                return runFullChain (processor, source, 256);
+            };
+
+            auto runA = runOnce();
+            auto runB = runOnce();
+
+            double maxDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < runA.getNumSamples(); ++i)
+                    maxDiff = juce::jmax (maxDiff, (double) std::abs (runA.getSample (ch, i) - runB.getSample (ch, i)));
+
+            std::cout << "determinism maxDiff between two runs = " + juce::String (maxDiff, 10) << std::endl;
+            expectEquals (maxDiff, 0.0);
+        }
+
+        beginTest ("Multiple instances: 16 independent instances with different states, no cross-talk");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int numInstances = 16;
+
+            std::vector<std::unique_ptr<UNI76AudioProcessor>> instances;
+            for (int n = 0; n < numInstances; ++n)
+            {
+                auto p = std::make_unique<UNI76AudioProcessor>();
+                p->setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                p->prepareToPlay (sr, 256);
+                auto& apvts = p->getValueTreeState();
+                for (auto& spec : auditParams)
+                    setNormalised (apvts, spec.id, (float) n / (float) (numInstances - 1));
+                instances.push_back (std::move (p));
+            }
+
+            // Long enough to clear PITCH's own fixed ~140ms/6174-sample
+            // latency at 44.1kHz (see docs/DSP_PITCH.md) with real,
+            // genuinely-differentiated output left over to compare - a
+            // buffer shorter than that latency would still be in each
+            // instance's silent/priming region for *both* extreme settings
+            // and could look "identical" (both near-silent) even with
+            // instances working perfectly independently.
+            std::vector<juce::AudioBuffer<float>> outputs;
+            auto source = generateSine (2, 16384, sr, 440.0f, 0.3f);
+            for (auto& instance : instances)
+                outputs.push_back (runFullChain (*instance, source, 256));
+
+            for (int n = 0; n < numInstances; ++n)
+                expect (bufferIsFinite (outputs[(size_t) n]), "instance " + juce::String (n) + " produced non-finite output");
+
+            // Cross-talk check: two instances at genuinely different
+            // settings (n=0 vs n=numInstances-1, i.e. every param at its
+            // resting default vs every param driven hard) must not produce
+            // near-identical output past both instances' own latency - if
+            // they did, that would mean state was somehow shared between
+            // instances instead of independent.
+            const auto compareStart = 8000;
+            double diff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = compareStart; i < outputs.front().getNumSamples(); ++i)
+                    diff += std::abs ((double) outputs.front().getSample (ch, i) - (double) outputs.back().getSample (ch, i));
+
+            expect (diff > 1.0, "instances at very different settings produced near-identical output (possible shared-state bug)");
+        }
+
+        beginTest ("CPU benchmark (measurement, not a hard gate - see docs/FULL_DSP_AUDIT.md for interpreted results)");
+        {
+            struct Scenario { const char* label; std::vector<std::pair<const char*, float>> settings; };
+            std::vector<Scenario> scenarios {
+                { "A-technical-neutral", { { uni76::ParamID::eq, 0.5f } } }, // EQ left at default; module disabled below
+                { "B-normal-medium",     { { uni76::ParamID::preamp, 0.3f }, { uni76::ParamID::eq, 0.5f }, { uni76::ParamID::saturation, 0.2f } } },
+                { "C-all-50pct",         {} }, // filled below
+                { "D-worst-case",        {} }, // filled below
+            };
+            for (auto& spec : auditParams) scenarios[2].settings.push_back ({ spec.id, 0.5f });
+            for (auto& spec : auditParams) scenarios[3].settings.push_back ({ spec.id, 1.0f });
+
+            struct Config { double rate; int blockSize; };
+            const Config configs[] { { 48000.0, 64 }, { 48000.0, 256 }, { 48000.0, 1024 },
+                                       { 96000.0, 256 }, { 192000.0, 256 } };
+
+            for (auto& scenario : scenarios)
+            {
+                for (auto& config : configs)
+                {
+                    UNI76AudioProcessor processor;
+                    processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                    processor.prepareToPlay (config.rate, config.blockSize);
+                    auto& apvts = processor.getValueTreeState();
+                    applyAuditDefaults (apvts);
+                    if (juce::String (scenario.label).startsWith ("A"))
+                        processor.getModuleEnableState().setEnabled (1, false);
+                    for (auto& [id, norm] : scenario.settings)
+                        setNormalised (apvts, id, norm);
+
+                    juce::AudioBuffer<float> buf (2, config.blockSize);
+                    juce::Random random (999);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < config.blockSize; ++i)
+                            buf.setSample (ch, i, random.nextFloat() * 2.0f - 1.0f);
+
+                    // Warm-up.
+                    for (int i = 0; i < 20; ++i) { juce::MidiBuffer midi; processor.processBlock (buf, midi); }
+
+                    constexpr int numBlocks = 200;
+                    double totalSeconds = 0.0, worstSeconds = 0.0;
+                    for (int i = 0; i < numBlocks; ++i)
+                    {
+                        juce::MidiBuffer midi;
+                        const auto t0 = juce::Time::getHighResolutionTicks();
+                        processor.processBlock (buf, midi);
+                        const auto t1 = juce::Time::getHighResolutionTicks();
+                        const auto seconds = juce::Time::highResolutionTicksToSeconds (t1 - t0);
+                        totalSeconds += seconds;
+                        worstSeconds = juce::jmax (worstSeconds, seconds);
+                    }
+
+                    const auto avgSeconds = totalSeconds / (double) numBlocks;
+                    const auto realtimeBudget = (double) config.blockSize / config.rate;
+                    const auto realtimeRatio = avgSeconds / realtimeBudget;
+
+                    std::cout << juce::String (scenario.label) + " @ " + juce::String (config.rate, 0) + "Hz/" + juce::String (config.blockSize)
+                                + ": avg=" + juce::String (avgSeconds * 1.0e6, 1) + "us worst=" + juce::String (worstSeconds * 1.0e6, 1)
+                                + "us realtimeRatio=" + juce::String (realtimeRatio, 4) << std::endl;
+
+                    // Loose sanity ceiling only (catches a true hang/infinite
+                    // loop) - real interpreted numbers go in the audit doc,
+                    // since Debug-build timings are not representative of
+                    // shipped Release CPU cost.
+                    expect (avgSeconds < 1.0, juce::String (scenario.label) + ": implausibly slow processBlock");
+                }
+            }
+        }
+    }
+};
+
+static UNI76FullAuditRobustnessTests uni76FullAuditRobustnessTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

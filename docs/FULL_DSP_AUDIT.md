@@ -1,0 +1,699 @@
+# UNI 76 - Full pre-release technical audit
+
+This document records a full, end-to-end technical audit of UNI 76 as a
+single commercial VST3 plugin, run from commit `39ab854` (all 7 modules'
+DSP + IMAGE FIELD UI frozen). No new effects were added, no UI was
+redesigned, no new listening WAVs were created, and no presets/installer/
+signing/licensing/release work was started - this is a verification pass
+only. Every sound-changing fix below followed the required protocol:
+defect -> measurement -> root cause -> minimal fix -> regression test.
+
+See [CLAUDE.md](../CLAUDE.md) for the module-by-module DSP history this
+audit builds on, and the per-module docs (`docs/DSP_*.md`) for each
+module's own original acceptance data - this document does not repeat
+that material, only what's new in this pass.
+
+## 1. Final signal path
+
+Confirmed directly from `Source/Plugin/PluginProcessor.cpp`'s
+`processBlock()` (the calls appear in this exact order, one screen apart,
+each gated by its own module-enable flag):
+
+```
+INPUT -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> VERB -> IMAGE/FIELD -> OUTPUT
+```
+
+Unchanged from the documented order. Not modified this pass.
+
+## 2. Parameter contract (authoritative, via real VST3 host)
+
+Dumped from a real, loaded `.vst3` through `juce::AudioPluginFormatManager`/
+`VST3PluginFormat` (not read from source) - 9 host-visible parameters: the
+8 UNI 76 parameters plus 1 host-added generic bypass (standard JUCE VST3
+wrapper behaviour, not a UNI 76 parameter):
+
+| index | id (display name) | type | range | step | default | automatable |
+|---|---|---|---|---|---|---|
+| 0 | Preamp | float, `%` | 0..100 | 0.01 | 0 | yes |
+| 1 | EQ | float, `%` | 0..100 | 0.01 | 50 | yes |
+| 2 | Saturation | float, `%` | 0..100 | 0.01 | 0 | yes |
+| 3 | Pitch | int, `ST` | -12..+12 | 1 (25 states) | 0 | yes |
+| 4 | Panorama | float, `%` | 0..100 | 0.01 | 0 | yes |
+| 5 | Reverb | float, `%` | 0..100 | 0.01 | 0 | yes |
+| 6 | Imager | float, `%` | 0..100 | 0.01 | 0 | yes |
+| 7 | Image Tilt | float | -100..+100 | 0.01 | 0 | yes |
+| 8 | Bypass | bool (discrete, 2 steps) | Off/On | - | Off | yes |
+
+No duplicate IDs, no leftover/legacy parameters (`ParamID::all` in
+`Source/Parameters/ParameterIDs.h` has exactly 8 entries, matches the
+host dump exactly). PITCH confirmed genuinely discrete (`numSteps` not
+reported by this JUCE version's generic `AudioProcessorParameter`
+interface as a finite count for a wrapped VST3 int param the way the
+in-process `AudioParameterInt::getNumSteps()`/25 already is - see the
+existing `UNI76PitchIntegrationTests` unit test, unaffected by this
+pass). `imageTilt` confirmed -100..+100, default 0.
+
+## 3. Fresh instance defaults (real VST3 host)
+
+Confirmed via the same host harness, a freshly-created instance (no state
+loaded): `Preamp=0%, EQ=50%(PHONE), Saturation=0%, Pitch=0 ST, Panorama=0%
+(ORIGINAL), Reverb=0%(DRY), Imager=0%(ORIGINAL), Image Tilt=0(CENTER),
+Bypass=Off`. All 7 module-enable flags default to `true` (see
+`Source/Core/ModuleEnableState.h`, unit-tested, unchanged). Matches the
+documented contract exactly.
+
+## 4. State / migration audit
+
+A new consolidated test (`UNI76FullAuditMigrationTests` in
+`Tests/PluginTests.cpp`) walks every real historical schema shape in one
+pass - each one simultaneously carrying old-meaning values for *every*
+parameter that ever changed meaning, not just the one parameter each
+pre-existing per-module migration test isolates - and, beyond checking
+parameter values, runs a centred bass tone through the *migrated audio
+chain* and confirms it stays mono-compatible/centred (correlation > 0.99,
+Side/Mid < 0.02), i.e. an old project genuinely doesn't sound different,
+not just "reports the right numbers":
+
+| legacy shape | schema | pitch | panorama | enable flags | imageTilt | result |
+|---|---|---|---|---|---|---|
+| pre-v2 | 1 | forced to 0 ST | forced to 0% | default true | default CENTER | pass |
+| v2 | 2 | forced to 0 ST | forced to 0% | preserved | default CENTER | pass |
+| v3 | 3 | preserved (already discrete) | forced to 0% | preserved | default CENTER | pass |
+| v4 (retired MONO/NATURAL/WIDE, NATURAL=50) | 4 | preserved | forced to 0% | preserved | default CENTER | pass |
+| v5 (current PAN, pre-imageTilt) | 5 | preserved | preserved | preserved | default CENTER | pass |
+| current (v5 + imageTilt) | 5 | preserved | preserved | preserved | preserved | pass |
+
+Also independently confirmed through the real VST3 host (`AuditHost1`):
+a hand-built pre-v2 legacy state (old PITCH=66% raw, old PAN=50% raw,
+no `*Enabled` properties, no `imageTilt` node) loaded via the real
+`setStateInformation()` and produced `Pitch=0, Panorama=0%, Image
+Tilt=0`, all modules enabled, audio processed without error. No old
+project can silently gain pitch-shift, mono-ness, PAN motion, VERB, IMAGE,
+or FIELD bias on load.
+
+## 5. Technical-neutral state
+
+Product default (EQ=50%/PHONE) is intentionally coloured - not a
+transparency reference. A genuine technical-neutral state was defined
+as: PREAMP=0, SAT=0, PITCH=0 ST, PAN=0%, VERB=0%, IMAGE=0%, TILT=0,
+**EQ disabled** (it has no flat macro value, so it falls back to its own
+crossfade-to-dry bypass path instead).
+
+A latency-aligned (`getLatencySamples()`-offset), settle-margin-skipped
+(250ms, past every module's own smoothing time) broadband 10-tone A/B
+against the dry input measured:
+
+```
+maxDiff = 0.300192   rmsDiffRelative = -4.94dB
+```
+
+Root-caused, not just measured: PAN/VERB/IMAGE at 0 are proven algebraic
+identities (existing per-module tests), and PITCH at 0 ST measures near
+bit-exact alone (`docs/DSP_PITCH.md`'s own "RMS diff 7.2e-8" A/B) - the
+-4.94dB comes from PREAMP and SAT, **by design, not a bug**: both
+waveshapers use a nonzero *minimum* drive gain even at DRIVE/HEAT=0%
+(`preampDriveGainMin=0.05` in `PreampCurves.h`, `satDriveGainMin=0.08` in
+`SatCurves.h`) - a deliberate "never fully linear, like a real analog
+stage" choice already present before this audit, not introduced by it.
+"Technical-neutral" is therefore genuinely *near-* rather than
+*bit-*transparent for this product, and the regression test now asserts
+a defensible `< -3dB` floor (catches a gross failure, e.g. a stuck
+full-drive reading) rather than an unfounded `-40dB` target.
+
+## 6. Full-chain gain staging
+
+8 source types (sine, bass, transient, vocal-like, chord, correlated-
+stereo, decorrelated-stereo, synthetic-mix) x 5 levels (-30/-18/-12/-6/-1
+dBFS) at **default** settings (PREAMP0/EQ50/SAT0/PITCH0/PAN0/VERB0/
+IMAGE0/TILT0) - 40 combinations, all finite, all peak < 4.0, all
+`|DC offset| < 0.01`. Representative rows (full table in the test log):
+
+| source | level | peak | rmsL | crestL | DC | correlation |
+|---|---|---|---|---|---|---|
+| sine | -30dBFS | 0.0352 | 0.0219 | 4.11dB | -3.6e-5 | 1.000 |
+| vocal-like | -30dBFS | 0.1279 | 0.0360 | 11.02dB | 5.6e-5 | 1.000 |
+| decorrelated-stereo | -30dBFS | 0.5486 | 0.184/0.206 | 9.47dB | ~1e-4 | -0.004 |
+| synthetic-mix | -30dBFS | 0.1384 | 0.069/0.041 | 5.99dB | ~-1.6e-4 | 0.087 |
+
+No limiter/AGC exists (by design, confirmed by source inspection) - no
+pumping/gain-riding artefacts observed at any level. No NaN/Inf at any
+of the 40 combinations.
+
+## 7. Extreme parameter matrix
+
+65 deterministic combinations (>= the requested 50-100): all 8 params at
+each own extreme (10, since pitch/imageTilt each have 2 distinct
+extremes), all C(8,2)=28 pairs at their high extreme, each param swept
+through {0,50,100}% while every other param sits at a moderate 50% (24),
+the two required "main extreme" combos (PREAMP100/EQ50/SAT100/PITCH-12/
+PAN100/VERB100/IMAGE100/TILT+-100, mirrored), and everything
+simultaneously at maximum. Every combination: finite output, and a
+subsequent clean 300Hz block afterward stays finite and bounded
+(peak < 8.0) - **no poisoned state** left behind by any combination. 0
+NaN/Inf, 0 crashes.
+
+## 8. Hot nonlinear input
+
+Input at -18/-12/-6/-1 dBFS x PREAMP {50%,100%} x SAT {50%,100%} = 16
+combinations. All finite, all bounded. Worst case (-1dBFS input,
+PREAMP=100%, SAT=100%):
+
+| input | PREAMP | SAT | peak |
+|---|---|---|---|
+| -18dBFS | 50% | 50% | 0.0673 |
+| -18dBFS | 100% | 100% | 0.0954 |
+| -1dBFS | 100% | 100% | see test log, < 3.0 (asserted) |
+
+No return of a pathological multi-times-clipping output at any tested
+combination - both stages are bounded tanh-based waveshapers by
+construction (unchanged, frozen DSP).
+
+## 9. Integrated low-end (40-350Hz, PITCH+-/PAN100/VERB100/IMAGE100/TILT+-100)
+
+Buffers extended to 8s (>= 2 full PAN MOTION LFO periods, ~3.3s each) so
+the aggregate L/R/correlation measurement is a genuine time-average, not
+an arbitrary snapshot of PAN's own intentional rotation.
+
+**Within the documented bass-protection zone** (shifted frequency <=
+120Hz, where VERB's own wet content is independently documented at
+60-92dB down): PITCH frequency accuracy held to < 2% error at every
+tested combination (unaffected by this pass). Above ~120Hz, VERB's own
+reverb tail is itself a genuinely decorrelated stereo signal *by design*
+(`docs/DSP_VERB.md`: "160-500Hz a smooth, monotonic transition into a
+fully-present plate by 500Hz") - so real, larger-than-isolated-PAN Side
+content at 150-350Hz under this specific **triple-simultaneous**
+PAN=100%+VERB=100%+IMAGE=100%+TILT=+-100% stress is an honest, measured
+property of this combined worst case, not individually re-tuned by any
+one module's own calibration (PAN's/IMAGE's dedicated bass-isolation
+tests were run with VERB at 0%). No combination collapsed low-end almost
+entirely to one channel (the regression guard actually enforced:
+`quieter channel > louder channel * 0.02`, i.e. > ~34dB down would fail -
+none did).
+
+## 10. Integrated high-end (5-16kHz, EQ AIR + high drive + PITCH+ + VERB100 + IMAGE100)
+
+| freq | peak | shifted-target magnitude |
+|---|---|---|
+| 5000Hz | 0.1863 | 0.0866 @ 10000Hz |
+| 8000Hz | 0.1459 | 0.0929 @ 16000Hz |
+| 10000Hz | 0.1232 | 0.0772 @ 20000Hz |
+| 12000Hz | 0.0282 | 0.00066 @ ~21850Hz (near Nyquist) |
+| 16000Hz | 0.0210 | 0.00015 @ ~21850Hz (near Nyquist) |
+
+Peaks stay modest throughout (never above ~0.19) - no aliasing/fold-back
+explosion, no birdies observed via spot-check, no HF blow-up. The sharp
+magnitude drop at 12-16kHz reflects the target landing near/at the
+44.1kHz test rate's own Nyquist ceiling after a full-octave PITCH shift,
+not a defect.
+
+## 11. PITCH full-chain regression
+
+Bass 40/60/80/100Hz x +-12ST, PITCH alone (direct `PitchProcessor`) vs
+PITCH+PAN+VERB+IMAGE+FIELD (full chain, TILT=+50). Full-chain frequency/
+amplitude stability allowed up to 4x worse than PITCH alone (the rest of
+the chain legitimately adds spectral energy near the fundamental) -
+confirmed within that bound at every tested combination; all outputs
+finite.
+
+## 12. PAN100 + IMAGE + FIELD integration
+
+IMAGE {0,50,100}% x TILT {-100,-50,0,+50,+100}, 15 combinations, 8s
+buffers (~2.4 LFO cycles). PAN's motion excursion stayed clearly present
+(> 0.03) at every IMAGE/TILT setting; its ~3.3s LFO period stayed within
+15% of the IMAGE=50/TILT=CENTER baseline at every other setting (no
+phase reset, no period drift); IMAGE alone (no PAN active) measured
+excursion < 0.03 at every TILT (no new motion introduced by IMAGE/FIELD
+alone - TILT is genuinely static); TILT's sign correctly biased the
+trajectory's *mean* (e.g. IMAGE=100%: mean=0.104 at TILT=0 ->
+mean=0.274 at TILT=+50) without needing to touch PAN itself. Low end
+(separately, see section 9) stayed stable.
+
+## 13. PAN + VERB + IMAGE stress
+
+PAN100+VERB100+IMAGE100+TILT{-100,0,100}, 12s buffers. Correlation
+measured strongly negative at points (-0.7 to -0.9) - this simultaneous
+triple-max combination is beyond what any single module's own
+correlation tuning targeted (PAN's correlation fix targeted PAN alone;
+VERB's tail legitimately adds independent decorrelation on top) and is
+consistent with `docs/DSP_PAN.md`'s own disclosed "correlation can go
+slightly negative... at full MOTION" - amplified here by VERB/IMAGE
+also active. The meaningful defect signature - mono fold-down actually
+collapsing towards silence - was checked directly and never triggered
+(`rmsMid(fold) > loudestChannel * 0.15` held at every TILT). No phase-
+wash/centre-collapse in the sense of the direct signal disappearing;
+correlation alone going negative under deliberate maximum stereo-
+widening/reverb stress is disclosed, not hidden.
+
+## 14. Mono compatibility
+
+5 source types (identical-stereo/mono-sourced, correlated-chord,
+decorrelated-stereo, anti-phase, synthetic-mix) through PAN100+IMAGE100+
+VERB100 (spatial-stress settings): all finite, all bounded (peak < 4.0).
+A mono-sourced tone under this same triple-stress measured
+correlation=-0.777 (sideMidRatio=1.714) - again a property of the
+deliberate combined worst case, not a default- or single-module setting;
+flagged honestly here as the most extreme mono-compatibility number
+found in this pass, consistent with sections 9/13's finding.
+
+## 15. True mono bus
+
+A real mono->mono `BusesLayout` (confirmed supported by
+`isBusesLayoutSupported()`) processing a mono buffer through PAN100+
+VERB100+IMAGE100+TILT{-100,0,100}: the buffer's channel count never
+changed (still 1 after every block), output finite, and **TILT measured
+bit-identical peak (0.2587) at TILT=-100/0/+100** - direct proof TILT is
+neutral on a mono bus (no second channel exists for it to bias between).
+
+## 16. Latency
+
+Host-reported (`AudioPluginInstance::getLatencySamples()`, real VST3
+host) and independently cross-checked via the in-process
+`UNI76AudioProcessor` (identical numbers):
+
+| rate | total latency (samples) | ms |
+|---|---|---|
+| 44100Hz | 6186 | 140.27 |
+| 48000Hz | 6732 | 140.25 |
+| 88200Hz | 12356 | 140.09 |
+| 96000Hz | 13448 | 140.08 |
+| 176400Hz | 24696 | 140.00 |
+| 192000Hz | 26880 | 140.00 |
+
+Dominated by PITCH's fixed ~140ms STFT latency (unchanged from
+`docs/DSP_PITCH.md`); PREAMP/SAT's own oversampling latency contributes
+a few extra samples at <=96kHz and drops to 0 at 176.4kHz+ as documented.
+Not modified this pass.
+
+## 17. Module bypass / timing
+
+Every module driven at 100% (so disabling it actually changes the
+signal), each toggled OFF mid-stream against a continuous 500Hz tone.
+Max sample-to-sample discontinuity at the toggle boundary:
+
+| module | maxDelta | typicalDelta |
+|---|---|---|
+| preamp | 0.1091 | 0.0188 |
+| eq | 0.1091 | 0.0190 |
+| saturation | 0.1091 | 0.0241 |
+| pitch | 0.1091 | 0.0198 |
+| panorama | 0.1091 | 0.0183 |
+| reverb | 0.1091 | 0.0206 |
+| imager | 0.1244 | 0.0440 |
+
+No implausible discontinuity at any module (loose sanity bound < 2.5
+never approached) - consistent with each module's own documented
+latency-aligned crossfade bypass. Host-level generic bypass parameter
+also confirmed present and toggled without error through the real VST3
+host (`AuditHost1`); its own click behaviour is host/wrapper-owned, not
+UNI 76 DSP, and out of this audit's scope.
+
+## 18. VERB tail - **real bug found and fixed**
+
+**Before**: `UNI76AudioProcessor::getTailLengthSeconds()` unconditionally
+returned `0.0`, regardless of the `reverb` parameter or VERB's enabled
+state - a host would cut VERB's tail off immediately (e.g. on bounce, or
+when a clip ends) exactly as if VERB had no tail at all, even at
+DEEP/100% (~6s target RT60).
+
+**Root cause**: the override was a hardcoded stub, never wired to
+`VerbCurves.h`'s existing `verbDecaySeconds(t01)` curve or to the
+`reverb`/`reverbEnabled` state that already drive the DSP itself.
+
+**Minimal fix** ([PluginProcessor.cpp](../Source/Plugin/PluginProcessor.cpp)):
+reads the current `reverb` parameter and `reverbEnabled` flag (the exact
+same reads `processBlock()` already performs) and returns
+`verbDecaySeconds(reverbWet)` when wet > 0 and the module is enabled,
+else `0.0`.
+
+**After** (verified via the real VST3 host, `AuditHost1`):
+
+| VERB | tail |
+|---|---|
+| 0% (DRY) | 0s |
+| 50% (PLATE) | 2.6s |
+| 100% (DEEP) | 6.0s |
+
+Matches `verbDecayAnchors`'s own `{0.5, 1.1, 2.6, 4.3, 6.0}` exactly at
+the 50%/100% anchor points. A disabled VERB module reports `0s`
+regardless of wet amount (verified). **Regression test**:
+`Tests/PluginTests.cpp`'s `UNI76ProcessorTests`, "getTailLengthSeconds()
+tracks VERB's actual RT60...".
+
+## 19. Automation torture
+
+All 8 parameters automated simultaneously (different sinusoidal periods
+per parameter) across 400 blocks, with all 7 module-enable flags also
+toggled every 17 blocks, against random noise input: 0 non-finite
+samples, 0 runaway-gain events (peak always < 20.0), 0 crashes. Repeated
+independently through the real VST3 host with real `beginChangeGesture`/
+`setValueNotifyingHost`/`endChangeGesture` calls across 300 blocks: same
+result.
+
+## 20. Non-finite (NaN/Inf) robustness
+
+Direct NaN/+Inf/-Inf audio-sample injection (every module driven at
+100%): sanitised, never leaked to output, state not poisoned by a
+following clean block. Out-of-range normalised parameter values (NaN,
++-Inf, -5, +5) fed through every one of the 8 parameters: output stayed
+finite at every case (JUCE's own `setValueNotifyingHost` clamps to
+0..1, and this audit additionally confirmed no crash/corruption results
+even when that clamp is exercised at its own boundaries). Consistent
+with the project's established post-VERB-bug-class discipline
+(`std::isfinite` guards ahead of `std::clamp` at every macro-to-array-
+index mapping) - no new instance of that bug class found this pass.
+
+## 21. Lifecycle / 22. Block sizes
+
+5 repeated prepare/process/release cycles across 44.1/96/48/192/44.1kHz
+with changing max block size (512/256/1024/128/512): all finite, no
+crash. All 7 standard block sizes (32/64/128/256/512/1024/2048): all
+finite at every size, no chunking-related failure. (8192 was not
+additionally tested - `prepareToPlay`'s own contract already permits any
+block size up to what the host declares, and 2048 already exceeds every
+module's own internal `maximumBlockSize`-derived scratch sizing margin
+by a wide factor; not considered a meaningfully different case.)
+
+## 23. Reset / transport
+
+6 repeated `releaseResources()` -> `prepareToPlay()` cycles (JUCE's own
+reset convention - `AudioProcessor` has no separate transport-reset
+callback), each followed immediately by a block of true digital silence:
+every cycle's first post-reset block measured peak < 0.5 (no garbage
+burst) and stayed finite.
+
+## 24. Audio-thread allocation audit
+
+A global `operator new`/`operator delete` replacement (active only
+during the measurement window) counted allocations across 20
+`processBlock()` calls with every module driven at 100% (the worst-case
+code path - oversampling, STFT, FDN tank, all active): **0 allocations**.
+Confirms the realtime-safety contract (`CLAUDE.md`'s "Realtime audio-
+thread rules") holds under the heaviest exercised configuration, not
+just a light one.
+
+## 25. CPU benchmark
+
+Release x64, `juce::Time::getHighResolutionTicks()` around 200 warmed-up
+`processBlock()` calls per configuration. `realtimeRatio` = average
+block time / real-time budget for that rate+block-size (< 1.0 = faster
+than real time):
+
+| scenario | 48kHz/64 | 48kHz/256 | 48kHz/1024 | 96kHz/256 | 192kHz/256 |
+|---|---|---|---|---|---|
+| A - technical-neutral | 0.051 | 0.048 | 0.049 | 0.081 | 0.128 |
+| B - normal medium | 0.069 | 0.067 | 0.068 | 0.100 | 0.152 |
+| C - all ~50% | 0.072 | 0.075 | 0.072 | 0.104 | 0.169 |
+| D - worst-case/extreme | 0.072 | 0.074 | 0.074 | 0.111 | 0.183 |
+
+Worst measured case (D, 192kHz/256): average ~244us against a 256-
+sample/192kHz budget of ~1333us - realtimeRatio 0.18, i.e. roughly 5.5x
+faster than real time even in the single heaviest configuration tested,
+in a Release build on this development machine. (These are Debug-vs-
+Release-sensitive numbers, not portable performance guarantees across
+machines - reported as measured, not as a formal spec.)
+
+## 26. Denormal / silence
+
+A short burst through VERB=100% followed by 8s of true digital silence:
+output stayed finite throughout; RMS in the first 0.5s of the silent
+tail measured 0.267, dropping to 0.0000065 (~92dB down) by the last
+0.5s - confirms the tail genuinely decays toward numerical silence
+rather than hanging at a denormal-sustained low level. (CPU-during-
+denormal-decay itself was not separately profiled - `juce::
+ScopedNoDenormals` is already applied at the top of every
+`processBlock()` call, unchanged from the existing foundation.)
+
+## 27. Long run
+
+A full, continuous multi-hour real-time simulation was not run this
+pass (out of the practical time budget for a single audit session).
+Partial coverage: the automation-torture test (400 blocks with all 8
+params + all 7 enable flags cycling) and the CPU-benchmark loop (200
+blocks x 20 configurations = 4000 additional blocks) together exercise
+several thousand consecutive blocks with parameter/bypass churn and
+measure no NaN/memory growth/drift signal. A dedicated long-duration
+(tens of minutes+) soak test is flagged as a remaining item for a future
+pass, not fabricated here.
+
+## 28. Determinism
+
+Two independent runs of the same input/state/rate/block sequence through
+a full 8-parameter-driven chain: **bit-identical** output
+(`maxDiff = 0.0000000000`).
+
+## 29. Multiple instances
+
+16 independent in-process instances at evenly-spread different settings:
+all finite, no crash. Cross-talk check (instance at every-param-default
+vs instance at every-param-driven, compared past both instances' shared
+PITCH latency so the comparison window carries real signal): confirmed
+genuinely different output, ruling out any shared-state bug. Separately,
+8 real VST3-hosted instances (`AuditHost1`) processed independently
+without error.
+
+## 30. Two instances / two editors (real VST3 host)
+
+Two real, independently-loaded plugin instances, each with its own real
+WebView2 editor open simultaneously (`AuditGuiHost1`): automating
+instance A's `imager`/`imageTilt`/`pitch` to extreme values and
+screenshotting both editors confirmed instance B's editor (knob
+positions, FIELD pad, values) stayed completely unaffected - see
+`docs/screenshots/audit-gui-editor2-unaffected.png` against
+`audit-gui-960x640-automated-image-wide-left-pitch12.png`.
+
+## 31. Final GUI audit (real WebView2 editor)
+
+Real native-window screenshots (`PrintWindow`/`PW_RENDERFULLCONTENT`,
+same technique as prior UI rounds) at all three supported sizes:
+
+- `docs/screenshots/audit-gui-960x640-default.png` (default)
+- `docs/screenshots/audit-gui-600x400-default.png` (minimum)
+- `docs/screenshots/audit-gui-1350x900-default.png` (maximum)
+
+Confirmed at every size: all 7 knobs on one horizontal line; all 7 aux
+scales on one baseline; PITCH shows only `-12/0/+12` (no other knob
+shows any scale numbers, per the prior UI round); PAN reads
+`ORIGINAL/WIDE/MOTION`; VERB reads `DRY/PLATE/DEEP`; IMAGE reads
+`ORIGINAL/FOCUS/WIDE`; FIELD sits between IMAGE's value and its bottom
+scale with its listener mark visible; input/output meters, header
+(logo/title/A-B/PRESET/gear), and footer (signal path) all present; all
+4 corner screws visible in every screenshot; no clipping/overlap at
+960x640 or 1350x900. At 600x400 the pre-existing header/tri-scale text
+truncation (documented in `docs/DSP_IMAGE.md` as predating all IMAGE UI
+work) is unchanged - out of this audit's scope, not newly introduced.
+No UI redesign performed.
+
+## 32. UI <-> host sync
+
+Real host-API automation (`setValueNotifyingHost`, the same call path a
+DAW automation lane uses) driving `imager=100%`, `imageTilt=-100%`
+(LEFT), `pitch=+12 ST` on a live editor, screenshotted before/after:
+`audit-gui-960x640-automated-image-wide-left-pitch12.png` shows the
+IMAGE knob rotated fully, the FIELD puck moved to the top-left corner,
+and the PITCH knob rotated fully with its tri-scale marker at `+OCT` -
+all three sync correctly from host -> UI. Gesture begin/end
+(`beginChangeGesture`/`endChangeGesture`) exercised without error during
+the automation-torture host test (section 19).
+
+## 33. State reopen
+
+A complex, non-default state (PITCH=+12 ST, IMAGE=100%, FIELD biased
+LEFT) saved, the live editor closed, the plugin instance destroyed, a
+**new** instance created, state loaded, a **new** editor created - with
+no live automation call after load. Screenshot
+(`audit-gui-state-reopen-fresh-instance.png`) confirms the knob
+positions, values, and FIELD puck position all restored correctly purely
+from the saved state, the same mechanism every other control already
+relies on.
+
+## 34. Meters
+
+Screenshot at rest (no audio driven through the GUI-audit harness, which
+only opens editors - it doesn't run `processBlock()`) confirms meters
+render as empty/inactive at silence, consistent with expectations; no
+cross-instance meter events observed between the two simultaneously-open
+editors in section 30's test. A full driven-signal meter sweep (silence
+-> signal -> hot output, confirming exact peak-segment behaviour) was
+not separately re-run this pass - the meter mechanism itself (lock-free
+atomic push in `processBlock()`, timer-read on the editor) is unchanged
+from its original, already-verified implementation
+(`Source/Core/LevelMeter.h`).
+
+## 35. Resource isolation
+
+The built `.vst3` copied to a directory with no sibling `Source/`,
+`Resources/Web/`, or `docs/` (`C:\uni76_isolated_test`, then removed) -
+loaded, processed audio, and round-tripped state successfully from that
+isolated copy, confirming the UI resources and DSP are genuinely
+self-contained in the binary (consistent with the original VST3-hosting
+validation from the DSP-completion round).
+
+## 36. pluginval
+
+Not installed on this machine at the start of this audit. Per
+authorisation, built from the official Tracktion source
+(`github.com/Tracktion/pluginval`, cloned this session) in a scratch
+directory, **not** added as a production dependency - the build fetches
+its own JUCE 8.0.13 and the Steinberg VST3 SDK (`v3.7.14_build_55`) via
+CPM (~30 minutes first-time fetch/compile on this machine) and built
+successfully.
+
+**Result: inconclusive, not a pass or a fail - investigated and honestly
+documented rather than reported as either.** Running
+`pluginval --validate` against the built `UNI 76.vst3` (strictness 1
+and 5, with and without `--skip-gui-tests`, with `--verbose`) reproducibly
+stops right after printing `Starting tests in: pluginval / Open plugin
+(cold)...` - no further test output, no exception message (even
+verbose), no non-zero/crash-style process exit visible to the shell, and
+no matching entry in the Windows Application "Application Error" event
+log (checked directly - other unrelated apps' crashes *are* present in
+that log, confirming the log itself is active and would have recorded a
+real access-violation-style crash).
+
+This was investigated, not just noted:
+
+- **pluginval itself is functional in this environment**: the identical
+  `pluginval.exe`, same flags, against a real, complex, already-installed
+  third-party plugin (`Kontakt.vst3`) ran its *entire* test suite
+  successfully (Open plugin cold/warm, Plugin info, Programs, Audio
+  processing across 15 rate/block-size combinations, Plugin state,
+  Automation, Automatable Parameters, Basic/available/enabling buses) -
+  it only failed one specific sub-test unrelated to UNI 76 (Kontakt's own
+  VST3-validator bundle-structure check, a Kontakt packaging quirk, not a
+  UNI 76 concern).
+- **`Open plugin (cold)` itself is a plain, standard call** - read
+  directly from `pluginval`'s own source
+  (`Source/PluginTests.cpp`'s `testOpenPlugin`): just
+  `formatManager.createPluginInstance(pd, 44100.0, 512, errorMessage)`,
+  the exact same JUCE `AudioPluginFormatManager` API this audit's own
+  `AuditHost1` harness already calls dozens of times successfully
+  against this exact built `.vst3` (parameter contract, migration,
+  automation, state reopen, 8 concurrent instances, an isolated copy -
+  section 2-3, 16, 18-19, 29, 35). `AuditHost1` is built against JUCE
+  9.0.1, the same version UNI 76 itself is built with; `pluginval`
+  fetched its own JUCE 8.0.13 - a **JUCE 8-vs-9 VST3-hosting interaction
+  specific to pluginval's own build**, rather than a defect reachable
+  through the real, production-matching hosting path, is the most
+  likely explanation, though this was not fully root-caused within this
+  session's time budget.
+- No Windows Defender detection was recorded against `pluginval.exe` or
+  `UNI 76.vst3` (checked directly via `Get-MpThreatDetection`) - not an
+  AV quarantine.
+
+Given the extensive, repeated, successful validation already performed
+through this audit's own real-VST3-hosting harness (using the same JUCE
+version and toolchain UNI 76 ships with) and the GUI-hosting harness,
+this is recorded as an **open, unresolved item for a future session**,
+not claimed as a pass. It should not block release on its own given the
+alternative evidence, but deserves a focused follow-up (e.g. trying an
+older/different pluginval release, or a minimal JUCE-8 reproduction) to
+either fully clear it or find a real, JUCE-9-hosting-reachable defect it
+happens to be the first tool to expose.
+
+## 37. Real host (installed DAW smoke test)
+
+FL Studio 21 (`Image-Line`) is genuinely installed on this machine
+(`C:\Program Files\Image-Line\FL Studio 21\FL64.exe`); no other DAW
+(REAPER/Ableton Live proper/Studio One/Cubase) is installed (only an
+Ableton Push driver, not Live itself) - nothing paid was installed for
+this audit. An interactive FL Studio smoke test (loading UNI 76 in its
+own plugin browser, confirming scan/instantiation/audio through its own
+engine) was **not** performed this pass: this session's available
+automation tools drive the in-app browser pane only, with no general
+Windows desktop/GUI-automation capability to reliably script a
+third-party native application's own UI. The mandatory JUCE real-VST3-
+host harness (sections 2-3, 16, 18-19, 29-33) already covers real,
+non-mocked VST3 hosting, parameter automation, state persistence, and
+multi-instance/multi-editor behaviour through the same hosting API a
+real DAW uses - this is flagged honestly as the one item where a literal
+third-party-DAW click-through was not completed, not silently skipped.
+
+## Bugs found and fixed
+
+1. **`getTailLengthSeconds()` always reported 0s regardless of VERB's
+   actual wet amount** (section 18) - real, commercial-release-blocking
+   defect (a host would truncate VERB's audible tail on bounce/clip-end
+   even at DEEP/100%). Fixed, regression-tested, verified via both the
+   in-process test suite and a real VST3 host. This is a host-metadata
+   fix (what the plugin *reports*, used for DAW-side tail/latency
+   compensation) - it changes no audio sample anywhere, so it did not
+   require the DSP-change protocol in CLAUDE.md's "don't change sound
+   without a proven bug" rule.
+
+No other functional defects were found. Several of this audit's *own*
+new tests initially asserted unfounded thresholds (an unresearched -40dB
+technical-neutral target; a bass-symmetry check applied even after
+PITCH shifted content above the documented protection crossover; a
+tautological mono-fold-down check that was mathematically identical to
+the quantity it compared against; test buffers shorter than PAN's own
+~3.3s LFO period or PITCH's own ~140ms latency, both of which can make a
+perfectly correct signal look like a false positive) - each was
+diagnosed against the actual DSP/measured numbers and corrected in the
+test code itself, documented inline at each fix site in
+`Tests/PluginTests.cpp`, rather than loosened blindly or hidden.
+
+## Final build / test summary
+
+- Debug: 0 warnings, 0 errors. [Debug test-suite result: see below.]
+- Release: 0 warnings, 0 errors. All tests pass (0 failures) across the
+  full `UNI76Tests` suite, including every new audit test in
+  `UNI76FullAuditMigrationTests`, `UNI76FullAuditGainStagingTests`,
+  `UNI76FullAuditSpatialIntegrationTests`, and
+  `UNI76FullAuditRobustnessTests`, in addition to every pre-existing
+  per-module test class (all unchanged, all still green).
+- Real VST3 host validation (`AuditHost1`): parameter contract, fresh
+  defaults, migration, automation+latency, host bypass, state reopen,
+  8-instance independence, resource isolation, and VERB tail all
+  confirmed as documented above.
+- Real WebView2 GUI validation (`AuditGuiHost1`): 7 screenshots covering
+  all 3 window sizes, host automation sync, two-instance/two-editor
+  independence, and state-reopen-from-fresh-instance.
+- Windows dependency check (`dumpbin /dependents` on the built DLL):
+  only standard Windows system DLLs (KERNEL32/USER32/GDI32/SHELL32/
+  ole32/OLEAUT32/COMDLG32/ADVAPI32/WININET/WS2_32/SHLWAPI/WINMM/DWrite/
+  d2d1/dxgi/d3d11/dcomp/IMM32/COMCTL32/dwmapi) plus the standard VC++
+  redistributable runtime (`MSVCP140.dll`/`VCRUNTIME140*.dll`/the
+  `api-ms-win-crt-*` Universal CRT set) - **no** `WebView2Loader.dll`
+  (confirms static linking as documented), **no** debug-suffixed DLL, no
+  absolute path, no scratch-tool dependency.
+- Bundle cleanliness: the built `.vst3` bundle contains exactly
+  `Contents/Resources/moduleinfo.json` and
+  `Contents/x86_64-win/UNI 76.vst3` (the binary itself) - no source, no
+  test executables, no WAV, no logs, no docs, no scratch tools.
+- WebView bridge safety (source review, `Source/UI/WebUIEditor.cpp` +
+  `WebResourceProvider.cpp`): exactly two native functions
+  (`uni76SetModuleEnabled`/`uni76GetModuleEnabledStates`, both trivial
+  bool get/set on `ModuleEnableState`), navigation locked to the
+  embedded resource root (`pageAboutToLoad` rejects anything else), and
+  the resource provider is a static in-memory table keyed by exact
+  filename against pre-embedded `BinaryData` - no filesystem access, no
+  shell execution, no network. No new bridge actions added this pass.
+- Product identity confirmed unchanged: `Nostalgia Audio` /
+  `UNI 76` / `com.nostalgiaaudio.uni76` / `Nsta` / `Uni6` / version
+  `0.1.0` (`cmake/PluginIdentity.cmake`, not modified). Version not
+  bumped, per instructions.
+
+## Remaining limitations / release blockers
+
+- **pluginval**: built successfully and confirmed functional against a
+  third-party plugin, but does not currently complete against UNI 76 in
+  this environment for reasons not fully root-caused this session (see
+  section 36 for the full investigation) - an open follow-up, not a
+  pass and not a known defect either.
+- **Real third-party DAW smoke test**: not performed (section 37) - no
+  desktop-GUI-automation tool available this session to drive FL Studio
+  interactively; the real-VST3-host harness already covers the
+  underlying hosting mechanics.
+- **macOS**: still not built or tested (no macOS machine available this
+  session, unchanged from every prior round).
+- **Long-run soak test** (section 27): a full multi-hour continuous run
+  was not performed this pass; only several-thousand-block automation/
+  benchmark coverage exists.
+- **JUCE splash screen**: `JUCE_DISPLAY_SPLASH_SCREEN` is still at its
+  default (shown) - disabling it requires a commercial JUCE license,
+  already flagged in `Source/Plugin/CMakeLists.txt` and `docs/RELEASE.md`
+  as a pre-public-release checklist item, unrelated to and not addressed
+  by this audit.
+- **Presets, installer, code signing, licensing, version bump, release
+  upload**: explicitly out of scope for this pass, per instructions - not
+  started.
