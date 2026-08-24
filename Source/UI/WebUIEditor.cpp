@@ -4,6 +4,10 @@
 #include "Parameters/ParameterIDs.h"
 #include "Core/MeterEnvelope.h"
 #include "Core/FactoryPresets.h"
+#include "Core/UserPresets.h"
+
+#include <cmath>
+#include <iostream>
 
 namespace
 {
@@ -90,14 +94,19 @@ namespace
             .withNativeFunction ("uni76GetFactoryPresetNames",
                 [] (const juce::Array<juce::var>&, Completion complete)
                 {
-                    juce::Array<juce::var> names;
+                    juce::Array<juce::var> entries;
                     for (auto& preset : uni76::factoryPresets)
-                        names.add (juce::String (preset.name));
+                    {
+                        auto* entry = new juce::DynamicObject();
+                        entry->setProperty ("name", juce::String (preset.name));
+                        entry->setProperty ("category", juce::String (uni76::presetCategoryName (preset.category)));
+                        entries.add (juce::var (entry));
+                    }
 
-                    complete (juce::var (names));
+                    complete (juce::var (entries));
                 })
             .withNativeFunction ("uni76LoadFactoryPreset",
-                [&processor] (const juce::Array<juce::var>& args, Completion complete)
+                [&processor, &editor] (const juce::Array<juce::var>& args, Completion complete)
                 {
                     if (args.size() >= 1)
                     {
@@ -124,10 +133,99 @@ namespace
                             // not a workflow shortcut for muting modules.
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
                                 processor.getModuleEnableState().setEnabled (i, true);
+
+                            editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::factory,
+                                                     juce::String (preset.name));
                         }
                     }
 
                     complete (juce::var());
+                })
+            // ---- User presets (item 5 of the UX polish pass) - see
+            // Core/UserPresets.h. All file I/O here runs on the message
+            // thread only, triggered by a user gesture (menu open / Save /
+            // Load / Delete click) - never the audio thread.
+            .withNativeFunction ("uni76GetUserPresetNames",
+                [] (const juce::Array<juce::var>&, Completion complete)
+                {
+                    juce::Array<juce::var> names;
+                    for (auto& name : uni76::listUserPresetNames())
+                        names.add (name);
+
+                    complete (juce::var (names));
+                })
+            .withNativeFunction ("uni76UserPresetExists",
+                [] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    bool exists = false;
+                    if (args.size() >= 1)
+                        exists = uni76::userPresetExists (args[0].toString());
+
+                    complete (juce::var (exists));
+                })
+            .withNativeFunction ("uni76SaveUserPreset",
+                [&processor, &editor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    bool ok = false;
+                    if (args.size() >= 1)
+                    {
+                        const auto name = args[0].toString();
+                        if (name.isNotEmpty())
+                        {
+                            uni76::UserPresetData data;
+                            auto& apvts = processor.getValueTreeState();
+                            for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                                if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+                                    data.values[i] = param->convertFrom0to1 (param->getValue());
+
+                            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                                data.moduleEnabled[(size_t) i] = processor.getModuleEnableState().isEnabled (i);
+
+                            ok = uni76::saveUserPreset (name, data);
+                            if (ok)
+                                editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::user, name);
+                        }
+                    }
+
+                    complete (juce::var (ok));
+                })
+            .withNativeFunction ("uni76LoadUserPreset",
+                [&processor, &editor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    bool ok = false;
+                    if (args.size() >= 1)
+                    {
+                        const auto name = args[0].toString();
+                        if (auto data = uni76::loadUserPreset (name))
+                        {
+                            auto& apvts = processor.getValueTreeState();
+                            for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                                if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+                                    param->setValueNotifyingHost (param->convertTo0to1 (data->values[i]));
+
+                            for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
+                                processor.getModuleEnableState().setEnabled (i, data->moduleEnabled[(size_t) i]);
+
+                            editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::user, name);
+                            ok = true;
+                        }
+                    }
+
+                    complete (juce::var (ok));
+                })
+            .withNativeFunction ("uni76DeleteUserPreset",
+                [&editor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    bool ok = false;
+                    if (args.size() >= 1)
+                    {
+                        const auto name = args[0].toString();
+                        ok = uni76::deleteUserPreset (name);
+                        if (ok)
+                            editor.clearActivePreset();
+                    }
+
+                    complete (juce::var (ok));
                 })
             // RC1 A/B (see WebUIEditor.h's ABSnapshot comment) - session-
             // local only, not persisted.
@@ -135,6 +233,19 @@ namespace
                 [&editor] (const juce::Array<juce::var>&, Completion complete)
                 {
                     complete (juce::var (editor.toggleAB()));
+                })
+            // Startup profiling (see docs/FULL_DSP_AUDIT.md's GUI-startup
+            // measurements) - args are JS performance.now() timestamps
+            // (script-start=0 reference, DOMContentLoaded, app.js-done);
+            // logs the full native-to-JS-ready elapsed time against this
+            // editor's own construction timestamp. Left in permanently -
+            // negligible cost, only real way to catch a future regression.
+            .withNativeFunction ("uni76ReportStartupTiming",
+                [&editor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    if (args.size() >= 3)
+                        editor.reportStartupTiming ((double) args[0], (double) args[1], (double) args[2]);
+                    complete (juce::var());
                 })
             .withResourceProvider (&uni76::ui::getWebResource);
     }
@@ -149,6 +260,7 @@ bool UNI76AudioProcessorEditor::SinglePageBrowser::pageAboutToLoad (const juce::
 
 UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     : AudioProcessorEditor (&p),
+      constructionStartMs (juce::Time::getMillisecondCounterHiRes()),
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
                                     panoramaRelay, reverbRelay, imagerRelay, imageTiltRelay,
@@ -227,6 +339,51 @@ void UNI76AudioProcessorEditor::applySnapshot (const ABSnapshot& snapshot)
         processor.getModuleEnableState().setEnabled (i, snapshot.moduleEnabled[(size_t) i]);
 }
 
+bool UNI76AudioProcessorEditor::snapshotsEqual (const ABSnapshot& a, const ABSnapshot& b) const
+{
+    for (size_t i = 0; i < a.values.size(); ++i)
+        if (std::abs (a.values[i] - b.values[i]) > 1.0e-6f)
+            return false;
+
+    for (size_t i = 0; i < a.moduleEnabled.size(); ++i)
+        if (a.moduleEnabled[i] != b.moduleEnabled[i])
+            return false;
+
+    return true;
+}
+
+void UNI76AudioProcessorEditor::setActivePreset (PresetKind kind, const juce::String& name)
+{
+    activePresetKind = kind;
+    activePresetName = name;
+    activePresetSnapshot = captureSnapshot();
+}
+
+void UNI76AudioProcessorEditor::clearActivePreset()
+{
+    activePresetKind = PresetKind::none;
+    activePresetName.clear();
+}
+
+UNI76AudioProcessorEditor::ActivePresetInfo UNI76AudioProcessorEditor::getActivePresetInfo() const
+{
+    ActivePresetInfo info;
+    info.kind = activePresetKind;
+    info.name = activePresetName;
+    info.dirty = activePresetKind != PresetKind::none
+                     && ! snapshotsEqual (captureSnapshot(), activePresetSnapshot);
+    return info;
+}
+
+void UNI76AudioProcessorEditor::reportStartupTiming (double jsT0, double jsDomContentLoaded, double jsAppReady)
+{
+    const auto nativeToJsReadyMs = juce::Time::getMillisecondCounterHiRes() - constructionStartMs;
+    std::cout << "[UNI76 startup] editor-ctor-to-app-ready=" << nativeToJsReadyMs << "ms"
+               << " | JS: htmlParse-to-domContentLoaded=" << (jsDomContentLoaded - jsT0) << "ms"
+               << " domContentLoaded-to-appReady=" << (jsAppReady - jsDomContentLoaded) << "ms"
+               << " htmlParse-to-appReady=" << (jsAppReady - jsT0) << "ms" << std::endl;
+}
+
 juce::String UNI76AudioProcessorEditor::toggleAB()
 {
     // Capture whatever the user has tweaked since the last toggle into
@@ -260,6 +417,17 @@ void UNI76AudioProcessorEditor::timerCallback()
     auto* payload = new juce::DynamicObject();
     payload->setProperty ("input", inputMeterEnvelope);
     payload->setProperty ("output", outputMeterEnvelope);
+
+    // Piggybacked onto the existing 30Hz meter tick rather than a new
+    // per-parameter-callback check (see WebUIEditor.h's ActivePresetInfo
+    // comment) - a cheap 8-float/7-bool compare, negligible next to the
+    // meter read it already does every tick.
+    const auto presetInfo = getActivePresetInfo();
+    payload->setProperty ("presetName", presetInfo.kind == PresetKind::none ? juce::var() : juce::var (presetInfo.name));
+    payload->setProperty ("presetKind", presetInfo.kind == PresetKind::factory ? "factory"
+                                       : presetInfo.kind == PresetKind::user    ? "user"
+                                                                                 : "none");
+    payload->setProperty ("presetDirty", presetInfo.dirty);
 
     webView.emitEventIfBrowserIsVisible ("meterLevels", juce::var (payload));
 }

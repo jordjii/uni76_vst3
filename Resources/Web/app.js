@@ -7,7 +7,7 @@
 // here is either a direct user gesture or a valueChangedEvent callback
 // fired by the native backend.
 
-import { getSliderState } from "./juce_webview.js";
+import { getSliderState, getNativeFunction } from "./juce_webview.js";
 import { ParameterKnob } from "./knob.js";
 import { FieldPad } from "./field_pad.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
@@ -121,3 +121,14 @@ initMeters();
 initModulePower();
 initPresetMenu();
 initABToggle();
+
+// Startup profiling only - see docs/FULL_DSP_AUDIT.md's GUI-startup
+// measurements. Cheap (one native call, a handful of numbers) and left
+// in permanently since it costs nothing at runtime and is the only
+// reliable way to catch a future startup-time regression without
+// re-instrumenting from scratch.
+getNativeFunction ("uni76ReportStartupTiming") (
+  window.__uni76T0 || 0,
+  window.__uni76DomContentLoadedAt || 0,
+  performance.now()
+);

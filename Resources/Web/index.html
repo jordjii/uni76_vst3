@@ -4,6 +4,12 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>UNI 76</title>
+  <script>
+    window.__uni76T0 = performance.now();
+    document.addEventListener("DOMContentLoaded", function () {
+      window.__uni76DomContentLoadedAt = performance.now();
+    });
+  </script>
   <link rel="stylesheet" href="tokens.css" />
   <link rel="stylesheet" href="reset.css" />
   <link rel="stylesheet" href="shell.css" />
@@ -32,9 +38,13 @@
         <span class="header__subtitle">ANALOG PROCESSOR</span>
       </div>
       <div class="header__controls">
-        <button class="header__btn" type="button" data-header-control="ab">A / B</button>
-        <button class="header__btn header__btn--preset" type="button" data-header-control="preset">PRESET &#9662;</button>
-        <button class="header__btn header__btn--icon" type="button" disabled aria-label="Settings">&#9881;</button>
+        <div class="ab-toggle" data-header-control="ab" role="group" aria-label="A/B compare">
+          <button class="ab-toggle__btn is-active" type="button" data-ab-slot="a" aria-pressed="true">A</button>
+          <button class="ab-toggle__btn" type="button" data-ab-slot="b" aria-pressed="false">B</button>
+        </div>
+        <button class="header__btn header__btn--preset" type="button" data-header-control="preset" aria-haspopup="true" aria-expanded="false">
+          <span class="header__btn-preset-label">DEFAULT</span> &#9662;
+        </button>
       </div>
     </header>
 
@@ -341,15 +351,15 @@
 
       <div class="signal-path">
         <ol class="signal-path__list">
-          <li class="signal-path__chip">PREAMP</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">EQ</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">SAT</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">PITCH</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">PAN</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">VERB</li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li class="signal-path__chip">IMAGE</li>
+          <li><button type="button" class="signal-path__chip" data-module="preamp" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PREAMP</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="eq" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>EQ</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="saturation" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>SAT</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="pitch" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PITCH</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="panorama" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PAN</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="reverb" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>VERB</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
+          <li><button type="button" class="signal-path__chip" data-module="imager" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>IMAGE</button></li>
         </ol>
-        <div class="signal-path__caption">ANALOG SIGNAL PATH</div>
+        <div class="signal-path__caption">SIGNAL PATH</div>
       </div>
 
       <div class="meter meter--output">

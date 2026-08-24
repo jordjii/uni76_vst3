@@ -8,6 +8,7 @@
 #include "Core/MeterEnvelope.h"
 #include "Core/ModuleEnableState.h"
 #include "Core/FactoryPresets.h"
+#include "Core/UserPresets.h"
 #include "DSP/PreampProcessor.h"
 #include "DSP/PreampCurves.h"
 #include "DSP/EqProcessor.h"
@@ -6215,6 +6216,111 @@ public:
             expect (rmsDiff < 1.0e-5, "DRY should be a near-bit-exact identity transform");
         }
 
+        beginTest ("Modal/resonance sweep: spectral flatness of the plate tank's steady decay, VERB=50% (PLATE)");
+        {
+            // Diagnostic measurement for the "too metallic" tuning pass (see
+            // CLAUDE.md's RC1 UX-polish-pass entry and docs/DSP_VERB.md) -
+            // not a strict pass/fail gate, since there is no single
+            // "correct" spectral-flatness number, but the peak-to-mean and
+            // RMS-deviation figures printed here are exactly the "measure
+            // first" the tuning pass needs, and are directly comparable
+            // before/after any diffusion/delay-length/damping change.
+            // Method: feed a single-sample impulse, isolate the wet-only
+            // contribution (see verbWetOnly()), then Goertzel-sample the
+            // tank's *steady* decay region (well after the diffuser/pre-
+            // delay onset, well before the tail dies into the noise floor)
+            // at ~28 log-spaced frequencies from 200Hz-8kHz. A perfectly
+            // diffuse/dense response has a flat spectral envelope in this
+            // region (low peak-to-mean, low std-dev); a small number of
+            // dominant, under-damped modes - the "metallic ring" symptom -
+            // shows up as sharp peaks well above the mean.
+            constexpr double sr = 48000.0;
+            constexpr int blockSize = 256;
+
+            juce::AudioBuffer<float> impulse (2, (int) (1.5 * sr));
+            impulse.clear();
+            impulse.setSample (0, 0, 1.0f);
+            impulse.setSample (1, 0, 1.0f);
+
+            auto wetOnly = verbWetOnly (impulse, sr, blockSize, 0.5f);
+
+            const auto windowStart = (int) (0.30 * sr);
+            const int numPoints = 28;
+            const float freqLo = 200.0f, freqHi = 8000.0f;
+
+            std::vector<double> magsDb;
+            magsDb.reserve ((size_t) numPoints);
+            for (int p = 0; p < numPoints; ++p)
+            {
+                const auto frac = (float) p / (float) (numPoints - 1);
+                const auto freq = freqLo * std::pow (freqHi / freqLo, frac);
+                const auto win = periodicAnalysisLength (sr, freq, 12);
+                const auto mag = goertzelMagnitude (wetOnly, 0, windowStart, win, sr, freq);
+                magsDb.push_back (20.0 * std::log10 (juce::jmax ((double) mag, 1.0e-9)));
+            }
+
+            double meanDb = 0.0;
+            for (auto v : magsDb) meanDb += v;
+            meanDb /= (double) magsDb.size();
+
+            double peakAboveMeanDb = 0.0, sumSqDev = 0.0;
+            for (auto v : magsDb)
+            {
+                peakAboveMeanDb = juce::jmax (peakAboveMeanDb, v - meanDb);
+                sumSqDev += (v - meanDb) * (v - meanDb);
+            }
+            const auto stdDevDb = std::sqrt (sumSqDev / (double) magsDb.size());
+
+            // Raw peak-above-mean/stdDev above are confounded by the
+            // response's overall broadband TILT (damping alone controls
+            // how much darker the tail is by this checkpoint - a change
+            // there shifts every high-frequency point down together,
+            // which widens peak-vs-mean/stdDev even with zero change in
+            // how "spiky" any individual mode is). A local, detrended
+            // residual - each point compared against a moving average of
+            // its own neighbours, not the single global mean - isolates
+            // genuine narrow-band resonant spikes (the actual "metallic
+            // ring" symptom) from that broadband tilt, and is the number
+            // that actually answers "did individual modes get less
+            // dominant", independent of "did the plate get darker".
+            constexpr int trendHalfWindow = 3;
+            std::vector<double> residuals ((size_t) numPoints, 0.0);
+            for (int i = 0; i < numPoints; ++i)
+            {
+                double trendSum = 0.0;
+                int trendCount = 0;
+                for (int j = -trendHalfWindow; j <= trendHalfWindow; ++j)
+                {
+                    if (j == 0) continue;
+                    const auto idx = i + j;
+                    if (idx < 0 || idx >= numPoints) continue;
+                    trendSum += magsDb[(size_t) idx];
+                    ++trendCount;
+                }
+                const auto trend = trendCount > 0 ? trendSum / (double) trendCount : magsDb[(size_t) i];
+                residuals[(size_t) i] = magsDb[(size_t) i] - trend;
+            }
+
+            double peakResidualDb = 0.0, sumSqResidual = 0.0;
+            for (auto r : residuals)
+            {
+                peakResidualDb = juce::jmax (peakResidualDb, std::abs (r));
+                sumSqResidual += r * r;
+            }
+            const auto residualStdDevDb = std::sqrt (sumSqResidual / (double) residuals.size());
+
+            std::cout << "\n=== VERB modal/resonance sweep (200Hz-8kHz, 28 pts, PLATE 50%) ===" << std::endl;
+            std::cout << "  mean=" << meanDb << "dB  peak-above-mean=" << peakAboveMeanDb
+                       << "dB  stdDev=" << stdDevDb << "dB  [raw, tilt-confounded]" << std::endl;
+            std::cout << "  detrended (local-neighbour residual): peak=" << peakResidualDb
+                       << "dB  stdDev=" << residualStdDevDb << "dB  [the actual modal/metallic indicator]" << std::endl;
+            std::cout << "=== end modal/resonance sweep ===" << std::endl << std::endl;
+
+            expect (std::isfinite (meanDb) && std::isfinite (peakAboveMeanDb) && std::isfinite (stdDevDb)
+                        && std::isfinite (peakResidualDb) && std::isfinite (residualStdDevDb),
+                    "resonance sweep must produce finite numbers");
+        }
+
         beginTest ("Macro curve mapping (VerbCurves.h, direct)");
         {
             std::cout << "\n=== VERB curve mapping (VerbCurves.h, direct) ===" << std::endl;
@@ -9564,12 +9670,20 @@ public:
     {
         beginTest ("Factory preset data: sane count, unique names, in-range values, musical (not extreme) starting points");
         {
-            expect (uni76::factoryPresets.size() >= 8 && uni76::factoryPresets.size() <= 12,
-                    "factory preset count should be roughly 8-12, per the RC1 brief");
+            // Grew from RC1's flat 10-preset GENERAL-only bank to 5
+            // categories (GENERAL + VOCAL/PIANO/ACOUSTIC GUITAR/ELECTRIC
+            // GUITAR instrument banks) in the UX polish pass - see
+            // Core/FactoryPresets.h and CLAUDE.md.
+            expect (uni76::factoryPresets.size() >= 28 && uni76::factoryPresets.size() <= 40,
+                    "factory preset count should be roughly 28-40 across all 5 categories");
 
+            std::set<uni76::PresetCategory> seenCategories;
+            std::map<uni76::PresetCategory, int> countPerCategory;
             std::set<juce::String> seenNames;
             for (auto& preset : uni76::factoryPresets)
             {
+                seenCategories.insert (preset.category);
+                countPerCategory[preset.category]++;
                 expect (juce::String (preset.name).isNotEmpty(), "preset name must not be empty");
                 expect (seenNames.find (preset.name) == seenNames.end(), juce::String ("duplicate preset name: ") + preset.name);
                 seenNames.insert (preset.name);
@@ -9595,6 +9709,14 @@ public:
                 expectEquals (preset.pitch, 0.0f, juce::String (preset.name) + ": pitch should be 0 ST");
                 expectEquals (preset.imageTilt, 0.0f, juce::String (preset.name) + ": imageTilt should be 0/CENTER");
             }
+
+            // All 5 categories from the UX polish pass must be present,
+            // each with at least a handful of presets - a category with
+            // zero or one entry would defeat the point of grouping the
+            // menu by category (item 6 of the polish pass).
+            expectEquals ((int) seenCategories.size(), 5, "all 5 preset categories must be represented");
+            for (auto& [presetCat, count] : countPerCategory)
+                expect (count >= 5, juce::String (uni76::presetCategoryName (presetCat)) + ": too few presets in this category");
         }
 
         beginTest ("Applying every factory preset sets exactly the declared values and enables all modules");
@@ -9684,6 +9806,164 @@ public:
 };
 
 static UNI76RC1FactoryPresetTests uni76RC1FactoryPresetTests; // NOLINT - self-registers with the UnitTestRunner
+
+// ---- UX polish pass: preset/UI-sync + user-preset regression tests -------
+//
+// Covers the two real bugs the user found via manual testing (see
+// CLAUDE.md's UX-polish-pass entry): (1) a preset load must actually
+// change the processed *audio*, not just the module-enable flags (the
+// flags-only check already lived in UNI76RC1FactoryPresetTests above); and
+// (2) user presets (Core/UserPresets.h) round-trip through real disk I/O,
+// the same file-based path the plugin instance itself uses - there is no
+// in-memory cache anywhere in that path, so a fresh loadUserPreset() call
+// after saveUserPreset() is as strong a proxy for "survives plugin
+// restart" as an in-process test can give.
+class UNI76UXPolishTests final : public juce::UnitTest
+{
+public:
+    UNI76UXPolishTests() : juce::UnitTest ("UX polish pass: preset/UI sync + user presets", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("All modules OFF -> load a preset with modules ON -> processed audio audibly changes (item 3)");
+        {
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 256);
+            auto& apvts = processor.getValueTreeState();
+
+            for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                processor.getModuleEnableState().setEnabled (m, false);
+
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            constexpr int totalSamples = 4096;
+            auto makeTestSignal = [&]
+            {
+                juce::AudioBuffer<float> buf (2, totalSamples);
+                for (int i = 0; i < totalSamples; ++i)
+                {
+                    const auto s = 0.3f * std::sin (2.0f * juce::MathConstants<float>::pi * 220.0f * (float) i / (float) sr)
+                                 + 0.15f * std::sin (2.0f * juce::MathConstants<float>::pi * 3000.0f * (float) i / (float) sr);
+                    buf.setSample (0, i, s);
+                    buf.setSample (1, i, s);
+                }
+                return buf;
+            };
+
+            auto runThrough = [&] (juce::AudioBuffer<float> buf)
+            {
+                juce::MidiBuffer midi;
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    for (int ch = 0; ch < 2; ++ch)
+                        block.copyFrom (ch, 0, buf, ch, done, thisBlock);
+                    processor.processBlock (block, midi);
+                    for (int ch = 0; ch < 2; ++ch)
+                        buf.copyFrom (ch, done, block, ch, 0, thisBlock);
+                    done += thisBlock;
+                }
+                return buf;
+            };
+
+            const auto outputWithModulesOff = runThrough (makeTestSignal());
+
+            // Pick a preset that clearly engages multiple modules (not
+            // "Default", which is near-identity at every stage).
+            const auto& preset = uni76::factoryPresets[1]; // "Warm Analog"
+            const float rawValues[8] {
+                preset.preamp, preset.eq, preset.saturation, preset.pitch,
+                preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+            };
+            for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
+                if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
+                    param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
+            for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                processor.getModuleEnableState().setEnabled (m, true);
+
+            for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                expect (processor.getModuleEnableState().isEnabled (m), "module should be enabled after preset load");
+
+            const auto outputWithPresetOn = runThrough (makeTestSignal());
+
+            double sumSqDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < totalSamples; ++i)
+                {
+                    const auto diff = (double) (outputWithPresetOn.getSample (ch, i) - outputWithModulesOff.getSample (ch, i));
+                    sumSqDiff += diff * diff;
+                }
+            const auto rmsDiff = std::sqrt (sumSqDiff / (double) (2 * totalSamples));
+            std::cout << "\n=== all-modules-off vs preset-on RMS diff=" << rmsDiff << " ===" << std::endl << std::endl;
+            expect (rmsDiff > 1.0e-4, "loading a preset with modules ON must audibly change the processed signal "
+                                       "versus the all-modules-disabled state, not just flip flags");
+        }
+
+        beginTest ("User presets: save/load/delete round-trips through real disk I/O, filenames are sanitised");
+        {
+            const juce::String testName = "__UNI76TestPreset__";
+
+            // Best-effort cleanup from a previous interrupted run.
+            uni76::deleteUserPreset (testName);
+            expect (! uni76::userPresetExists (testName), "precondition: test preset must not already exist");
+
+            uni76::UserPresetData data;
+            data.values = { 12.0f, 33.0f, 5.0f, -3.0f, 20.0f, 40.0f, 15.0f, -10.0f };
+            data.moduleEnabled = { true, false, true, true, false, true, true };
+
+            const auto saveOk = uni76::saveUserPreset (testName, data);
+            expect (saveOk, "saveUserPreset should succeed");
+            expect (uni76::userPresetExists (testName), "preset should exist immediately after saving");
+
+            const auto names = uni76::listUserPresetNames();
+            expect (names.contains (testName), "listUserPresetNames should include the just-saved preset");
+
+            // Fresh read from disk - no in-memory state carried over from
+            // saveUserPreset() above, the same as a brand-new plugin
+            // instance reading a preset saved in a previous session.
+            auto loaded = uni76::loadUserPreset (testName);
+            expect (loaded.has_value(), "loadUserPreset should find the saved preset");
+            if (loaded.has_value())
+            {
+                for (size_t i = 0; i < 8; ++i)
+                    expectWithinAbsoluteError (loaded->values[i], data.values[i], 1.0e-4f, "value " + juce::String ((int) i));
+                for (size_t i = 0; i < 7; ++i)
+                    expect (loaded->moduleEnabled[i] == data.moduleEnabled[i], "moduleEnabled " + juce::String ((int) i));
+            }
+
+            const auto deleteOk = uni76::deleteUserPreset (testName);
+            expect (deleteOk, "deleteUserPreset should succeed");
+            expect (! uni76::userPresetExists (testName), "preset should not exist after deletion");
+            expect (! uni76::loadUserPreset (testName).has_value(), "loadUserPreset should fail after deletion");
+
+            // Filename sanitisation - a name with path-traversal/illegal
+            // characters must not escape the presets directory or collide
+            // with reserved filesystem characters.
+            const auto sanitised = uni76::sanitizeUserPresetFilename ("../../evil:name*?\"<>|");
+            expect (! sanitised.contains ("/") && ! sanitised.contains ("\\") && ! sanitised.contains (".."),
+                    "sanitised filename must not contain path separators or traversal sequences");
+            expect (! sanitised.containsAnyOf (":*?\"<>|"), "sanitised filename must not contain reserved characters");
+        }
+
+        beginTest ("Factory presets are never deletable (no delete path exists for them - by construction)");
+        {
+            // Factory presets live in a compiled-in constexpr array
+            // (Core/FactoryPresets.h), not on disk - uni76DeleteUserPreset
+            // only ever operates on getUserPresetsDirectory(), which a
+            // factory preset's name was never written into, so there is no
+            // code path that could delete a factory preset even if a
+            // factory preset name were passed to it.
+            for (auto& preset : uni76::factoryPresets)
+                expect (! uni76::userPresetExists (juce::String (preset.name)),
+                        juce::String (preset.name) + ": a factory preset name must never exist as a user preset file");
+        }
+    }
+};
+
+static UNI76UXPolishTests uni76UXPolishTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

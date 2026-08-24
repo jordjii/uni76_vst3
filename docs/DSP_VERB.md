@@ -707,6 +707,80 @@ input, `prepare()`/re-`prepare()` cycles after NaN input, and an
 8192-sample block (far larger than the pre-delay buffer's own capacity)
 with NaN input followed by a normal block to confirm clean recovery.
 
+## Metallic-ring reduction investigation (UX polish pass)
+
+A follow-up UX polish pass (see CLAUDE.md) reported the plate as sounding
+"too metallic" in manual testing and asked for a warmer, denser, less
+ringy tail - explicitly via diffusion/delay-ratio/modal-distribution/
+damping tuning, not output notch-EQ and not more analog saturation - as
+the *one* permitted DSP change in an otherwise UI/UX-only round. Per the
+brief's own "measure first" instruction, a new dedicated regression test
+(`Tests/PluginTests.cpp`'s "Modal/resonance sweep: spectral flatness of
+the plate tank's steady decay, VERB=50% (PLATE)") was written before any
+tuning: it feeds a single-sample impulse, isolates the wet-only
+contribution (`verbWetOnly()`), Goertzel-samples ~28 log-spaced
+frequencies (200Hz-8kHz) at a fixed post-onset checkpoint (300ms in), and
+reports both a raw peak-above-mean/stdDev *and* a detrended (local-
+neighbour-residual) peak/stdDev. The detrended figure is the one that
+actually answers "how spiky/metallic is this", since the raw figure is
+confounded by the response's own broadband tilt (a damping change alone
+shifts every high-frequency point together, which widens raw peak-vs-
+mean/stdDev with zero change in how dominant any individual mode is,
+independent of genuine "ringiness").
+
+**Measured baseline** (original RC1-round topology, 12 lines, 4-stage
+diffuser at 0.6 gain, 6000Hz damping): detrended peak=**15.89dB**,
+stdDev=**5.68dB**.
+
+Three standard FDN "reduce metallic ringing" levers were then tried, each
+measured with the *same* fixed metric before being judged:
+
+1. **16 lines, smooth geometric progression** (5.1-40.7ms, denser
+   spacing in roughly the same range) + 6-stage diffuser at 0.65 gain +
+   damping lowered 6000->5200Hz (more per-pass high-frequency loss,
+   targeting the 1-4kHz band where metallic ring is most audible and a
+   6000Hz one-pole barely reaches). Measured: peak=16.03dB,
+   stdDev=6.57dB - essentially flat on peak, **worse** on stdDev.
+2. **16 lines, prime-number lengths** (5, 7, 11, ... 61ms - the standard
+   "no two lengths share a common integer factor" FDN heuristic,
+   specifically to rule out the first attempt's smooth progression being
+   itself a source of periodicity once 16 lines' feedback interacts).
+   Measured: peak=**21.73dB**, stdDev=**7.54dB** - clearly worse on both.
+3. **Original 12-line tank, diffuser/damping changes only** (isolating
+   whether the diffusion/damping levers helped independent of the line-
+   count change). Measured: peak=19.18dB, stdDev=8.31dB - still worse
+   than baseline on both.
+
+All three attempts were measured **neutral-to-worse** than the original
+topology by this metric, not an improvement - a genuine, unexpected
+result. The most likely explanation found during the investigation: this
+single-checkpoint measurement is confounded by average line length
+itself - a longer-average-line configuration has completed fewer
+feedback round-trips by the same fixed 300ms checkpoint than a shorter-
+average-line one, so it looks "less mixed"/less flat at that instant
+regardless of its true steady-state modal density. A more robust
+methodology (comparing at an equivalent number of round-trips per
+configuration, or tracking whether the same frequencies stay peaky
+across *multiple* time checkpoints - true persistent ringing - rather
+than a single instant) would be needed to properly evaluate this class of
+change, and was out of scope for this pass's time budget.
+
+**Decision: no VERB DSP change shipped this round.** Given three
+different, principled tuning directions all measured as neutral-to-worse
+against the pre-existing, already-proven-safe topology, and given the
+project's own standing practice of reverting measured-negative attempts
+rather than shipping them anyway (see this document's diffuser/induced-
+signal-filter history above, and docs/DSP_PAN.md's 2nd-order-Butterworth-
+induced-filter revert), `Source/DSP/VerbCurves.h` and
+`Source/DSP/VerbProcessor.cpp` were reverted to their exact pre-pass
+values. The new resonance-sweep test is kept permanently as a diagnostic/
+regression baseline for any future attempt at this specific problem - it
+is not a pass/fail gate (there is no single "correct" flatness number),
+just the "measure first, don't guess" tool this investigation itself
+needed and didn't have before. `wetHPF`=350Hz, bass protection, analog
+send/return, dark vintage bandwidth, plate identity, and zero latency are
+all therefore unchanged, and every pre-existing VERB test remains green.
+
 ## Latency
 
 **Always exactly 0** - `getLatencySamples()` returns a hardcoded `0`,

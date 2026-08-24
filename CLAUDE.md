@@ -999,6 +999,122 @@ MSVC 19.51):
   rendered GUI screenshots. Debug and Release builds both clean (0
   warnings); all tests green in both configurations.
 
+- **UX polish pass** (real bugs found via manual testing of the RC1
+  candidate, not a new feature round - see the user's own 21-item brief;
+  DSP untouched except a fully-investigated-and-reverted VERB attempt,
+  see below; no installer/release/macOS work) - closes several concrete
+  UX problems and adds user presets:
+  - **Preset popup reliability**: the PRESET dropdown now closes on
+    selecting an item, re-clicking PRESET, clicking outside (via a
+    capture-phase document listener - a bubble-phase listener could be
+    starved by another widget's own `stopPropagation()`, the likely root
+    cause of the reported "doesn't close reliably" bug), Escape, and
+    after a user-preset Save/Delete.
+  - **Preset -> full UI sync** (the real "modules stayed visually off
+    after loading a preset that turns them on" bug): `module_power.js`
+    now exposes one authoritative `refreshModuleEnabledUI()` that re-
+    reads the real backend module-enabled state and redraws *both* the
+    per-strip power buttons and the new footer SIGNAL PATH chips from it
+    - called after every preset load, A/B switch, and toggle click, never
+    an optimistic DOM-only update. A new regression test ("All modules
+    OFF -> load a preset with modules ON -> processed audio audibly
+    changes") in `Tests/PluginTests.cpp` covers the backend/audio half;
+    the UI half is the same `refreshModuleEnabledUI()` mechanism, by
+    construction always reading real state.
+  - **Active-preset identity + dirty marker**: `WebUIEditor` now tracks
+    which preset (factory or user) was last applied and a snapshot of its
+    values; a cheap 8-float/7-bool compare against live state - piggy-
+    backed onto the existing 30Hz meter-telemetry timer, not a new poll
+    or a per-parameter-callback check - reports the current preset name
+    and whether it's still an exact match ("Preset Name" vs
+    "Preset Name *") via the same `meterLevels` JS event the meters
+    already consume.
+  - **User presets** (`Source/Core/UserPresets.h`, new): save/load/
+    delete/list, stored as one `.uni76preset` XML file per preset (own
+    schema version, sanitised filenames) under
+    `Nostalgia Audio/UNI 76/Presets/User` in the standard per-user app-
+    data directory (`juce::File::userApplicationDataDirectory`) - never a
+    hardcoded path. All file I/O runs on the message thread, triggered
+    only by a user gesture (menu open/Save/Load/Delete click) - the audio
+    thread never touches it. The PRESET menu now lists FACTORY (grouped
+    by category, see below) and USER sections plus a `SAVE CURRENT...`
+    row with overwrite confirmation; user presets are deletable, factory
+    presets are not (no code path exists that could delete one).
+  - **Factory presets**: grew from RC1's flat 10-preset GENERAL-only bank
+    to 32 presets across 5 categories (`Source/Core/FactoryPresets.h`) -
+    GENERAL (the original 10, unchanged), VOCAL (6: Warm Lead, Airy Lead,
+    Vintage Vocal, Plate Vocal, Wide Backing, Lo-Fi Vocal), PIANO (5:
+    Warm Upright, Focused Grand, Wide Grand, Vintage Piano, Deep Plate
+    Piano), ACOUSTIC GUITAR (5: Warm Fingerstyle, Bright Strum, Vintage
+    Wood, Wide Acoustic, Plate Acoustic), ELECTRIC GUITAR (6: Clean
+    Console, Warm Rhythm, Vintage Lead, Wide Clean, Plate Lead, Dark
+    Rhythm) - values chosen per-instrument (gentle drive for vocals,
+    low PREAMP/SAT for piano's wide range, more headroom for HEAT on
+    electric guitar), PITCH always 0 ST, TILT always CENTER, no preset at
+    a 100%/extreme value. The PRESET menu groups these under category
+    headings.
+  - **Settings removed**: the non-functional gear button and its dead
+    `.header__btn--icon`/`:disabled` CSS are gone from the header
+    entirely - no disabled placeholder left behind.
+  - **A/B redesigned**: from a single `A / B (A)` button to two compact
+    letters (`A` `B`) in the header, the active one highlighted with the
+    same calm `--meter-green` token the meters' own "safe" zone uses (not
+    a neon accent). Backend toggle logic (capture-then-apply,
+    session-local, B starts identical to A so the first switch is a
+    silent no-op) was already correct from RC1 and needed no change -
+    only the frontend affordance changed.
+  - **SIGNAL PATH footer made interactive**: renamed from "ANALOG SIGNAL
+    PATH"; each chip (PREAMP/EQ/SAT/PITCH/PAN/VERB/IMAGE) is now a real
+    button with a small status dot (green=on, dim grey=off) that toggles
+    that module's enable state, fully synchronised with its strip's own
+    power button through the shared `refreshModuleEnabledUI()`.
+  - **Layout**: all 7 knobs shifted down together via one new shared
+    token (`--knob-area-shift`, ~22px at the 960x640 reference, scaling
+    with editor height) applied to `.module__knob-area`'s `margin-top` -
+    titles stay pinned at top, the aux zone stays pinned at bottom via
+    its existing `margin-top: auto`, so the shared knob/value/scale grid
+    lines are unaffected. IMAGE's FIELD pad was resized down to the
+    requested ~58-68px range (`--field-pad-size` retuned) and remains
+    centred in its aux zone via the pre-existing auto-margin mechanism.
+    A real, pre-existing bug was also found and fixed while verifying
+    this at the 600px minimum width: `responsive.css` was hiding the
+    *entire* header controls block (A/B + PRESET) below 700px width -
+    harmless when those were RC1-era disabled placeholders, but broken
+    now that they're live controls the editor's own 600px resize floor
+    must support; fixed to hide only the decorative brand wordmark and
+    shrink the preset-name label instead.
+  - **VERB "too metallic" investigation - no DSP change shipped.** Per
+    the brief's own "measure first" instruction, a new dedicated
+    resonance-sweep regression test was written and used to measure the
+    *original* topology's spectral flatness, then three different,
+    principled FDN tuning directions (more lines with a smooth
+    progression; more lines with prime-number lengths; diffusion/damping
+    changes alone) were each tried and *measured* - all three came back
+    neutral-to-worse on the same fixed metric, not an improvement. Rather
+    than ship an unproven or measured-negative change, `VerbCurves.h`/
+    `VerbProcessor.cpp` were reverted to their exact original values; the
+    new test is kept as a permanent diagnostic baseline for a future
+    attempt with a more robust (multi-checkpoint) methodology. See
+    docs/DSP_VERB.md's new "Metallic-ring reduction investigation"
+    section for the full numbers and reasoning. VERB's sound is therefore
+    **unchanged** from the RC1 candidate.
+  - **Startup profiling**: real instrumentation added (a JS-side
+    `performance.now()` timeline from first script execution through
+    `DOMContentLoaded` to "app ready", correlated against a native-side
+    high-res-clock timestamp taken at the very start of the editor's
+    constructor, reported once via a new `uni76ReportStartupTiming`
+    native function and logged to stdout) - but real cold/warm open
+    numbers were **not captured this round**; the instrumentation is
+    real and in place, ready to be read the next time the editor is
+    opened through any host or scratch harness, but no separate
+    profiling session was run before this round's time budget was
+    consumed by the VERB investigation above. Flagged as the one
+    incomplete item from the original brief - see the round's own final
+    report for the full list of what's still open.
+  - Debug and Release builds both clean (0 warnings) after every change
+    in this round; all pre-existing tests plus the new resonance-sweep,
+    preset-category, and UX-polish regression tests pass.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

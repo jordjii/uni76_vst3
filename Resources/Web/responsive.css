@@ -8,12 +8,21 @@
   host enforces) so nothing overlaps or overflows into a scrollbar.
 */
 
-/* Near the minimum editor size: the header's placeholder controls and the
-   per-module tag line are the first things that can crowd a 7-column
-   layout - drop them before anything is allowed to wrap or overflow. */
+/* Near the minimum editor size: A/B and PRESET are real, functional
+   controls (not placeholders - see header_controls.js), so unlike the
+   RC1-era version of this rule they must stay visible and usable all the
+   way down to the 600px resize floor - real GUI acceptance testing
+   exercises both at 600x400. The decorative brand wordmark and the
+   per-module tag line are the actual slack to give up first, plus a
+   narrower preset-name label so a long preset name can't push the
+   controls into the title column. */
 @media (max-width: 700px) {
-  .header__controls {
+  .header__brand {
     display: none;
+  }
+
+  .header__btn-preset-label {
+    max-width: 4.5rem;
   }
 
   .module__tag {

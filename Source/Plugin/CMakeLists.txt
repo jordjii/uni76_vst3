@@ -32,6 +32,7 @@ target_sources(UNI76
         ../Core/ModuleEnableState.h
         ../Core/MeterEnvelope.h
         ../Core/FactoryPresets.h
+        ../Core/UserPresets.h
 
         ../Parameters/ParameterIDs.h
         ../Parameters/ParameterLayout.h

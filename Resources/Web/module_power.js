@@ -1,14 +1,20 @@
-// UNI 76 - per-module enable/disable toggle.
+// UNI 76 - module enable/disable state: per-strip power buttons AND the
+// footer SIGNAL PATH chips, kept as one synchronised UI surface.
 //
 // The enabled/disabled flag is persistent (survives editor close/reopen
 // and host state save/reload) but is deliberately NOT an APVTS parameter -
-// UNI 76's automation surface is fixed at exactly 7 parameters (see
+// UNI 76's automation surface is fixed at exactly 8 parameters (see
 // CLAUDE.md). The bridge is therefore a small pair of native functions
-// (Source/UI/WebUIEditor.cpp) rather than a WebToggleRelay: this module
-// fetches the real persisted state once at startup and corrects the
-// HTML-authored "all enabled" resting appearance if a loaded project
-// actually had a module disabled, then calls the setter whenever the user
-// clicks a toggle.
+// (Source/UI/WebUIEditor.cpp) rather than a WebToggleRelay.
+//
+// Both the strip power button and the footer chip for a given module are
+// just two views of the same backend flag - clicking either one sets the
+// backend state, then BOTH views are redrawn from a single source of
+// truth (never an optimistic DOM-only toggle on just the clicked widget).
+// The same refresh function is also called after a preset load and after
+// an A/B switch (see header_controls.js), which is what fixes the RC1 bug
+// where loading a preset changed the sound but left the power indicators
+// visually stale.
 
 import { getNativeFunction } from "./juce_webview.js";
 
@@ -16,19 +22,53 @@ import { getNativeFunction } from "./juce_webview.js";
 // also the order Core/ModuleEnableState.h persists the flags in.
 const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager"];
 
-function applyEnabledState(button, module, enabled) {
+let setModuleEnabled = null;
+let getModuleEnabledStates = null;
+let stripEntries = [];
+let chipEntries = [];
+
+function applyToStrip({ button, module }, enabled) {
   module.classList.toggle("is-disabled", !enabled);
   button.setAttribute("aria-pressed", String(enabled));
 }
 
+function applyToChip({ chip }, enabled) {
+  chip.classList.toggle("is-off", !enabled);
+  chip.setAttribute("aria-pressed", String(enabled));
+}
+
+function applyStatesLocally(states) {
+  stripEntries.forEach((entry) => {
+    if (entry.index < states.length) applyToStrip(entry, !!states[entry.index]);
+  });
+  chipEntries.forEach((entry) => {
+    if (entry.index < states.length) applyToChip(entry, !!states[entry.index]);
+  });
+}
+
+// Re-reads the real backend state and redraws every view from it - the
+// single authoritative sync point (see module comment above). Cheap: one
+// native round trip, 7 booleans.
+export function refreshModuleEnabledUI() {
+  if (!getModuleEnabledStates) return Promise.resolve();
+  return getModuleEnabledStates().then((states) => {
+    if (Array.isArray(states)) applyStatesLocally(states);
+  });
+}
+
+function setEnabledAndRefresh(index, enabled) {
+  setModuleEnabled(index, enabled);
+  // Read the state back rather than assuming the setter landed exactly as
+  // requested - keeps every view (strip + footer) consistent even if two
+  // clicks race each other.
+  refreshModuleEnabledUI();
+}
+
 export function initModulePower() {
-  const buttons = Array.from(document.querySelectorAll(".module__power"));
-  if (buttons.length === 0) return;
+  setModuleEnabled = getNativeFunction("uni76SetModuleEnabled");
+  getModuleEnabledStates = getNativeFunction("uni76GetModuleEnabledStates");
 
-  const setModuleEnabled = getNativeFunction("uni76SetModuleEnabled");
-  const getModuleEnabledStates = getNativeFunction("uni76GetModuleEnabledStates");
-
-  const entries = buttons
+  stripEntries = Array.from(document.querySelectorAll(".module__power"))
     .map((button) => {
       const module = button.closest(".module");
       const index = module ? MODULE_ORDER.indexOf(module.dataset.param) : -1;
@@ -36,19 +76,23 @@ export function initModulePower() {
     })
     .filter((entry) => entry.module && entry.index >= 0);
 
-  entries.forEach(({ button, module, index }) => {
-    button.addEventListener("click", () => {
-      const nextEnabled = module.classList.contains("is-disabled");
-      applyEnabledState(button, module, nextEnabled);
-      setModuleEnabled(index, nextEnabled);
+  chipEntries = Array.from(document.querySelectorAll(".signal-path__chip"))
+    .map((chip) => ({ chip, index: MODULE_ORDER.indexOf(chip.dataset.module) }))
+    .filter((entry) => entry.index >= 0);
+
+  stripEntries.forEach((entry) => {
+    entry.button.addEventListener("click", () => {
+      const nextEnabled = entry.module.classList.contains("is-disabled");
+      setEnabledAndRefresh(entry.index, nextEnabled);
     });
   });
 
-  getModuleEnabledStates().then((states) => {
-    if (!Array.isArray(states)) return;
-
-    entries.forEach(({ button, module, index }) => {
-      if (index < states.length) applyEnabledState(button, module, !!states[index]);
+  chipEntries.forEach((entry) => {
+    entry.chip.addEventListener("click", () => {
+      const nextEnabled = entry.chip.classList.contains("is-off");
+      setEnabledAndRefresh(entry.index, nextEnabled);
     });
   });
+
+  refreshModuleEnabledUI();
 }

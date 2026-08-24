@@ -124,6 +124,14 @@
   --zone-header-height: clamp(3.4rem, 2.7rem + 3.2vh, 5rem);
   --zone-aux-height: clamp(3.4rem, 2.6rem + 3.4vh, 5rem);
 
+  /* Shared downward shift applied to every module's knob-area (see
+     modules.css's .module__knob-area) - one variable, applied uniformly
+     to all 7 modules at once, so all 7 knob centers stay on one line
+     while sitting a bit lower than the cramped top-of-panel position.
+     ~22px at the 960x640 reference size, scaling gently with editor
+     height between the 600x400 and 1350x900 resize limits. */
+  --knob-area-shift: clamp(0.9rem, 0.5rem + 2.2vh, 1.8rem);
+
   /* ---- Knob geometry -------------------------------------------------------
      A single scale so the knob, its tick ring and its indicator always
      stay proportional to one another. */
@@ -136,7 +144,11 @@
   /* IMAGE's spatial field pad (Resources/Web/field_pad.js) - deliberately
      smaller than the main knob (it's a secondary control), but still
      scales fluidly with the editor the same way. */
-  --field-pad-size: clamp(3.6rem, 2.5rem + 3.6vw, 5.6rem);
+  /* ~58-68px at the 960x640 reference size (a compact "spatial map", not
+     a full second knob-sized control - see docs/DSP_IMAGE.md's UI
+     section), scaling gently with editor width between the resize
+     limits. */
+  --field-pad-size: clamp(3.2rem, 2.2rem + 2.6vw, 4.25rem);
   --knob-tick-length: 10%;
   --knob-rotation-min: -135deg;
   --knob-rotation-max: 135deg;

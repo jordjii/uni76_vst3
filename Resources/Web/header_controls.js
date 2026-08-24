@@ -1,20 +1,26 @@
-// UNI 76 - RC1 header controls: PRESET dropdown and A/B toggle.
+// UNI 76 - header controls: PRESET menu (factory + user, categorised) and
+// the two-letter A/B compare toggle.
 //
 // Both bridge through small native functions (Source/UI/WebUIEditor.cpp),
 // the same pattern module_power.js already uses for the per-module power
 // buttons - not a WebSliderRelay, since neither a preset selection nor
-// the A/B slot is an APVTS parameter. Settings (the gear button) has no
-// implementation yet for RC1 and stays `disabled` - see
-// docs/FULL_DSP_AUDIT.md's RC1 report.
+// the A/B slot is an APVTS parameter.
 
 import { getNativeFunction } from "./juce_webview.js";
+import { refreshModuleEnabledUI } from "./module_power.js";
 
 export function initPresetMenu() {
   const button = document.querySelector('[data-header-control="preset"]');
-  if (!button) return;
+  const label = button ? button.querySelector(".header__btn-preset-label") : null;
+  if (!button || !label) return;
 
-  const getNames = getNativeFunction("uni76GetFactoryPresetNames");
-  const loadPreset = getNativeFunction("uni76LoadFactoryPreset");
+  const getFactoryNames = getNativeFunction("uni76GetFactoryPresetNames");
+  const loadFactoryPreset = getNativeFunction("uni76LoadFactoryPreset");
+  const getUserNames = getNativeFunction("uni76GetUserPresetNames");
+  const userPresetExists = getNativeFunction("uni76UserPresetExists");
+  const saveUserPreset = getNativeFunction("uni76SaveUserPreset");
+  const loadUserPreset = getNativeFunction("uni76LoadUserPreset");
+  const deleteUserPreset = getNativeFunction("uni76DeleteUserPreset");
 
   const menu = document.createElement("div");
   menu.className = "preset-menu";
@@ -22,42 +28,159 @@ export function initPresetMenu() {
   menu.hidden = true;
   button.insertAdjacentElement("afterend", menu);
 
-  let namesPromise = null;
   let open = false;
+  let factoryPresetsCache = null; // [{name, category}] - static for the session, safe to cache
+  let currentPresetName = null;   // updated by the meterLevels-piggybacked status, see below
 
   function closeMenu() {
+    if (!open) return;
     open = false;
     menu.hidden = true;
     button.setAttribute("aria-expanded", "false");
+  }
+
+  function afterAction() {
+    closeMenu();
+    refreshModuleEnabledUI();
+  }
+
+  function buildSection(title) {
+    const heading = document.createElement("div");
+    heading.className = "preset-menu__section";
+    heading.textContent = title;
+    heading.setAttribute("role", "presentation");
+    menu.appendChild(heading);
+  }
+
+  function buildPresetItem(text, onSelect, extra) {
+    const row = document.createElement("div");
+    row.className = "preset-menu__row";
+
+    const item = document.createElement("button");
+    item.type = "button";
+    item.className = "preset-menu__item";
+    item.setAttribute("role", "menuitem");
+    item.textContent = text;
+    item.addEventListener("click", onSelect);
+    row.appendChild(item);
+
+    if (extra) row.appendChild(extra);
+    menu.appendChild(row);
+  }
+
+  function buildSaveRow() {
+    const row = document.createElement("div");
+    row.className = "preset-menu__save-row";
+
+    const input = document.createElement("input");
+    input.type = "text";
+    input.className = "preset-menu__save-input";
+    input.placeholder = "Preset name";
+    input.maxLength = 48;
+
+    const save = document.createElement("button");
+    save.type = "button";
+    save.className = "preset-menu__save-btn";
+    save.textContent = "SAVE CURRENT";
+
+    const doSave = () => {
+      const name = input.value.trim();
+      if (!name) return;
+
+      userPresetExists(name).then((exists) => {
+        if (exists && !window.confirm(`Overwrite user preset "${name}"?`)) return;
+        saveUserPreset(name).then((ok) => {
+          if (ok) {
+            label.textContent = name;
+            currentPresetName = name;
+            afterAction();
+          }
+        });
+      });
+    };
+
+    save.addEventListener("click", doSave);
+    input.addEventListener("keydown", (event) => {
+      if (event.key === "Enter") doSave();
+      event.stopPropagation();
+    });
+
+    row.appendChild(input);
+    row.appendChild(save);
+    menu.appendChild(row);
+  }
+
+  function rebuildMenu() {
+    menu.innerHTML = "";
+
+    const factoryReady = factoryPresetsCache ? Promise.resolve(factoryPresetsCache) : getFactoryNames();
+    Promise.all([factoryReady, getUserNames()]).then(([factoryEntries, userNames]) => {
+      factoryPresetsCache = Array.isArray(factoryEntries) ? factoryEntries : [];
+
+      const categories = [];
+      factoryPresetsCache.forEach((entry, index) => {
+        let bucket = categories.find((c) => c.category === entry.category);
+        if (!bucket) {
+          bucket = { category: entry.category, items: [] };
+          categories.push(bucket);
+        }
+        bucket.items.push({ name: entry.name, index });
+      });
+
+      categories.forEach(({ category, items }) => {
+        buildSection(category);
+        items.forEach(({ name, index }) => {
+          buildPresetItem(name, () => {
+            loadFactoryPreset(index);
+            label.textContent = name;
+            currentPresetName = name;
+            afterAction();
+          });
+        });
+      });
+
+      buildSection("USER");
+      (Array.isArray(userNames) ? userNames : []).forEach((name) => {
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "preset-menu__delete-btn";
+        del.setAttribute("aria-label", `Delete user preset ${name}`);
+        del.textContent = "✕";
+        del.addEventListener("click", (event) => {
+          event.stopPropagation();
+          if (!window.confirm(`Delete user preset "${name}"?`)) return;
+          deleteUserPreset(name).then((ok) => {
+            if (ok) {
+              if (currentPresetName === name) {
+                currentPresetName = null;
+                label.textContent = "CUSTOM";
+              }
+              closeMenu();
+            }
+          });
+        });
+
+        buildPresetItem(name, () => {
+          loadUserPreset(name).then((ok) => {
+            if (ok) {
+              label.textContent = name;
+              currentPresetName = name;
+            }
+          });
+          afterAction();
+        }, del);
+      });
+
+      buildSaveRow();
+    });
   }
 
   function openMenu() {
     open = true;
     menu.hidden = false;
     button.setAttribute("aria-expanded", "true");
-
-    if (!namesPromise) {
-      namesPromise = getNames().then((names) => {
-        menu.innerHTML = "";
-        (Array.isArray(names) ? names : []).forEach((name, index) => {
-          const item = document.createElement("button");
-          item.type = "button";
-          item.className = "preset-menu__item";
-          item.setAttribute("role", "menuitem");
-          item.textContent = name;
-          item.addEventListener("click", () => {
-            loadPreset(index);
-            closeMenu();
-          });
-          menu.appendChild(item);
-        });
-      });
-    }
+    rebuildMenu();
   }
-
-  button.setAttribute("aria-haspopup", "true");
-  button.setAttribute("aria-expanded", "false");
-  button.disabled = false;
 
   button.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -65,29 +188,74 @@ export function initPresetMenu() {
     else openMenu();
   });
 
-  document.addEventListener("click", (event) => {
-    if (open && !menu.contains(event.target) && event.target !== button) closeMenu();
-  });
+  // Capture phase, not bubble: a widget elsewhere in the app (a knob drag,
+  // the field pad, etc.) may legitimately call stopPropagation() on its own
+  // pointer/click handling during the bubble phase - if outside-click
+  // detection only listened on bubble, a click on one of those widgets
+  // while the menu was open would never reach this listener and the menu
+  // would be stuck open. Capture runs before any such stopPropagation can
+  // take effect.
+  document.addEventListener(
+    "click",
+    (event) => {
+      if (open && !menu.contains(event.target) && event.target !== button && !button.contains(event.target))
+        closeMenu();
+    },
+    true
+  );
 
   document.addEventListener("keydown", (event) => {
     if (open && event.key === "Escape") closeMenu();
   });
+
+  // Active-preset label + dirty marker (item 4) - piggybacked on the
+  // existing 30Hz meter event rather than a new poll (see
+  // WebUIEditor.cpp's timerCallback()) so this never needs its own timer
+  // or an expensive per-parameter-callback check.
+  window.__JUCE__.backend.addEventListener("meterLevels", (payload) => {
+    if (open) return; // don't rewrite the button label while the user is browsing the menu
+    if (!payload || payload.presetKind === "none" || !payload.presetName) {
+      if (currentPresetName !== null) {
+        currentPresetName = null;
+        label.textContent = "CUSTOM";
+      }
+      return;
+    }
+
+    currentPresetName = payload.presetName;
+    label.textContent = payload.presetDirty ? `${payload.presetName} *` : payload.presetName;
+  });
 }
 
 export function initABToggle() {
-  const button = document.querySelector('[data-header-control="ab"]');
-  if (!button) return;
+  const group = document.querySelector('[data-header-control="ab"]');
+  if (!group) return;
+
+  const buttonA = group.querySelector('[data-ab-slot="a"]');
+  const buttonB = group.querySelector('[data-ab-slot="b"]');
+  if (!buttonA || !buttonB) return;
 
   const toggleAB = getNativeFunction("uni76ToggleAB");
-  button.disabled = false;
-  button.textContent = "A / B";
+  let active = "A";
 
-  button.addEventListener("click", () => {
-    toggleAB().then((active) => {
-      if (active === "A" || active === "B") {
-        button.textContent = `A / B (${active})`;
-        button.setAttribute("aria-pressed", "true");
+  function setActive(next) {
+    active = next;
+    buttonA.classList.toggle("is-active", active === "A");
+    buttonB.classList.toggle("is-active", active === "B");
+    buttonA.setAttribute("aria-pressed", String(active === "A"));
+    buttonB.setAttribute("aria-pressed", String(active === "B"));
+  }
+
+  function handleClick(target) {
+    if (target === active) return; // already on this slot - no-op, no popup, no sound jump
+    toggleAB().then((result) => {
+      if (result === "A" || result === "B") {
+        setActive(result);
+        refreshModuleEnabledUI();
       }
     });
-  });
+  }
+
+  buttonA.addEventListener("click", () => handleClick("A"));
+  buttonB.addEventListener("click", () => handleClick("B"));
 }

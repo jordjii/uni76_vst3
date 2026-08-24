@@ -51,20 +51,55 @@ public:
     // public override rather than private.
     juce::String toggleAB();
 
+    // Startup profiling (see docs/FULL_DSP_AUDIT.md's GUI-startup
+    // measurements) - called from the free-function native-function lambda
+    // in WebUIEditor.cpp, so public for the same reason toggleAB() is.
+    void reportStartupTiming (double jsT0, double jsDomContentLoaded, double jsAppReady);
+
+    // ---- Active-preset identity (item 4 of the UX polish pass) --------
+    // Tracked separately from the raw parameter state so the PRESET menu
+    // can keep the real current preset highlighted, and so the header/
+    // footer can show "Name" vs "Name *" (dirty - live values no longer
+    // match what was loaded) without ever doing an expensive preset-table
+    // search on every parameter callback: dirty is just 8 float + 7 bool
+    // compares against the snapshot captured at the moment the preset was
+    // applied, done at most once per 30Hz timer tick (see timerCallback()),
+    // not per callback.
+    enum class PresetKind { none, factory, user };
+
+    struct ActivePresetInfo
+    {
+        PresetKind kind = PresetKind::none;
+        juce::String name;
+        bool dirty = false;
+    };
+
+    void setActivePreset (PresetKind kind, const juce::String& name);
+    void clearActivePreset();
+    ActivePresetInfo getActivePresetInfo() const;
+
 private:
     void timerCallback() override;
 
+public:
     struct ABSnapshot
     {
         std::array<float, 8> values {};
         std::array<bool, 7> moduleEnabled {};
     };
 
+private:
     ABSnapshot captureSnapshot() const;
     void applySnapshot (const ABSnapshot&);
+    bool snapshotsEqual (const ABSnapshot&, const ABSnapshot&) const;
 
     ABSnapshot abSlotA, abSlotB;
     bool abActiveIsA = true;
+
+    PresetKind activePresetKind = PresetKind::none;
+    juce::String activePresetName;
+    ABSnapshot activePresetSnapshot;
+
     // Only ever navigates to our own embedded resource root - the frontend
     // cannot be redirected to an external site.
     struct SinglePageBrowser final : juce::WebBrowserComponent
@@ -73,6 +108,7 @@ private:
         bool pageAboutToLoad (const juce::String& newURL) override;
     };
 
+    double constructionStartMs;
     UNI76AudioProcessor& processor;
 
     juce::WebSliderRelay preampRelay     { "preamp" };

@@ -90,19 +90,6 @@
   background: transparent;
 }
 
-.header__btn--icon {
-  padding: 0.55em 0.7em;
-  font-size: calc(var(--fs-header-btn) * 1.4);
-  line-height: 1;
-}
-
-/* These are visual placeholders for future features (A/B, presets,
-   settings) - real HTML `disabled` state so nothing implies working
-   functionality that doesn't exist yet. */
-.header__btn:disabled {
-  opacity: 0.6;
-}
-
 .header__btn:not(:disabled):hover {
   border-color: var(--control-outline-hover);
 }
@@ -110,6 +97,53 @@
 .header__btn:not(:disabled):focus-visible {
   outline: 2px solid var(--focus-ring-on-dark);
   outline-offset: 1px;
+}
+
+.header__btn-preset-label {
+  max-width: 11rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A/B compare - two compact letters, not a dropdown (see CLAUDE.md's UX
+   polish-pass rationale). A calm, desaturated green (the same token the
+   meters' own "safe level" zone uses - not a neon accent) marks the
+   active slot; the inactive one stays the same muted outline language as
+   every other header control. */
+.ab-toggle {
+  display: inline-flex;
+  border: 1.5px solid var(--control-outline);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.ab-toggle__btn {
+  font-size: var(--fs-header-btn);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-tertiary);
+  padding: 0.55em 0.9em;
+  border: none;
+  background: transparent;
+}
+
+.ab-toggle__btn + .ab-toggle__btn {
+  border-left: 1.5px solid var(--control-outline);
+}
+
+.ab-toggle__btn.is-active {
+  color: var(--meter-green);
+  background: rgba(95, 156, 76, 0.14);
+}
+
+.ab-toggle__btn:not(.is-active):hover {
+  color: var(--text-primary);
+}
+
+.ab-toggle__btn:focus-visible {
+  outline: 2px solid var(--focus-ring-on-dark);
+  outline-offset: -2px;
 }
 
 /* RC1 factory-preset dropdown - flat list, same cream-outline-on-dark
@@ -123,8 +157,10 @@
   right: 0;
   margin-top: var(--space-xs);
   min-width: 12rem;
+  max-width: min(16rem, calc(100vw - 2 * var(--space-lg)));
   max-height: 60vh;
   overflow-y: auto;
+  overflow-x: hidden;
   display: flex;
   flex-direction: column;
   background: var(--bg-header);
@@ -149,5 +185,86 @@
 .preset-menu__item:hover,
 .preset-menu__item:focus-visible {
   background: rgba(255, 255, 255, 0.08);
+  outline: none;
+}
+
+.preset-menu__section {
+  padding: 0.6em 1em 0.2em;
+  font-size: calc(var(--fs-header-btn) * 0.82);
+  font-weight: 800;
+  letter-spacing: var(--tracking-wider);
+  color: var(--text-tertiary);
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.preset-menu__section:first-child {
+  border-top: none;
+}
+
+.preset-menu__row {
+  display: flex;
+  align-items: stretch;
+}
+
+.preset-menu__row .preset-menu__item {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.preset-menu__delete-btn {
+  flex: 0 0 auto;
+  border: none;
+  background: transparent;
+  color: var(--text-tertiary);
+  padding: 0.6em 0.9em;
+  font-size: calc(var(--fs-header-btn) * 0.85);
+}
+
+.preset-menu__delete-btn:hover,
+.preset-menu__delete-btn:focus-visible {
+  color: var(--text-primary);
+  outline: none;
+}
+
+.preset-menu__save-row {
+  display: flex;
+  gap: 0.4em;
+  padding: 0.6em 1em;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.preset-menu__save-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: calc(var(--fs-header-btn) * 0.9);
+  color: var(--text-primary);
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid var(--control-outline);
+  border-radius: var(--radius-sm);
+  padding: 0.4em 0.6em;
+}
+
+.preset-menu__save-input:focus-visible {
+  outline: 2px solid var(--focus-ring-on-dark);
+}
+
+.preset-menu__save-btn {
+  flex: 0 0 auto;
+  font-size: calc(var(--fs-header-btn) * 0.78);
+  font-weight: 800;
+  letter-spacing: var(--tracking-wide);
+  color: var(--text-primary);
+  background: transparent;
+  border: 1.5px solid var(--control-outline);
+  border-radius: var(--radius-sm);
+  padding: 0.4em 0.7em;
+  white-space: nowrap;
+}
+
+.preset-menu__save-btn:hover,
+.preset-menu__save-btn:focus-visible {
+  border-color: var(--control-outline-hover);
   outline: none;
 }

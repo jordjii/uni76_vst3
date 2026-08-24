@@ -97,11 +97,55 @@
   white-space: nowrap;
 }
 
+.signal-path__list li {
+  display: contents;
+}
+
+/* Each chip is now a live, clickable module-status control (not a static
+   label) - see module_power.js. ON = bright text + a small green status
+   dot (the same calm --meter-green token the A/B toggle uses, not a
+   glow/neon effect); OFF = dimmed text, grey dot. Clicking toggles that
+   module's enable state, synchronised with its strip's own power button
+   through the shared refreshModuleEnabledUI(). */
 .signal-path__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45em;
   padding: 0.4em 0.7em;
   border: 1.5px solid var(--line-hairline-strong);
   border-radius: var(--radius-sm);
   background: rgba(236, 231, 220, 0.05);
+  font: inherit;
+  color: var(--text-primary);
+  cursor: pointer;
+}
+
+.signal-path__chip:hover {
+  border-color: var(--control-outline-hover);
+}
+
+.signal-path__chip:focus-visible {
+  outline: 2px solid var(--focus-ring-on-dark);
+  outline-offset: 1px;
+}
+
+.signal-path__dot {
+  width: 0.5em;
+  height: 0.5em;
+  border-radius: 50%;
+  background: var(--meter-green);
+  flex: 0 0 auto;
+}
+
+.signal-path__chip.is-off {
+  color: var(--text-tertiary);
+  border-color: var(--line-hairline-strong);
+  background: transparent;
+}
+
+.signal-path__chip.is-off .signal-path__dot {
+  background: var(--text-tertiary);
+  opacity: 0.5;
 }
 
 .signal-path__arrow {
