@@ -32,3 +32,35 @@ if(WIN32 AND TARGET juce::juce_webview2)
 endif()
 
 add_test(NAME UNI76UnitTests COMMAND UNI76Tests)
+
+# ==============================================================================
+#  RC1 blocker 3: accelerated offline long-run soak test (see
+#  Tests/SoakTest.cpp and docs/FULL_DSP_AUDIT.md's "RC1 blocker closure"
+#  section). Deliberately a SEPARATE executable from UNI76Tests - it
+#  processes hours of equivalent audio and would otherwise make every
+#  routine test run multi-minute. Not wired into `add_test`/CTest or CI;
+#  run on demand for release-readiness verification only.
+# ==============================================================================
+
+add_executable(UNI76Soak SoakTest.cpp)
+
+target_include_directories(UNI76Soak
+    PRIVATE
+        "${CMAKE_SOURCE_DIR}/Source")
+
+target_link_libraries(UNI76Soak
+    PRIVATE
+        UNI76
+        juce::juce_audio_processors
+        juce::juce_dsp
+    PUBLIC
+        juce::juce_recommended_config_flags
+        juce::juce_recommended_warning_flags)
+
+if(WIN32 AND TARGET juce::juce_webview2)
+    target_link_libraries(UNI76Soak PRIVATE juce::juce_webview2)
+endif()
+
+if(WIN32)
+    target_link_libraries(UNI76Soak PRIVATE psapi)
+endif()

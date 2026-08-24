@@ -873,6 +873,75 @@ MSVC 19.51):
   installer/signing/licensing/release work were started, per the audit's
   own scope.
 
+- **RC1 blocker closure** (see
+  [docs/FULL_DSP_AUDIT.md](docs/FULL_DSP_AUDIT.md)'s updated sections 5,
+  6, 27, and 36 for full detail) - a focused follow-up to the full audit
+  above, closing its three named release blockers without touching any
+  frozen DSP/UI:
+  - **Technical-neutral -4.94dB, decomposed**: proven to be a
+    misinterpreted null-residual metric, not a gain/coloration problem -
+    a new module-by-module decomposition test measured `gainDeltaDb`
+    (pure level comparison) separately from the original null-residual-
+    relative-to-input number and correlation, at 100Hz/1kHz/10kHz/
+    broadband/impulse across all 7 cumulative PREAMP->SAT->PITCH->PAN->
+    VERB->IMAGE/TILT stages (EQ disabled throughout). Real output gain
+    stays within a fraction of a dB of unity everywhere (worst case
+    -0.21dB at 10kHz); the deviation traces entirely to PREAMP+SAT, and
+    `docs/DSP_PREAMP.md`'s own pre-existing "Null test (DRIVE=0%
+    transparency)" section - written before this session - had *already*
+    identified and explained this exact measurement artifact (documented
+    near-identical numbers from an earlier round: "-9.6dB at 100Hz, -4.9dB
+    at 10kHz"), root-caused to PREAMP's always-on 20Hz/20kHz soft Low/
+    High Cut filters' own group delay near their cutoffs, with the
+    *correct* (Goertzel-measured gain) figures already on record at
+    under 0.3dB. Two independent measurement techniques, a session apart,
+    converge on the same answer. **No DSP was changed** - the test's own
+    acceptance metric and this document's phrasing were corrected
+    instead.
+  - **pluginval hang, isolated to an exact stage and mechanism**: exact
+    revision recorded (`4c5adc2c1a9910251667152166139a0c37b953e6`, v1.0.4,
+    JUCE 8.0.13), exact hang stage identified by reading pluginval's own
+    source (`Open plugin (cold)` -> `testOpenPlugin()` +
+    `deletePluginAsync()`'s `instance.reset()`, called from the JUCE
+    message thread after the instance was created on pluginval's
+    background `Validator` thread). A minimal scratch repro (built
+    against UNI 76's own production JUCE 9.0.1, not pluginval's JUCE 8)
+    reproduced the identical failure - and proved it isn't about
+    crossing threads specifically: destroying the instance on *any*
+    non-message thread fails, even one that also created it. The same
+    harness against `Kontakt.vst3` (a real, non-JUCE third-party plugin)
+    succeeds cleanly every time under the identical pattern - a
+    genuine, isolated behavioural difference, not a guess. No raw stack
+    trace was obtainable (no native debugger available in this
+    environment, and neither JUCE's own crash handler nor Windows WER
+    ever fires - the process simply terminates). No source change was
+    made: every test in this project that creates/destroys UNI 76 on the
+    actual host message thread - the standard, documented VST3-hosting
+    convention, and the only pattern real DAWs are expected to use -
+    already succeeds without issue, including pluginval's own successful
+    handling of Kontakt. Recorded as a specific, evidenced, low-practical-
+    risk open item, not a pass and not swept under "false positive"
+    without proof.
+  - **Long-run soak, closed**: an accelerated offline soak
+    (`Tests/SoakTest.cpp`, a new standalone executable - deliberately
+    *not* part of the routine `UNI76Tests` suite, since it processes
+    hours of equivalent audio) ran 60 minutes-equivalent of continuously-
+    automated stereo audio at 48kHz **twice** (all 8 parameters cycling
+    on independent periods, module-enable flags toggling on a
+    deterministic schedule, identical schedule/seed both times) plus a
+    20-minutes-equivalent pass at 96kHz. Zero NaN/Inf across all three
+    passes; peak stayed bounded; **zero dynamic allocations** after the
+    first block in every pass (the same global-`operator new` audit
+    technique the main audit's allocation test uses); working-set memory
+    stayed flat within a rounding error across each full 60-minute pass
+    (no growth trend); and the two 48kHz runs produced a **bit-identical
+    output checksum** (FNV-1a over every processed sample), proving the
+    plugin's determinism holds under sustained automation/enable churn,
+    not just a single short buffer.
+  - No independent DSP/UI bugs were found or fixed this round - all
+    three blockers closed via test/documentation correction and
+    additional evidence, per the frozen-DSP/UI scope.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

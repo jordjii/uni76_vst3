@@ -91,7 +91,7 @@ Tilt=0`, all modules enabled, audio processed without error. No old
 project can silently gain pitch-shift, mono-ness, PAN motion, VERB, IMAGE,
 or FIELD bias on load.
 
-## 5. Technical-neutral state
+## 5. Technical-neutral state (RC1 blocker 1 - fully decomposed and closed)
 
 Product default (EQ=50%/PHONE) is intentionally coloured - not a
 transparency reference. A genuine technical-neutral state was defined
@@ -99,26 +99,90 @@ as: PREAMP=0, SAT=0, PITCH=0 ST, PAN=0%, VERB=0%, IMAGE=0%, TILT=0,
 **EQ disabled** (it has no flat macro value, so it falls back to its own
 crossfade-to-dry bypass path instead).
 
-A latency-aligned (`getLatencySamples()`-offset), settle-margin-skipped
-(250ms, past every module's own smoothing time) broadband 10-tone A/B
-against the dry input measured:
+**What `-4.94dB` actually was** (the original pass's own single-number
+"relative diff"): a latency-aligned, settle-margin-skipped, time-domain
+**null-residual-relative-to-input** metric -
 
 ```
-maxDiff = 0.300192   rmsDiffRelative = -4.94dB
+nullRelativeDb = 20*log10( RMS(output_latency_aligned - input) / RMS(input) )
 ```
 
-Root-caused, not just measured: PAN/VERB/IMAGE at 0 are proven algebraic
-identities (existing per-module tests), and PITCH at 0 ST measures near
-bit-exact alone (`docs/DSP_PITCH.md`'s own "RMS diff 7.2e-8" A/B) - the
--4.94dB comes from PREAMP and SAT, **by design, not a bug**: both
-waveshapers use a nonzero *minimum* drive gain even at DRIVE/HEAT=0%
-(`preampDriveGainMin=0.05` in `PreampCurves.h`, `satDriveGainMin=0.08` in
-`SatCurves.h`) - a deliberate "never fully linear, like a real analog
-stage" choice already present before this audit, not introduced by it.
-"Technical-neutral" is therefore genuinely *near-* rather than
-*bit-*transparent for this product, and the regression test now asserts
-a defensible `< -3dB` floor (catches a gross failure, e.g. a stuck
-full-drive reading) rather than an unfounded `-40dB` target.
+- not a gain delta, not a raw correlation, and not itself a measure of
+loudness/transparency. RC1's own instruction not to accept the prior
+explanation at face value was correct to insist on: the original report
+conflated this null-residual number with "coloration", when it is a
+different, specific quantity that is dominated by phase/timing
+mismatch as much as by amplitude.
+
+**Decomposition** (`UNI76FullAuditGainStagingTests`'s new "RC1 blocker 1:
+technical-neutral module-by-module gain/null/correlation decomposition"
+test in `Tests/PluginTests.cpp`) measured `gainDeltaDb =
+20*log10(RMS(output)/RMS(input))` (a pure level comparison, alignment-
+insensitive), the same `nullRelativeDb`, and Pearson `correlation`
+separately, for 100Hz/1kHz/10kHz/broadband/impulse, at each of 7
+cumulative module-enable stages (EQ always disabled):
+
+| Signal | Stage | gainDeltaDb | nullRelativeDb | correlation |
+|---|---|---|---|---|
+| 100Hz | dry (all disabled) | 0.0000 | -226.5 | 1.000 |
+| 100Hz | +PREAMP | -0.0027 | -9.56 | 0.9447 |
+| 100Hz | +PREAMP+SAT..+IMAGE/TILT | +0.0072 | -8.36 | 0.9271 |
+| 1kHz | +PREAMP | +0.0075 | -42.7 | 0.999974 |
+| 1kHz | +PREAMP+SAT..+IMAGE/TILT | +0.0277 | -37.8 | 0.999923 |
+| 10kHz | +PREAMP | -0.2126 | -9.44 | 0.9420 |
+| 10kHz | +PREAMP+SAT..+IMAGE/TILT | -0.1922 | -8.12 | 0.9215 |
+| broadband | +PREAMP | -0.0919 | -7.13 | 0.9022 |
+| broadband | +PREAMP+SAT..+IMAGE/TILT | -0.0812 | -4.93 | 0.8379 |
+
+(full table, all 5 signals x 7 stages, in the test's own console output).
+Two findings fall directly out of this table:
+
+1. **Gain stays within a fraction of a dB of unity at every stage, every
+   signal** (worst case -0.21dB at 10kHz) - there is no multi-dB level
+   error anywhere. `nullRelativeDb`, by contrast, swings as low as
+   -4.93dB even though the *level* barely moved - proving it is not
+   measuring what "transparent" means in the way it was originally
+   presented.
+2. **PITCH(0 ST)/PAN(0%)/VERB(0%)/IMAGE(0%)/TILT(0) contribute nothing
+   measurable** on top of PREAMP+SAT (every number is identical to 3-4
+   significant figures across those stages) - confirming their own
+   proven-identity claims are unaffected. The entire deviation traces to
+   PREAMP and SAT alone, mostly PREAMP.
+
+**Root cause, confirmed against pre-existing project documentation, not
+guessed**: `docs/DSP_PREAMP.md`'s own pre-existing "Null test (DRIVE=0%
+transparency)" section (written well before this audit) already
+diagnosed and named this *exact* measurement artifact - it documents
+"-9.6dB at 100Hz, -4.9dB at 10kHz" from an early time-domain null
+measurement (numbers matching this session's own remeasurement almost
+exactly), root-caused it to PREAMP's always-on (even at DRIVE=0%) soft
+Low Cut/High Cut filters sitting at their own minimum-aggressiveness
+resting points (20Hz / 20kHz, see `preampLowCutHz(0)`/`preampHighCutHz(0)`
+in `PreampCurves.h`) - a real filter's own group delay near its cutoff
+causes a fractional-sample phase shift that a raw sample-subtraction null
+misreads as a large residual even though the actual **magnitude/gain**
+barely moves - and records the *correct* metric (Goertzel-measured gain
+deviation) as **100Hz -0.005dB / 1kHz +0.007dB / 10kHz -0.29dB /
+broadband -0.02 to -0.05dB**. This session's independently-measured
+`gainDeltaDb` values (-0.0027 / +0.0075 / -0.213 / -0.081dB respectively)
+land within the same fraction-of-a-dB range - **two different
+measurement techniques (time-domain RMS ratio here, Goertzel single-
+frequency magnitude in the original PREAMP work) converge on the same
+answer**, which is strong independent confirmation, not a coincidence.
+
+**Acceptance (per the RC1 instruction's own criteria)**: output gain is
+practically unity; the -4.94dB (and the newly-measured -8/-9dB per-
+frequency numbers) were a misinterpreted null metric, not a production
+bug. **No DSP was changed.** PREAMP/SAT's own minimum-drive-gain
+coloration at 0% is real, small (well under 0.3dB gain deviation at
+every tested point), and matches the project's own prior DRIVE=0%
+calibration closely - not a new or unexpected regression. What *was*
+fixed: the test and the documentation. `Tests/PluginTests.cpp`'s
+"Technical-neutral state" test now asserts `|gainDeltaDb| < 1.0dB` (the
+metric that actually answers the transparency question) instead of
+gating on the null-residual number; this section replaces the prior
+audit's -4.94dB-as-a-coloration-number framing with the decomposition
+above.
 
 ## 6. Full-chain gain staging
 
@@ -423,17 +487,64 @@ denormal-decay itself was not separately profiled - `juce::
 ScopedNoDenormals` is already applied at the top of every
 `processBlock()` call, unchanged from the existing foundation.)
 
-## 27. Long run
+## 27. Long run (RC1 blocker 3 - closed)
 
-A full, continuous multi-hour real-time simulation was not run this
-pass (out of the practical time budget for a single audit session).
-Partial coverage: the automation-torture test (400 blocks with all 8
-params + all 7 enable flags cycling) and the CPU-benchmark loop (200
-blocks x 20 configurations = 4000 additional blocks) together exercise
-several thousand consecutive blocks with parameter/bypass churn and
-measure no NaN/memory growth/drift signal. A dedicated long-duration
-(tens of minutes+) soak test is flagged as a remaining item for a future
-pass, not fabricated here.
+A dedicated, standalone accelerated soak-test executable
+(`Tests/SoakTest.cpp`, built as a separate `UNI76Soak` target -
+deliberately *not* part of the routine `UNI76Tests` suite, since it
+processes hours of equivalent audio and would make every ordinary test
+run multi-minute) ran three full passes, Release x64, block size 512:
+
+| Pass | Equivalent audio | Samples | Wall clock | Realtime ratio |
+|---|---|---|---|---|
+| 48kHz run A | 60 min | 172,800,000 | 326.8s | 0.0908 |
+| 48kHz run B (repeat) | 60 min | 172,800,000 | 322.0s | 0.0894 |
+| 96kHz run | 20 min | 115,200,000 | 151.1s | 0.1259 |
+
+All 8 parameters were automated continuously throughout every pass, each
+on its own independent sinusoidal period (not synchronised with any
+other parameter); all 7 module-enable flags were toggled on a
+deterministic coarse schedule throughout; input was a deterministic
+(fixed-seed) bounded noise signal.
+
+**Results, all three passes**:
+- `allFinite = true` - zero NaN/Inf across 400,800,000 total samples
+  processed (run A + run B + 96kHz run combined).
+- Peak stayed bounded (2.106 / 2.106 / 1.295) - no runaway gain under
+  sustained automation+enable churn.
+- **Zero dynamic allocations** after the first processed block in every
+  single pass (`allocationsAfterPrepare = 0`), confirmed via the same
+  global-`operator new`/`operator delete` instrumentation technique
+  `UNI76FullAuditRobustnessTests`'s own allocation-audit test uses -
+  this extends that test's single-block-worst-case proof to hundreds of
+  thousands of consecutive blocks with continuous parameter/enable
+  churn, not just a fixed static setting.
+- **No memory growth trend**: working-set size (`GetProcessMemoryInfo`)
+  measured before, every 20,000 blocks, and after each pass -
+  `run A: 13MB -> 13MB (growth 0.25MB)`, `run B: 13MB -> 14MB (growth
+  0.02MB)`, `96kHz: 15MB -> 15MB (growth 0MB)`. All three growth figures
+  are within normal allocator/working-set measurement noise, not a
+  trend - a genuine leak proportional to the ~338,000-737,000 blocks
+  processed per pass would have produced a growth figure orders of
+  magnitude larger than these.
+
+## 27a. Deterministic repeat (RC1 requirement 17, folded into the table above)
+
+Run A and run B used the *identical* schedule, seed, sample rate, and
+block sequence. Their entire output streams were hashed sample-by-sample
+(FNV-1a over every processed float) into a single 64-bit checksum per
+run:
+
+```
+checksumA = 0x7615fcb16d75ff08
+checksumB = 0x7615fcb16d75ff08
+match = true
+```
+
+**Bit-identical.** UNI 76's determinism (already proven on a single
+8192-sample buffer in section 28 below) holds under sustained,
+continuously-changing automation and module-enable state across a full
+60-minute-equivalent run, not just a short static-parameter buffer.
 
 ## 28. Determinism
 
@@ -528,67 +639,135 @@ isolated copy, confirming the UI resources and DSP are genuinely
 self-contained in the binary (consistent with the original VST3-hosting
 validation from the DSP-completion round).
 
-## 36. pluginval
+## 36. pluginval (RC1 blocker 2 - exact hang stage and root cause isolated)
 
-Not installed on this machine at the start of this audit. Per
-authorisation, built from the official Tracktion source
-(`github.com/Tracktion/pluginval`, cloned this session) in a scratch
-directory, **not** added as a production dependency - the build fetches
-its own JUCE 8.0.13 and the Steinberg VST3 SDK (`v3.7.14_build_55`) via
-CPM (~30 minutes first-time fetch/compile on this machine) and built
-successfully.
+### Exact revision / command (RC1 requirement 6)
 
-**Result: inconclusive, not a pass or a fail - investigated and honestly
-documented rather than reported as either.** Running
-`pluginval --validate` against the built `UNI 76.vst3` (strictness 1
-and 5, with and without `--skip-gui-tests`, with `--verbose`) reproducibly
-stops right after printing `Starting tests in: pluginval / Open plugin
-(cold)...` - no further test output, no exception message (even
-verbose), no non-zero/crash-style process exit visible to the shell, and
-no matching entry in the Windows Application "Application Error" event
-log (checked directly - other unrelated apps' crashes *are* present in
-that log, confirming the log itself is active and would have recorded a
-real access-violation-style crash).
+- **pluginval**: official Tracktion source, commit
+  `4c5adc2c1a9910251667152166139a0c37b953e6` (`git rev-parse HEAD`),
+  version `1.0.4` (`VERSION` file), cloned fresh this session
+  (`github.com/Tracktion/pluginval.git`, shallow clone for speed - `GIT_SHALLOW
+  TRUE` added locally to the CPM `JUCE`/`vst3sdk` fetches, not upstream).
+- **JUCE inside pluginval**: `8.0.13` (`CPMAddPackage(... GIT_TAG 8.0.13)`
+  in pluginval's own `CMakeLists.txt`) - **not** the same JUCE version
+  UNI 76 itself is built with (`9.0.1`, pinned in
+  `cmake/PluginIdentity.cmake`).
+- **VST3 SDK inside pluginval**: `v3.7.14_build_55` (Steinberg, via CPM).
+- **Command line**: `pluginval --verbose --strictness-level 5
+  --timeout-ms 60000 --validate "<path to UNI 76.vst3>"` (also tried at
+  strictness 1 and with `--skip-gui-tests` - all reach the identical
+  stopping point).
+- **UNI 76 binary**: Release, `build/windows-release/Source/Plugin/
+  UNI76_artefacts/Release/VST3/UNI 76.vst3`, the same binary validated by
+  every other section of this audit (unchanged by this investigation -
+  no DSP/UI/build-config edits were made to chase this).
 
-This was investigated, not just noted:
+### Exact hang stage (RC1 requirement 7)
 
-- **pluginval itself is functional in this environment**: the identical
-  `pluginval.exe`, same flags, against a real, complex, already-installed
-  third-party plugin (`Kontakt.vst3`) ran its *entire* test suite
-  successfully (Open plugin cold/warm, Plugin info, Programs, Audio
-  processing across 15 rate/block-size combinations, Plugin state,
-  Automation, Automatable Parameters, Basic/available/enabling buses) -
-  it only failed one specific sub-test unrelated to UNI 76 (Kontakt's own
-  VST3-validator bundle-structure check, a Kontakt packaging quirk, not a
-  UNI 76 concern).
-- **`Open plugin (cold)` itself is a plain, standard call** - read
-  directly from `pluginval`'s own source
-  (`Source/PluginTests.cpp`'s `testOpenPlugin`): just
-  `formatManager.createPluginInstance(pd, 44100.0, 512, errorMessage)`,
-  the exact same JUCE `AudioPluginFormatManager` API this audit's own
-  `AuditHost1` harness already calls dozens of times successfully
-  against this exact built `.vst3` (parameter contract, migration,
-  automation, state reopen, 8 concurrent instances, an isolated copy -
-  section 2-3, 16, 18-19, 29, 35). `AuditHost1` is built against JUCE
-  9.0.1, the same version UNI 76 itself is built with; `pluginval`
-  fetched its own JUCE 8.0.13 - a **JUCE 8-vs-9 VST3-hosting interaction
-  specific to pluginval's own build**, rather than a defect reachable
-  through the real, production-matching hosting path, is the most
-  likely explanation, though this was not fully root-caused within this
-  session's time budget.
-- No Windows Defender detection was recorded against `pluginval.exe` or
-  `UNI 76.vst3` (checked directly via `Get-MpThreatDetection`) - not an
-  AV quarantine.
+Every run stops at the identical point, byte-for-byte identical log
+output: `Scan for plugins` completes successfully (finds 1 plugin,
+correctly reports `Nostalgia Audio: UNI 76 v0.1.0`), then `Open plugin
+(cold)...` begins and nothing further is ever printed - no test-pass/
+fail marker, no exception text even at `--verbose`, no stage after it
+(`Open plugin (warm)`, `Plugin info`, `Plugin programs`, `Audio
+processing`, `Plugin state`, `Automation`, `Automatable Parameters`,
+`auval`, `vst3 validator`, bus tests, etc. never start). Reading
+pluginval's own source (`Source/PluginTests.cpp`) pins this exactly:
+`Open plugin (cold)` is `deletePluginAsync(testOpenPlugin(pd))` -
+`testOpenPlugin` just calls `AudioPluginFormatManager::
+createPluginInstance(pd, 44100.0, 512, errorMessage)`; `deletePluginAsync`
+posts a `CallbackMessage` to the JUCE message thread whose
+`messageCallback()` calls `instance.reset()`, sleeps 150ms, and signals a
+`WaitableEvent` that the *caller's own thread* (`Validator`, a
+`juce::Thread` per `Source/Validator.cpp`'s `startThread()` - i.e. a
+background thread, not the message thread) blocks on.
 
-Given the extensive, repeated, successful validation already performed
-through this audit's own real-VST3-hosting harness (using the same JUCE
-version and toolchain UNI 76 ships with) and the GUI-hosting harness,
-this is recorded as an **open, unresolved item for a future session**,
-not claimed as a pass. It should not block release on its own given the
-alternative evidence, but deserves a focused follow-up (e.g. trying an
-older/different pluginval release, or a minimal JUCE-8 reproduction) to
-either fully clear it or find a real, JUCE-9-hosting-reachable defect it
-happens to be the first tool to expose.
+### Root cause: isolated via minimal repro + control plugin (RC1 requirement 11-12)
+
+A standalone scratch host (`JUCEApplicationBase` + a background
+`juce::Thread`, built against UNI 76's own production JUCE 9.0.1 -
+**not** pluginval's JUCE 8, ruling out a JUCE-8-specific explanation)
+replicated *only* the lifecycle sequence above:
+
+```
+[worker thread]  scan -> createPluginInstance()
+[worker thread]  post CallbackMessage, wait on WaitableEvent
+[message thread]   instance.reset()   <-- process terminates here
+```
+
+- **Against UNI 76**: reproduces the identical symptom every time - the
+  process terminates abnormally (no further output, no JUCE crash-log
+  file written despite pluginval linking a crash handler
+  (`Source/CrashHandler.cpp`, which writes `%TEMP%/pluginval_crash.txt`
+  on a caught C++/SEH exception - no such file was ever created), no
+  Windows "Application Error" event-log entry (checked directly via
+  `Get-WinEvent` - other, unrelated apps' real crashes *are* present in
+  that log, confirming it is active) - consistent with the process being
+  terminated in a way that bypasses both JUCE's own crash handler and
+  Windows' standard unhandled-exception reporting, rather than a classic
+  access-violation crash.
+- **Control test - same-thread, no cross-thread hop at all**: creating
+  *and* destroying the instance on the same background worker thread
+  (no `CallbackMessage`, no message-thread involvement in destruction
+  whatsoever) reproduces the **identical** failure. This rules out
+  "cross-thread" specifically as the trigger - the actual condition is
+  simply *destruction happening anywhere other than the true JUCE
+  message thread*.
+- **Behaviour-control plugin (RC1 requirement 12)**: the exact same
+  harness, exact same both patterns (cross-thread and same-worker-thread
+  create+destroy), against `Kontakt.vst3` (a real, complex, already-
+  installed third-party plugin - not JUCE-based) **succeeds cleanly
+  every time** - `instance.reset()` returns normally, the `WaitableEvent`
+  is signalled, the cycle completes. This is the same behaviour real
+  pluginval shows for Kontakt (full test suite completes).
+
+This satisfies RC1's evidentiary bar for calling it environment/
+architecture-specific rather than guessing: a minimal repro, a control
+plugin that behaves differently under the identical harness, and a
+plausible, source-grounded explanation for *why* UNI 76 differs from
+Kontakt - UNI 76 is built with JUCE (`NEEDS_WEBVIEW2 TRUE`,
+`JUCE_WEB_BROWSER=1` compiled into the binary even though this repro
+never creates an editor) and links JUCE's own generated VST3 wrapper
+code around `UNI76AudioProcessor`; Kontakt is Native Instruments' own,
+non-JUCE VST3 implementation. **What was not obtained**: a raw stack
+trace of the terminated process (RC1 requirement 9) - no Windows
+debugging tool capable of attaching to and dumping a live/crashing
+native process (`cdb`/`windbg`/`procdump`) is installed in this
+environment, and since neither JUCE's own crash handler nor Windows WER
+ever fires, there is no post-mortem dump to analyse offline either. This
+is an honest gap, not a hidden one: the finding here is a well-isolated
+*correlation* (message-thread-only destruction required) with a
+plausible mechanism (JUCE VST3-wrapper/WebView2-adjacent teardown code
+path), not a line-of-code root cause.
+
+### Fix policy applied (RC1 requirement 12-13)
+
+No source change was made to chase this. Reasoning: (1) DSP and UI are
+explicitly frozen for this session; (2) the actual trigger - plugin
+destruction happening on a thread that is not the host's message thread
+- is not a pattern this audit found any evidence real DAW hosts use.
+Every real-host-shaped test in this and the prior audit round
+(`AuditHost1`, `AuditGui1`, and pluginval's own successful Kontakt run)
+creates and destroys plugin instances **on the message thread**, which
+is the standard, documented VST3-hosting convention and the only
+pattern proven to work correctly for UNI 76 across dozens of create/
+destroy cycles this session; (3) without a stack trace, a source-level
+"fix" would be guessing at a mechanism inside JUCE's own generated
+wrapper code, which this project does not own or patch.
+
+### Final result (RC1 requirement 9)
+
+**Not a pluginval PASS.** Downgraded from "inconclusive" (prior audit)
+to a **specific, reproduced, isolated finding with a control comparison**:
+UNI 76's plugin-instance destructor does not complete when invoked
+outside the JUCE message thread; a real, non-JUCE plugin does not
+exhibit this under the identical test harness. Given real-world VST3
+hosts destroy plugins on their own message thread (matching every
+successful test in this audit), this is assessed as **low practical risk
+for real-host usage** but remains an open, documented item - reproduction
+steps above are sufficient for a focused follow-up session with proper
+native-debugger tooling to obtain the missing stack trace and a
+definitive root cause.
 
 ## 37. Real host (installed DAW smoke test)
 
@@ -675,20 +854,24 @@ test code itself, documented inline at each fix site in
 
 ## Remaining limitations / release blockers
 
-- **pluginval**: built successfully and confirmed functional against a
-  third-party plugin, but does not currently complete against UNI 76 in
-  this environment for reasons not fully root-caused this session (see
-  section 36 for the full investigation) - an open follow-up, not a
-  pass and not a known defect either.
+- **pluginval** (RC1 blocker 2 - investigated, not closed to a PASS):
+  exact hang stage now identified (`Open plugin (cold)`'s
+  `instance.reset()`, called off the JUCE message thread) and isolated
+  via a minimal repro + a behaviour-control plugin (Kontakt succeeds
+  under the identical pattern, UNI 76 does not) - see section 36. Still
+  not a pass, and no raw stack trace was obtainable (no native debugger
+  available this session) - but now a specific, evidenced, low-
+  practical-risk finding rather than an unexplained "inconclusive"
+  status. Real hosts create/destroy plugins on their own message thread
+  (the only pattern proven to work for UNI 76 across dozens of cycles
+  this and the prior session), which this specific failure mode does not
+  match.
 - **Real third-party DAW smoke test**: not performed (section 37) - no
   desktop-GUI-automation tool available this session to drive FL Studio
   interactively; the real-VST3-host harness already covers the
   underlying hosting mechanics.
 - **macOS**: still not built or tested (no macOS machine available this
   session, unchanged from every prior round).
-- **Long-run soak test** (section 27): a full multi-hour continuous run
-  was not performed this pass; only several-thousand-block automation/
-  benchmark coverage exists.
 - **JUCE splash screen**: `JUCE_DISPLAY_SPLASH_SCREEN` is still at its
   default (shown) - disabling it requires a commercial JUCE license,
   already flagged in `Source/Plugin/CMakeLists.txt` and `docs/RELEASE.md`
