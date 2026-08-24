@@ -324,20 +324,17 @@
         </div>
 
         <div class="module__aux module__aux--imager">
-          <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
-            <div class="tri-scale__labels">
-              <span>ORIGINAL</span><span>FOCUS</span><span>WIDE</span>
-            </div>
-          </div>
-
           <!-- IMAGE spatial field pad - a second, independent control that
                drives BOTH existing parameters at once: horizontal drag is
                `imageTilt` (-100..+100), vertical drag is `imager` (0..100%,
                kept in sync with the main IMAGE knob above via the shared
                JUCE SliderState singleton - see Resources/Web/field_pad.js).
                No new parameters, no new DSP - see docs/DSP_IMAGE.md's "UI"
-               section. -->
+               section. Sits ABOVE the tri-scale (DOM order matters here -
+               .module__aux stacks top-to-bottom) so the vertical reading
+               order is knob -> FIELD -> semantic scale, matching every
+               other module's own knob -> aux-scale rhythm with FIELD
+               inserted between the two, not after. -->
           <div class="field">
             <div class="field__caption">FIELD</div>
             <div class="field__pad" tabindex="0" style="--pad-x: 50%; --pad-y: 93%">
@@ -350,6 +347,13 @@
                 <span class="field__listener-stem"></span>
               </span>
               <span class="field__puck"></span>
+            </div>
+          </div>
+
+          <div class="tri-scale">
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
+            <div class="tri-scale__labels">
+              <span>ORIGINAL</span><span>FOCUS</span><span>WIDE</span>
             </div>
           </div>
         </div>

@@ -42,4 +42,29 @@
   .signal-path__caption {
     display: none;
   }
+
+  /* IMAGE's field pad is the one module with extra aux content (FIELD +
+     tri-scale, vs. every other module's tri-scale alone - see
+     modules.css's class comment and docs/DSP_IMAGE.md's "Layout"
+     section). At the true minimum window height there isn't enough
+     natural slack below a full-size knob to fit both comfortably, so
+     the pad itself - never the knob, never the other six modules -
+     shrinks further here and the FIELD caption is dropped; the pad
+     remains fully usable, just smaller, and the layout no longer
+     overflows the module's own bottom edge. */
+  :root {
+    --field-pad-size: clamp(2rem, 1.2rem + 2.4vh, 5.6rem);
+  }
+
+  .field__caption {
+    display: none;
+  }
+
+  .field {
+    gap: 0;
+  }
+
+  .module__aux {
+    gap: 0.2em;
+  }
 }

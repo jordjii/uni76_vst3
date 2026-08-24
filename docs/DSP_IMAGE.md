@@ -435,21 +435,71 @@ plain text (`"Image field: Tilt L60, Image 85%"`) - a full native 2-axis
 ARIA role does not exist, so this is a deliberate, honest minimum rather
 than a claim of complete ARIA-slider compliance.
 
-**Layout.** IMAGE's aux zone grew (a new `--field-pad-size` token,
-`modules.css`'s `.module__aux--imager` height allowance increased
-accordingly) to fit the tri-scale, a compact `FIELD` caption, and the
-square pad underneath the main knob - the other six modules' panels are
-untouched. The pad's own width is driven by its parent's actual
-available space first and capped by `--field-pad-size` only as a
-ceiling (`width: 100%; max-width: var(--field-pad-size, ...)`) rather
-than the reverse - an earlier version of this control specified a fixed
-clamp() width with `max-width: 100%` as an afterthought, which let the
-pad's own intrinsic size push the whole IMAGE column wider than its
-fair share of the 7-column row at the smallest supported window
-(600x400), overflowing the editor itself; this was caught by real
-screenshot testing at all three supported window sizes, not assumed.
-The puck's own travel range is inset a few percent from the pad's true
-edges so it never visually overhangs the border at the extremes.
+**Layout.** IMAGE's aux zone grew (a new `--field-pad-size` token) to
+fit the tri-scale, a compact `FIELD` caption, and the square pad
+underneath the main knob - the other six modules' panels are untouched.
+The pad's own width is driven by its parent's actual available space
+first and capped by `--field-pad-size` only as a ceiling (`width: 100%;
+max-width: var(--field-pad-size, ...)`) rather than the reverse - an
+earlier version of this control specified a fixed clamp() width with
+`max-width: 100%` as an afterthought, which let the pad's own intrinsic
+size push the whole IMAGE column wider than its fair share of the
+7-column row at the smallest supported window (600x400), overflowing
+the editor itself; this was caught by real screenshot testing at all
+three supported window sizes, not assumed. The puck's own travel range
+is inset a few percent from the pad's true edges so it never visually
+overhangs the border at the extremes.
+
+**Vertical grid alignment (follow-up layout-only fix).** The first
+version of this layout used a per-module height override
+(`.module__aux--imager { flex-basis: calc(var(--zone-aux-height) +
+var(--field-pad-size) + ...) }`) alongside the existing
+`.module__knob-area { flex: 1 1 auto }` (grow-to-fill-remaining-space).
+Since a taller aux zone for IMAGE alone meant *less* remaining space for
+IMAGE's own knob-area specifically, the main IMAGE knob (and its value/
+label group, both centred within that now-shorter knob-area) ended up
+sitting at a visibly different Y than the other six modules' knobs, and
+- because the extra aux content pushed the tri-scale further down inside
+the block - the tri-scale itself drifted off the other six modules'
+shared baseline too. Both problems shared one root cause: knob-area's
+height was *derived from* how much aux content a given module happened
+to have, rather than being independent of it.
+
+The fix replaces both flex rules with the standard "pin the ends,
+flex the middle" technique: `.module__knob-area` now uses `flex: 0 0
+auto` (sizes to its own content - knob + value + label, structurally
+identical in every module, so this naturally computes to the same
+height everywhere, immediately after the shared fixed-height header);
+`.module__aux` now uses `flex: 0 0 auto; margin-top: auto;` (also sizes
+to its own content, but the auto top-margin consumes all remaining
+column space above it, pinning the aux block flush against the module's
+own bottom padding edge regardless of how many lines of content it
+holds). The per-module `.module__aux--imager` height override was
+removed entirely - it is no longer needed, since aux zones now size
+themselves. IMAGE's DOM order was also corrected to match the required
+reading order (title -> knob -> value -> **FIELD** -> semantic scale):
+the field pad markup now comes *before* the tri-scale in `index.html`,
+not after - `.module__aux` stacks its children top-to-bottom, so DOM
+order directly controls visual order here.
+
+This closed the alignment gap completely (knob centres and tri-scale
+baselines now measure pixel-identical against VERB's, both directly
+above and below IMAGE in the 7-column row) but exposed a second, real
+issue at the true minimum window size: at 600x400 there isn't enough
+natural slack below a full-size knob to fit the field pad *and* the
+tri-scale together at the pad's normal size, and the aux block began
+overflowing past the module's own bottom edge (silently clipped by
+`.module`'s `overflow: hidden`, so the tri-scale simply vanished at that
+size rather than causing a visible error). Fixed with a dedicated rule
+in `responsive.css`'s existing `@media (max-height: 420px)` breakpoint
+(the same one that already drops the footer's least-essential caption
+at extreme sizes): the pad shrinks further via a shorter `--field-pad-
+size` clamp, the `FIELD` caption is dropped, and the surrounding gaps
+tighten - the pad stays fully visible and usable, just smaller, and
+nothing above or below it moves. This is IMAGE-pad-specific and does
+not affect the other six modules, whose aux content (a single tri-scale
+line) already fit comfortably within the available space at every
+tested size.
 
 A scratch JUCE host app loaded the real built `.vst3`, created its real
 WebView2 editor, and captured native-window screenshots (Win32
@@ -479,6 +529,17 @@ screenshot - not by reading source - that:
   restored position immediately - confirming the pad's position is a
   pure function of the same saved parameter state every other control
   already relies on, not something that needs its own persistence path.
+
+A later, layout-only follow-up round (see "Vertical grid alignment"
+above) re-captured screenshots at all three sizes after fixing the knob/
+baseline misalignment: `docs/screenshots/image-layout-fixed-960x640.png`
+(the main reference size - all 7 knob centres and all 7 aux-scale
+baselines measure pixel-identical across the row, confirmed directly
+against VERB's and PAN's neighbouring columns, not just IMAGE's own),
+`image-layout-fixed-600x400.png` (minimum - the field pad's own
+short-window shrink keeps everything visible; the pre-existing text-
+truncation limitation noted above is unchanged), and `image-layout-
+fixed-1350x900.png` (maximum).
 
 ## Listening artifacts
 

@@ -8,11 +8,19 @@
   of it uses the dark "ink" tokens from tokens.css, not the light text-*
   tokens used in the dark header/footer.
 
-  The header/knob-area/aux zones use fixed heights (not content-driven
-  auto-sizing) specifically so all 7 modules' knobs, value read-outs and
-  aux scales land on the same horizontal lines even though the actual aux
-  content differs in line-count from module to module (PREAMP's two
-  filter-lines + caption vs. every other module's single tri-scale).
+  Vertical rhythm: the header is a fixed height (shared token); the
+  knob-area sizes to its own content (identical structure - knob, value,
+  label - in every module, so this naturally computes to the same height
+  everywhere); the aux zone also sizes to its own content but is pinned
+  flush against the module's bottom edge via `margin-top: auto` - the
+  standard flexbox "stick to the end regardless of what's above it"
+  technique. This is what keeps all 7 modules' knobs *and* all 7 aux
+  scales on the same horizontal lines even though aux content differs in
+  line-count from module to module (PREAMP's two filter-lines + caption,
+  IMAGE's field pad + tri-scale, vs. every other module's single
+  tri-scale) - the extra content only ever grows the *gap* between the
+  knob and the aux zone, never shifts either anchor itself. See
+  docs/DSP_IMAGE.md's "Layout" section for the specific bug this fixed.
 */
 
 .module {
@@ -126,7 +134,11 @@
 }
 
 .module__knob-area {
-  flex: 1 1 auto;
+  /* Sizes to its own content (knob + value + label - identical structure
+     in every module) instead of growing to fill leftover space - this is
+     what makes the knob's own vertical position immune to how much aux
+     content a given module has below it (see the class comment above). */
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -136,22 +148,14 @@
 }
 
 .module__aux {
-  flex: 0 0 var(--zone-aux-height);
+  /* Sizes to its own content, then `margin-top: auto` consumes all
+     leftover vertical space in the column above it, pinning it flush
+     against the module's own bottom padding edge regardless of how much
+     (or little) content it holds - see the class comment above. */
+  flex: 0 0 auto;
+  margin-top: auto;
   width: 100%;
   display: flex;
   flex-direction: column;
-  justify-content: flex-end;
   gap: var(--space-xs);
-}
-
-/* IMAGE is the one module whose aux zone carries a second, genuinely
-   interactive control (the spatial field pad - see scales.css's
-   `.field`/`.field__pad` and docs/DSP_IMAGE.md) alongside its usual
-   read-only tri-scale, so it alone gets extra height here to fit a
-   small square pad underneath. This does not affect any of the other
-   six modules' panels - IMAGE's own knob-area simply absorbs the
-   difference (the main knob has a fixed size, so it stays full-size,
-   just with less surrounding whitespace). */
-.module__aux--imager {
-  flex-basis: calc(var(--zone-aux-height) + var(--field-pad-size) + 1.6rem);
 }
