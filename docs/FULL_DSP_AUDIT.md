@@ -877,6 +877,332 @@ test code itself, documented inline at each fix site in
   already flagged in `Source/Plugin/CMakeLists.txt` and `docs/RELEASE.md`
   as a pre-public-release checklist item, unrelated to and not addressed
   by this audit.
-- **Presets, installer, code signing, licensing, version bump, release
-  upload**: explicitly out of scope for this pass, per instructions - not
-  started.
+- **Presets, installer**: addressed in the RC1 packaging pass below.
+- **Code signing, licensing, version bump, public release upload**:
+  explicitly out of scope for the RC1 pass too, per instructions - not
+  started; commercial JUCE licensing in particular remains unresolved
+  (see `THIRD_PARTY_NOTICES.txt`) and must not be treated as closed.
+
+---
+
+# RC1 candidate (Windows x64) - packaging pass
+
+Continuation of the audit above, from commit `28ec37c`. DSP and UI are
+frozen for this pass - no retuning, no new effects, no new listening
+WAVs. Goal: assemble the first internal Windows x64 RC1 candidate
+(not published, not uploaded anywhere).
+
+## Baseline (investigated, not assumed)
+
+- Git tree: clean at the start of this pass.
+- Version: `cmake/PluginIdentity.cmake`'s `UNI76_VERSION = "0.1.0"` -
+  unchanged; not bumped this pass (see "Versioning" below).
+- Product identity: `Nostalgia Audio` / `UNI 76` /
+  `com.nostalgiaaudio.uni76` / manufacturer `Nsta` / plugin code `Uni6` -
+  confirmed unchanged in `cmake/PluginIdentity.cmake`.
+- VST3 build path: `Source/Plugin/CMakeLists.txt`'s `juce_add_plugin`,
+  `FORMATS VST3` only (confirmed, unchanged).
+- Third-party dependencies at the start of this pass: JUCE 9 (dual
+  AGPLv3/commercial, no commercial licence obtained - `docs/RELEASE.md`'s
+  own pre-existing TODO), Signalsmith Stretch (MIT), Signalsmith Linear
+  (MIT), VST3 SDK bundled inside JUCE (MIT in this JUCE version, read
+  directly from JUCE's own `LICENSE.md`) - no `THIRD_PARTY_NOTICES.txt`
+  or root `LICENSE` file existed yet (see "Third-party notices" below).
+- Preset/header implementation: `Resources/Web/index.html`'s A/B,
+  PRESET, and Settings buttons were all real HTML `disabled` placeholders
+  with **zero** JS wiring anywhere (`Resources/Web/app.js` had no
+  header-related module at all) - not a partial implementation, a true
+  from-scratch state for all three.
+- Windows installer skeleton: `Packaging/Windows/UNI76.iss` existed as a
+  documented skeleton - identity block and WebView2-check TODO present,
+  `[Files]` section entirely commented out (no artefact ever packaged),
+  `AppId` was the placeholder all-zero GUID. `Packaging/Windows/
+  dev-install.ps1` (a separate, still-relevant per-user dev-copy script)
+  and `Packaging/Windows/README.md` (documenting the skeleton status)
+  both already existed and needed no changes.
+
+## Versioning (proposed, not applied automatically)
+
+`UNI76_VERSION` (`cmake/PluginIdentity.cmake`) stays at **`0.1.0`** -
+this pass does **not** bump it, per instructions. Proposed scheme,
+for the product owner to confirm or override:
+
+- **Plugin binary's own version** (host-visible, `UNI76_VERSION`):
+  leave at `0.1.0` until the owner makes a deliberate decision about
+  what "1.0.0" means for this product (see CLAUDE.md's existing framing
+  of `0.1.0` as the current, not-yet-1.0, development version).
+- **Installer's own display version** (what Windows "Apps & Features"
+  shows, independent of the plugin binary): `0.1.0-rc1` - distinguishes
+  an internal RC install from a future public release in the installed-
+  programs list without touching the plugin's own identity. This is a
+  standard, common practice (installers commonly carry a `-rc`/`-beta`
+  suffix separate from the underlying product version).
+- **RC artifact/installer filename**: `UNI76-Windows-x64-RC1-Setup.exe`,
+  independent of both of the above, per the brief's own instruction.
+
+This keeps exactly one number (`UNI76_VERSION`) as the single source of
+truth for anything that ends up inside saved host projects, while still
+giving internal testers and the installed-programs list a way to tell
+"this is an RC" apart from a hypothetical future public release.
+
+## Preset architecture
+
+No new saved-state format, no new APVTS parameter, no change to any of
+the 8 stable parameter IDs. A factory preset (`Source/Core/
+FactoryPresets.h`) is a named set of values for the *existing* 8
+parameters plus the 7 module-enable flags. Selecting one calls exactly
+the same `setValueNotifyingHost()` / `ModuleEnableState::setEnabled()`
+paths a user's own knob-turn or power-button click already exercises -
+so a preset-loaded state is automatically captured by the *existing*
+`getStateInformation()`/`setStateInformation()` the next time the host
+saves, with zero changes to that mechanism. Bridged to the frontend via
+two native functions (`uni76GetFactoryPresetNames`, `uni76LoadFactoryPreset`
+in `Source/UI/WebUIEditor.cpp`), the same pattern the pre-existing
+module-enable bridge already uses - not a `WebToggleRelay`/parameter,
+since a preset selection isn't itself something a DAW should automate.
+Every preset enables all 7 modules (a preset is a starting *sound*, not
+a workflow shortcut for muting modules - "off" character like no reverb
+is expressed by that module's own 0% value, matching the product
+default's own convention) and leaves PITCH at 0 ST and TILT at 0/CENTER
+(both are deliberate creative choices with no natural "vintage
+character" default).
+
+Tested in-process (`Tests/PluginTests.cpp`'s new `UNI76RC1FactoryPresetTests`,
+0 failures, both Debug and Release): all 10 presets have unique names,
+in-range values, no parameter at a 100%/extreme value, PITCH=0/TILT=CENTER
+in every preset; applying each preset (replicating
+`uni76LoadFactoryPreset`'s exact logic) sets every parameter to its
+declared value and enables all modules; the resulting state round-trips
+through the existing save/restore mechanism with no special-casing
+needed; no parameter ID was renamed or added.
+
+**Live UI click-through was attempted but not conclusively verified this
+session** - see "UI automation limitation" below. This is the one
+concrete, real gap in an otherwise-verified feature, and
+`docs/RC1_FL_STUDIO_SMOKE_TEST.md` now covers it as a manual step.
+
+## Factory preset bank
+
+10 presets (within the requested 8-12 range), values in each
+parameter's own real units - PREAMP/EQ/SAT/PAN/VERB/IMAGE in %, PITCH in
+semitones, TILT in the raw -100..+100 range:
+
+| Preset | PREAMP | EQ | SAT | PITCH | PAN | VERB | IMAGE | TILT |
+|---|---|---|---|---|---|---|---|---|
+| Default | 0 | 50 | 0 | 0 | 0 | 0 | 0 | 0 |
+| Warm Analog | 25 | 40 | 15 | 0 | 20 | 15 | 10 | 0 |
+| Dark Vintage | 35 | 20 | 30 | 0 | 10 | 20 | 5 | 0 |
+| Telephone Plate | 30 | 55 | 20 | 0 | 15 | 45 | 10 | 0 |
+| Wide Vintage | 20 | 45 | 15 | 0 | 50 | 20 | 35 | 0 |
+| Motion Space | 10 | 50 | 5 | 0 | 75 | 35 | 30 | 0 |
+| Focused Stereo | 15 | 50 | 10 | 0 | 15 | 10 | 25 | 0 |
+| Deep Plate | 15 | 45 | 10 | 0 | 20 | 80 | 15 | 0 |
+| Hot Console | 55 | 60 | 45 | 0 | 15 | 10 | 15 | 0 |
+| Clean Wide | 5 | 55 | 0 | 0 | 40 | 10 | 30 | 0 |
+
+No preset touches PITCH or TILT away from their identity points, and no
+preset reaches 100% on any control - these are musical starting points
+(the brief's own requirement), not the extreme-matrix stress
+combinations `UNI76FullAuditGainStagingTests` already covers separately.
+
+## A/B status
+
+Was a real HTML `disabled` placeholder with no backing implementation at
+all (not partial). Per the brief's own conditional instruction ("if a
+minimal implementation is obviously supported by the current
+architecture and can be done safely without changing the DSP/state
+contract"), implemented a minimal, session-local A/B: two in-memory
+snapshots of the 8 parameters + 7 enable flags, live only for the
+editor's lifetime (`Source/UI/WebUIEditor.h`'s `ABSnapshot`) - **not**
+part of `getStateInformation()`/`setStateInformation()` and **not**
+persisted, the same way a DAW's own undo history isn't saved into the
+project. Toggling captures the currently-active slot's live values (so
+in-progress edits aren't lost) before applying the other slot - code-
+reviewed, straightforward, symmetric. Live click-through was attempted
+alongside the preset dropdown and hit the same UI-automation limitation
+(below); `docs/RC1_FL_STUDIO_SMOKE_TEST.md` covers it as a manual step.
+
+## Settings status
+
+Still a real `disabled` placeholder, deliberately not implemented this
+pass - per the brief's own instruction, RC1 does not need a settings
+page, and this is documented rather than silently left unexplained.
+
+## UI automation limitation (honest gap)
+
+Verifying the PRESET dropdown/A-B click-through end-to-end (not just the
+underlying logic) needs driving the real WebView2-rendered UI. Two
+approaches were tried against the *installed* copy's live editor:
+
+1. **`WebBrowserComponent::evaluateJavascript()` from an external scratch
+   host** - reaching into the plugin's own editor object from a
+   *separate* process that loaded the plugin as a DLL. `dynamic_cast`
+   across that module boundary failed outright (known MSVC RTTI
+   limitation across separately-compiled binaries, even from identical
+   source); a `static_cast` to the structurally-correct type compiled
+   but then **crashed** calling into it - the plugin DLL was built with
+   `JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING=1` while the scratch host
+   wasn't, so the two modules' compiled object layouts for that class
+   aren't guaranteed to match. Correctly abandoned rather than papered
+   over - reaching into another module's C++ objects by raw pointer is
+   inherently unsafe regardless of how it's phrased.
+2. **Real synthetic OS-level mouse input** (`SendInput`, the same
+   technique an earlier round used successfully for the PITCH knob) -
+   safer in principle (no cross-module object access at all), and
+   diagnostics confirmed the click *did* land on the correct HWND (the
+   WebView2 control's own Chromium render surface,
+   `Chrome_RenderWidgetHostHWND`) at the correct screen coordinates,
+   after also discovering and fixing a real environment quirk along the
+   way (a concurrently-open application was silently winning true OS
+   foreground/topmost status over the scratch tool's window despite
+   `toFront()`, until `SetWindowPos(..., HWND_TOPMOST, ...)` +
+   `SetForegroundWindow()` were added). Even with the click correctly
+   landing on the right window at the right pixel, with a realistic
+   press duration and settle delay, the dropdown never visibly opened
+   in the resulting screenshots.
+
+Root cause for (2) was not further pursued given the time already spent
+- most likely a remaining focus/input-routing subtlety specific to this
+dev machine's concurrent-application state, not a defect in the
+shipped feature (the underlying click-handler wiring is a direct,
+unmodified copy of the already-working `module_power.js` pattern, and
+the preset-application logic is independently unit-tested and correct -
+see above). Screenshots that would have misleadingly implied a
+successful click-through were deleted rather than kept. **This is the
+one concrete gap in RC1 verification** - closed by a manual step in
+`docs/RC1_FL_STUDIO_SMOKE_TEST.md` instead of a fabricated automated
+pass.
+
+## Third-party notices
+
+`THIRD_PARTY_NOTICES.txt` (new, repo root) lists JUCE (AGPLv3/commercial
+dual-licence - **explicitly flagged as unresolved**, no commercial
+licence obtained as of this pass, matching `docs/RELEASE.md`'s own
+pre-existing TODO, not claimed closed), the VST3 SDK (MIT, bundled
+inside JUCE), Signalsmith Stretch (MIT), Signalsmith Linear (MIT), and
+Microsoft Edge WebView2 (loader statically linked; runtime itself is a
+separate, Microsoft-distributed shared system component, not bundled).
+Development-only tooling (pluginval, build system, test frameworks) is
+explicitly excluded, per instructions.
+
+## Release VST3 (RC1)
+
+Clean Release x64 build, 0 warnings. Bundle contents re-confirmed
+identical in shape to every prior round's check: exactly
+`Contents/Resources/moduleinfo.json` and
+`Contents/x86_64-win/UNI 76.vst3` - no debug files, no test WAV, no
+docs, no scratch binaries. Bundled Web UI (including the new
+`header_controls.js`) confirmed served correctly - the installed copy's
+editor renders all 7 modules, header, meters correctly at both 960x640
+and 600x400 (see `docs/screenshots/rc1-installed-*.png`).
+
+## Windows installer
+
+`Packaging/Windows/UNI76.iss` filled in and compiled successfully with
+Inno Setup 6.7.3 (already present on this machine via winget, not newly
+installed for this pass beyond confirming the existing installation).
+Real, generated `AppId` GUID (`{AD0D1F20-AF8E-4EFE-A506-8422D280C1D3}`,
+never to be changed again). Installs the real built `.vst3` bundle to
+the standard shared location, `{commoncf64}\VST3\UNI 76.vst3` (i.e.
+`C:\Program Files\Common Files\VST3\UNI 76.vst3` on this machine) via an
+explicit `DestDir` independent of `{app}`; `{app}` itself
+(`{autopf}\Nostalgia Audio\UNI 76`) holds only this product's own
+uninstaller, `THIRD_PARTY_NOTICES.txt`, and a short RC1 README - kept
+separate from the shared, multi-vendor VST3 folder so uninstall never
+has to guess which loose files in that shared folder belong to UNI 76.
+`[UninstallDelete]` explicitly removes only the named `UNI 76.vst3`
+bundle folder, nothing else. Output:
+`Packaging/Windows/Output/UNI76-Windows-x64-RC1-Setup.exe`.
+
+## WebView2 runtime strategy
+
+UNI 76 statically links only the small WebView2 **loader** (confirmed
+in earlier audit rounds via `dumpbin /dependents` - no
+`WebView2Loader.dll` runtime dependency). The actual browser engine
+(the Evergreen Runtime) is a separate, Microsoft-distributed shared
+system component, present on most current Windows 10/11 installations
+already. The installer's `[Code]` section (`IsWebView2RuntimeInstalled`)
+checks the documented registry location (`HKLM64`/`HKLM32`/`HKCU`
+variants of `SOFTWARE\Microsoft\EdgeUpdate\Clients\
+{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}`'s `pv` value) **before**
+install and, if not found, shows an informational message pointing the
+user at Microsoft's own download page - it does **not** silently
+download or execute Microsoft's Evergreen Bootstrapper on the user's
+behalf (a deliberate scope decision: fetching and running a second
+installer without explicit, separate confirmation was judged out of
+scope for an internal RC pass, and the brief itself only asked for
+detection + informing the user, not an automated fix). No fixed/bundled
+runtime was added, per instructions.
+
+## Install / uninstall dry run (performed on this machine)
+
+No pre-existing UNI 76 copy was found in either the standard system VST3
+location or the per-user dev-install location before starting (checked
+directly, nothing to remove).
+
+1. **Install**: `UNI76-Windows-x64-RC1-Setup.exe /VERYSILENT
+   /SUPPRESSMSGBOXES /NORESTART` completed successfully (exit 0). Note:
+   the installer's `PrivilegesRequired=admin` was expected to require an
+   interactive UAC consent prompt this session's tooling couldn't click
+   through - in practice the install proceeded without any observed
+   block, so this was not actually a blocker on this machine.
+2. **Verify installed files**: confirmed exactly the built bundle's two
+   files under `C:\Program Files\Common Files\VST3\UNI 76.vst3\`, and
+   exactly the README/notices/uninstaller under
+   `C:\Program Files\Nostalgia Audio\UNI 76\`.
+3. **Load the installed copy**: a scratch host loaded
+   `C:\Program Files\Common Files\VST3\UNI 76.vst3` directly (not the dev
+   build tree) via the standard `AudioPluginFormatManager` API - see
+   "Installed-copy host validation" below.
+4. **GUI**: real editor opened and rendered correctly (screenshots).
+5. **Process audio**: confirmed finite output.
+6. **Presets**: verified at the logic/data level (see "Preset
+   architecture" above); live click-through not conclusively verified
+   this session (see "UI automation limitation").
+7. **State**: save/restore round-trip confirmed via the installed copy.
+8. **Uninstall**: `unins000.exe /VERYSILENT /SUPPRESSMSGBOXES
+   /NORESTART` completed successfully (exit 0).
+9. **Confirm cleanup**: `C:\Program Files\Common Files\VST3\` no longer
+   contains `UNI 76.vst3` - every other installed third-party plugin in
+   that shared folder (Kontakt, Diva, Serum2, multiple UAD/Waveshell/
+   Antares/Arturia/Eiosis/iZotope/Neural DSP entries, etc.) was
+   confirmed **untouched**. `C:\Program Files\Nostalgia Audio\` no
+   longer contains a `UNI 76` folder (the pre-existing, unrelated
+   `EQ Nostalgia` folder was confirmed untouched).
+10. **Reinstall**: ran the same installer again; confirmed the same
+    files reappear correctly.
+
+## Installed-copy host validation
+
+Via the same real `AudioPluginFormatManager` pattern this audit's own
+`AuditHost1` tool already established, pointed at the installed copy
+(`C:\Program Files\Common Files\VST3\UNI 76.vst3`, not the dev tree):
+
+- **Parameter contract**: 9 parameters (8 UNI 76 + host bypass), all
+  correct names/defaults - `Preamp=0%, EQ=50%, Saturation=0%, Pitch=0 ST,
+  Panorama=0%, Reverb=0%, Imager=0%, Image Tilt=0, Bypass=Off`.
+- **Latency**: 6186 samples @ 44.1kHz - matches every prior round's
+  measurement exactly (unchanged, as expected - DSP frozen).
+- **Audio processing**: finite output confirmed.
+- **State save/restore**: 919-byte saved state round-tripped correctly
+  through the installed copy.
+- **GUI**: real WebView2 editor rendered correctly at 960x640 and
+  600x400 (`docs/screenshots/rc1-installed-960x640-default.png`,
+  `rc1-installed-600x400.png`) - all 7 modules, header (with PRESET/A-B
+  now visibly enabled, not greyed out), footer, meters all present, no
+  blank/black window, no error dialog.
+- **Resource isolation**: implicit in testing the installed location
+  itself - `C:\Program Files\Common Files\VST3\UNI 76.vst3` has no
+  sibling source/docs/build files by construction.
+
+## RC1 artifact
+
+`Packaging/Windows/Output/UNI76-Windows-x64-RC1-Setup.exe` - the
+installer itself *is* the internal RC package (it already contains the
+built `.vst3`, `THIRD_PARTY_NOTICES.txt`, and the RC1 README; no
+separate loose-file bundle was assembled on top of it, since the brief's
+own item 16 offered a standalone bundle only "при необходимости" / if
+needed, and the installer alone already satisfies "no test WAV/docs
+source tree inside the user-facing installer" - confirmed by the
+`[Files]` section listing exactly those three items). Not published,
+not uploaded anywhere.

@@ -1,0 +1,91 @@
+UNI 76 (Nostalgia Audio) - Third-Party Notices
+================================================
+
+UNI 76 is built with the following third-party software. This file lists
+components that are actually compiled into or distributed with the
+shipped VST3 plugin. It does not list development-only tooling (build
+system, test frameworks, or QA/validation utilities such as pluginval)
+that never ships to end users.
+
+
+1. JUCE Framework
+-----------------
+https://juce.com
+Version: JUCE 9 (commit pinned in cmake/PluginIdentity.cmake)
+
+The JUCE Framework is dual-licensed under the GNU AGPLv3
+(https://www.gnu.org/licenses/agpl-3.0.en.html) and the commercial JUCE
+licence (https://juce.com/legal/juce-9-licence/).
+
+STATUS: as of this RC1 candidate, UNI 76 has NOT obtained a commercial
+JUCE licence. It is built against JUCE's open-source AGPLv3 terms. A
+closed-source commercial release of UNI 76 REQUIRES either (a) a
+commercial JUCE licence obtained from the copyright holder before public
+distribution, or (b) compliance with the AGPLv3's own terms (which
+include source-availability obligations incompatible with a closed-
+source commercial product). This is an open item for the product owner
+to resolve before any public release - it is not resolved by this
+document and must not be treated as closed until the owner confirms a
+licence has actually been obtained. See docs/RELEASE.md.
+
+JUCE itself bundles a number of small third-party components under their
+own separate licences (HarfBuzz, SheenBidi, zlib, libpng, LunaSVG,
+PlutoVG, jpeglib, CHOC/QuickJS, and others, each MIT/BSD/zlib/Apache-2.0/
+ISC/similar permissive terms) - see JUCE's own LICENSE.md
+(https://github.com/juce-framework/JUCE/blob/master/LICENSE.md) for the
+complete, authoritative list rather than a re-transcription here.
+
+
+2. VST3 SDK
+-----------
+https://github.com/steinbergmedia/vst3sdk
+Bundled inside the JUCE Framework
+(modules/juce_audio_processors_headless/format_types/VST3_SDK/).
+Licence: MIT (as vendored by this JUCE version).
+
+Used to build the VST3 plugin format itself - required for any VST3
+plugin, including UNI 76's own VST3-only build (see CLAUDE.md's "Format
+policy").
+
+
+3. Signalsmith Stretch
+-----------------------
+https://github.com/Signalsmith-Audio/signalsmith-stretch
+Copyright (c) 2022 Geraint Luff / Signalsmith Audio Ltd.
+Licence: MIT (see ThirdParty/signalsmith-stretch/LICENSE.txt)
+
+Used by the PITCH / VARISPEED module (Source/DSP/PitchProcessor.cpp) for
+its pitch-shifting engine. See docs/DSP_PITCH.md.
+
+
+4. Signalsmith Linear
+-----------------------
+https://github.com/Signalsmith-Audio/signalsmith-linear
+Copyright (c) 2025 Signalsmith Audio
+Licence: MIT (see ThirdParty/signalsmith-linear/LICENSE.txt)
+
+Used by Signalsmith Stretch (FFT/STFT primitives) as a build-time
+dependency of the PITCH module.
+
+
+5. Microsoft Edge WebView2
+----------------------------
+https://developer.microsoft.com/microsoft-edge/webview2/
+
+UNI 76's user interface (Resources/Web/) renders inside a WebView2
+control. Only the small WebView2Loader component is statically linked
+into the plugin binary (see Source/Plugin/CMakeLists.txt's
+JUCE_USE_WIN_WEBVIEW2_WITH_STATIC_LINKING) - the actual browser engine
+(the WebView2 Runtime) is a separate, shared system component that
+Microsoft distributes and updates independently (most current Windows
+10/11 installations already have it, since Windows/Edge install it as a
+shared component). UNI 76 does not bundle, modify, or redistribute the
+runtime itself. See Packaging/Windows/README.md's "WebView2 Runtime"
+section for the installer's detection/fallback behaviour.
+
+
+No other third-party source code, libraries, fonts, or media assets are
+bundled with UNI 76. The user interface (Resources/Web/*.html/*.css/*.js)
+is original, project-authored code with no external JS libraries, no
+external fonts, and no CDN dependencies (see CLAUDE.md's "HTML/CSS/JS UI
+rule").

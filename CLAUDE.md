@@ -942,6 +942,63 @@ MSVC 19.51):
     three blockers closed via test/documentation correction and
     additional evidence, per the frozen-DSP/UI scope.
 
+- **RC1 candidate (Windows x64)** (see
+  [docs/FULL_DSP_AUDIT.md](docs/FULL_DSP_AUDIT.md)'s "RC1 candidate"
+  section for full detail) - the first internal, unpublished Windows x64
+  Release Candidate, from commit `28ec37c` with DSP/UI still frozen (no
+  retuning, no new effects). `UNI76_VERSION` stays `0.1.0` (not bumped);
+  the installer carries its own separate `0.1.0-rc1` display version and
+  the artifact is named `UNI76-Windows-x64-RC1-Setup.exe`, independent of
+  the plugin's own version. **Factory preset system**: the header's
+  PRESET/A-B/Settings buttons were real `disabled` placeholders with zero
+  JS wiring before this round (not a partial implementation). Presets are
+  a new, minimal, production-safe architecture
+  (`Source/Core/FactoryPresets.h`) that adds **no new saved-state format
+  and no new parameter** - a preset just calls the same
+  `setValueNotifyingHost()`/`ModuleEnableState::setEnabled()` paths a
+  user's own gesture already exercises, so it's captured by the existing
+  save/restore mechanism automatically. 10 factory presets shipped
+  (Default, Warm Analog, Dark Vintage, Telephone Plate, Wide Vintage,
+  Motion Space, Focused Stereo, Deep Plate, Hot Console, Clean Wide) -
+  musical starting points, no parameter at 100%, PITCH/TILT left neutral
+  in every preset. **A/B**: a minimal, session-local-only (not persisted)
+  two-slot snapshot toggle, implemented since it fit the existing
+  architecture safely with no state-contract change
+  (`Source/UI/WebUIEditor.h`'s `ABSnapshot`). **Settings**: left
+  `disabled`, deliberately not implemented - documented, not silently
+  skipped. Both the preset-application logic and the factory preset data
+  itself are unit-tested in-process (`UNI76RC1FactoryPresetTests`, 0
+  failures) - live UI click-through automation was attempted (both a
+  cross-DLL `evaluateJavascript` approach, which crashed and was
+  correctly abandoned as inherently unsafe, and real OS-level
+  `SendInput` clicks, which landed on the correct WebView2 render
+  surface at the correct coordinates but still didn't visibly open the
+  dropdown) and not conclusively resolved this session - honestly
+  documented as the one real gap, with a manual verification step added
+  to the new `docs/RC1_FL_STUDIO_SMOKE_TEST.md` instead of a fabricated
+  automated pass. `THIRD_PARTY_NOTICES.txt` (new, repo root) documents
+  JUCE (AGPLv3/commercial dual-licence - explicitly flagged as
+  **unresolved**, no commercial licence obtained), the VST3 SDK (MIT,
+  bundled in JUCE), Signalsmith Stretch/Linear (MIT), and WebView2
+  (loader statically linked, runtime is a separate Microsoft system
+  component). `Packaging/Windows/UNI76.iss` went from a commented-out
+  skeleton to a real, compiling Inno Setup installer (real generated
+  `AppId` GUID, installs the real built `.vst3` to the standard
+  `C:\Program Files\Common Files\VST3\UNI 76.vst3` location via an
+  explicit `DestDir`, keeps its own uninstaller/notices/README in a
+  separate per-product folder so uninstall never has to guess which
+  loose files in the shared VST3 folder belong to UNI 76, checks for the
+  WebView2 Runtime and informs rather than silently auto-installing it).
+  A full install -> load/GUI/audio/state -> uninstall -> confirm-cleanup
+  -> reinstall dry run was actually performed on this machine (not just
+  described) - confirmed clean removal with every one of the many other
+  third-party plugins already in the shared VST3 folder left untouched.
+  Real VST3 host validation against the *installed* copy (not the dev
+  build tree) confirmed the same parameter contract/defaults/latency/
+  audio processing/state round-trip already established, plus correctly
+  rendered GUI screenshots. Debug and Release builds both clean (0
+  warnings); all tests green in both configurations.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see
