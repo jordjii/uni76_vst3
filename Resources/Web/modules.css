@@ -159,3 +159,25 @@
   flex-direction: column;
   gap: var(--space-xs);
 }
+
+/* IMAGE alone grows its aux zone to fill *all* remaining vertical space
+   (instead of shrink-wrapping its own content like every other module),
+   so the field pad can float in the middle of that space instead of
+   sitting jammed against the tri-scale below it. Giving `.field` (not
+   the aux block itself) auto margins on both its own top and bottom is
+   what actually centres it: with only one child in the column carrying
+   auto margins, all of the zone's free space funnels through that one
+   child's own top/bottom margins in equal halves - which, as a
+   consequence, also leaves zero leftover space anywhere else, so the
+   tri-scale after it still lands flush against the bottom exactly as
+   it did before (see docs/DSP_IMAGE.md's "Layout" section). The tri-
+   scale's own baseline and every other module's aux layout are
+   unaffected by this rule. */
+.module__aux--imager {
+  flex: 1 1 auto;
+}
+
+.module__aux--imager .field {
+  margin-top: auto;
+  margin-bottom: auto;
+}

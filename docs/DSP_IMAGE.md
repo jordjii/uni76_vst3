@@ -541,6 +541,36 @@ short-window shrink keeps everything visible; the pre-existing text-
 truncation limitation noted above is unchanged), and `image-layout-
 fixed-1350x900.png` (maximum).
 
+**Knob scale-number removal + FIELD centring (quick UI-only follow-up,
+no DSP/parameter change).** Two small cosmetic fixes on top of the
+layout above: (1) the redundant `0 / 50 / 100` numeric labels ringing
+PREAMP/EQ/SAT/PAN/VERB/IMAGE's knobs were removed from `index.html`
+(each knob already has its own percentage read-out and, for the five
+non-EQ modules, a semantic tri-scale immediately below it, making the
+raw numbers pure clutter); PITCH's distinct `-12 / 0 / +12` labels are
+kept, since PITCH has no percentage-style value read-out to fall back
+on. (2) IMAGE's field pad was visually low in its aux zone, jammed
+against the tri-scale below it. Fixed by giving `.module__aux--imager`
+`flex: 1 1 auto` (grow to fill *all* remaining column space, instead of
+shrink-wrapping its content like every other module's aux zone) and
+giving `.field` alone `margin-top: auto; margin-bottom: auto;` - with
+only one child in the column carrying auto margins on both sides, the
+flexbox auto-margin algorithm funnels 100% of the zone's free space
+through that one child's own top/bottom margins in equal halves, which
+centres the pad between the knob's value read-out and the tri-scale
+while leaving zero space left over anywhere else - so the tri-scale
+after it still lands exactly on the same shared baseline as the other
+six modules, unaffected. Verified by real `PrintWindow`-captured
+screenshots at 960x640 (`docs/screenshots/quickfix-960x640.png`),
+600x400 (`quickfix-600x400.png`) and 1350x900
+(`quickfix-1350x900.png`): all seven knob centres and all seven aux
+baselines remain on their shared lines at every size, PITCH's
+`-12/0/+12` are the only knob-ring numbers left anywhere in the UI, and
+the field pad now sits visibly centred between IMAGE's value and its
+tri-scale at the two larger sizes (at 600x400 the pre-existing
+`max-height: 420px` compact mode still applies, tightening gaps for
+space as it did before this round).
+
 ## Listening artifacts
 
 No normalisation applied between variants within either set:
