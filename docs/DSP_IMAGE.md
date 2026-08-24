@@ -9,7 +9,7 @@ per module" rule (see CLAUDE.md): it carries two independent public
 APVTS parameters, not one.
 
 ```
-imager (0%..100%):      ORIGINAL -> NATURAL -> WIDE
+imager (0%..100%):      ORIGINAL -> FOCUS -> WIDE
                          Frequency-dependent stereo width/imaging amount.
 
 imageTilt (-100..+100):  LEFT <- CENTER -> RIGHT
@@ -371,30 +371,114 @@ real, properly block-size-chunked `processBlock()` calls; state
 round-tripped exactly through a real `getStateInformation()`/
 `setStateInformation()` save+restore.
 
-## Real VST3 GUI validation
+## UI: spatial field pad (supersedes the original linear TILT slider)
+
+A follow-up UI-only round (no DSP change) replaced the original compact
+horizontal TILT slider with a small square **spatial field pad**
+(`Resources/Web/field_pad.js`, markup/styles in `index.html`/`scales.css`)
+that drives both `imager` and `imageTilt` from a single 2D control:
+
+- **X axis (horizontal) = `imageTilt`**: far left = -100 (LEFT), centre =
+  0 (CENTER), far right = +100 (RIGHT) - a direct, unscaled mapping of
+  the parameter's own normalised value.
+- **Y axis (vertical) = `imager`**, visually inverted so the control
+  reads top-to-bottom the way the product brief specifies: bottom = 0%
+  (ORIGINAL/centred), top = 100% (WIDE) - `padY = (1 - imagerNormalised)
+  * 100%`.
+
+Spatial reading: bottom-centre = original/centred, top-centre = wide
+centred, top-left/top-right = wide + left/right bias, bottom-left/
+bottom-right = a left/right bias with minimal image amount - exactly the
+six-point semantic the brief specifies, and a direct visual consequence
+of the X/Y mapping above rather than anything hand-tuned per corner.
+
+**The main IMAGE knob is unchanged and remains the primary `imager`
+control** - it was not removed or shrunk in function, only visually
+compacted to share its panel with the new pad (see "Layout" below). Two
+controls now write the same parameter because that is exactly what a
+real console offers: a coarse, precise rotary macro control *and* a
+fast, intuitive spatial gesture for casual placement - not a
+duplication to be resolved in favour of one winner.
+
+**Sync mechanism.** No custom event bus was needed: `getSliderState(name)`
+(`juce_webview.js`) returns one JS-side singleton `SliderState` object
+per parameter name - the main knob and the pad both call
+`getSliderState("imager")` and get back the *exact same* object. Whichever
+widget calls `setNormalisedValue()`, the change round-trips through the
+native `WebSliderRelay`/`WebSliderParameterAttachment` bridge and comes
+back as a `valueChanged` event that fires on that one shared object,
+notifying every listener registered on it - both the knob's own render
+function and the pad's. This is the same mechanism that already
+keeps host automation in sync with every other control in the plugin;
+no new bridging code was written.
+
+**Listener/microphone marker.** A small flat mark (a short rounded "cap"
+over a thin "stem", built from two `<span>`s with CSS backgrounds - no
+images/SVG, matching the project's UI rules) sits fixed at the pad's own
+bottom-centre - the ORIGINAL/centred reference point. It is not
+interactive; it exists purely so the pad reads as a spatial/listening-
+position display rather than a generic XY input.
+
+**Interaction.** Pointer drag anywhere in the pad (`pointerdown`/
+`pointermove`/`pointerup` with `setPointerCapture`, matching every other
+control's pattern) updates both parameters continuously, clamped to the
+pad's own bounds. `sliderDragStarted()`/`sliderDragEnded()` are called on
+*both* `imager`'s and `imageTilt`'s SliderState at the start/end of a
+single pad gesture, so a host sees one coherent automation gesture per
+axis rather than two independently-bounded ones. Double-click (and the
+`Home` key) resets to bottom-centre (`imager=0`, `imageTilt=0`). Arrow
+keys nudge one axis at a time (Left/Right = tilt, Up/Down = image
+amount), Shift for fine control, matching the step sizes every other
+control uses. Accessibility: the pad is a focusable, keyboard-operable
+control with a live `aria-label` describing its current position in
+plain text (`"Image field: Tilt L60, Image 85%"`) - a full native 2-axis
+ARIA role does not exist, so this is a deliberate, honest minimum rather
+than a claim of complete ARIA-slider compliance.
+
+**Layout.** IMAGE's aux zone grew (a new `--field-pad-size` token,
+`modules.css`'s `.module__aux--imager` height allowance increased
+accordingly) to fit the tri-scale, a compact `FIELD` caption, and the
+square pad underneath the main knob - the other six modules' panels are
+untouched. The pad's own width is driven by its parent's actual
+available space first and capped by `--field-pad-size` only as a
+ceiling (`width: 100%; max-width: var(--field-pad-size, ...)`) rather
+than the reverse - an earlier version of this control specified a fixed
+clamp() width with `max-width: 100%` as an afterthought, which let the
+pad's own intrinsic size push the whole IMAGE column wider than its
+fair share of the 7-column row at the smallest supported window
+(600x400), overflowing the editor itself; this was caught by real
+screenshot testing at all three supported window sizes, not assumed.
+The puck's own travel range is inset a few percent from the pad's true
+edges so it never visually overhangs the border at the extremes.
 
 A scratch JUCE host app loaded the real built `.vst3`, created its real
 WebView2 editor, and captured native-window screenshots (Win32
-`PrintWindow` with `PW_RENDERFULLCONTENT`) at the four required
-combinations, confirming by direct screenshot - not by reading
-`index.html`/`app.js`/`tilt.js` - that:
+`PrintWindow` with `PW_RENDERFULLCONTENT`) confirming by direct
+screenshot - not by reading source - that:
 
-- **IMAGE 0% / TILT CENTER** (fresh-instance resting state): IMAGE knob
-  at its 0% resting position, tri-scale reading `ORIGINAL NATURAL WIDE`
-  with its marker at the far left, and the new compact TILT control
-  showing its thumb centred with `CENTER` beneath it - all six other
-  modules and the header/footer render unchanged.
-- **IMAGE 100% / TILT CENTER**: IMAGE knob rotated fully, tri-scale
-  marker at the far right (`WIDE`), TILT unchanged at CENTER.
-- **IMAGE 100% / TILT LEFT 100**: TILT thumb at the far left of its
-  track, value reading `L 100`.
-- **IMAGE 100% / TILT RIGHT 100**: TILT thumb at the far right, value
-  reading `R 100`.
-
-The new TILT control fits inside IMAGE's own panel (a small, dedicated
-height allowance in that one panel's aux zone - see `modules.css`'s
-`.module__aux--imager`) without any redesign of the other six modules'
-panels, matching the explicit "don't overload the panel" requirement.
+- **IMAGE 0% / TILT CENTER** (fresh-instance resting state,
+  `docs/screenshots/image-pad-center.png`): knob at rest, tri-scale
+  marker at `ORIGINAL`, puck resting at the pad's bottom-centre right by
+  the listener mark.
+- **IMAGE 100% / TILT CENTER** (`image-pad-wide-center.png`): knob
+  rotated fully, tri-scale marker at `WIDE`, puck at top-centre.
+- **IMAGE 100% / TILT LEFT 100** (`image-pad-wide-left.png`): puck at
+  the top-left corner, fully inside the pad's border.
+- **IMAGE 100% / TILT RIGHT 100** (`image-pad-wide-right.png`): puck at
+  the top-right corner, mirrored.
+- **Responsive** at 600x400 (minimum), 960x640 (default) and 1350x900
+  (maximum): the pad itself stays fully visible and usable at every
+  size - at 600x400 specifically, IMAGE's own header/tri-scale text
+  truncation is a **pre-existing** limitation (confirmed unchanged by
+  comparing against the prior linear-TILT-slider UI at the same window
+  size, before this round's changes), not something this round
+  introduced or was in scope to fix.
+- **State restore**: a *second*, freshly-created plugin instance loaded
+  purely from a saved state (`imager=85%`, `imageTilt=-60`, no live
+  automation call after load) rendered the knob and puck at the correct
+  restored position immediately - confirming the pad's position is a
+  pure function of the same saved parameter state every other control
+  already relies on, not something that needs its own persistence path.
 
 ## Listening artifacts
 

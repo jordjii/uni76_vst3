@@ -132,6 +132,11 @@
   --knob-collar-inset: 4.5%;
   --knob-indicator-width: 5.5%;
   --knob-indicator-length: 40%;
+
+  /* IMAGE's spatial field pad (Resources/Web/field_pad.js) - deliberately
+     smaller than the main knob (it's a secondary control), but still
+     scales fluidly with the editor the same way. */
+  --field-pad-size: clamp(3.6rem, 2.5rem + 3.6vw, 5.6rem);
   --knob-tick-length: 10%;
   --knob-rotation-min: -135deg;
   --knob-rotation-max: 135deg;

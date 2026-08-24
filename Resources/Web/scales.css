@@ -81,93 +81,141 @@
   color: var(--ink-strong);
 }
 
-/* ---- IMAGE TILT - compact horizontal bipolar control --------------------
+/* ---- IMAGE spatial field pad ---------------------------------------------
    The one deliberate exception to "one knob per module" (see CLAUDE.md
    and docs/DSP_IMAGE.md): IMAGE's aux zone carries both the usual
    read-only tri-scale AND this second, small, genuinely interactive
-   control bound to its own `imageTilt` parameter. Kept compact and
-   industrial (a thin horizontal track with a centre notch and a small
-   thumb, "L ... R" side labels) rather than a second large knob, so the
-   other six modules' panels are completely unaffected - see
-   modules.css's `.module__aux--imager` for the one small height
-   allowance this needs. */
+   control. Unlike the tri-scale, it drives two real APVTS parameters at
+   once - horizontal position is `imageTilt` (-100..+100), vertical
+   position is `imager` (0..100%, kept in sync with the main IMAGE knob
+   through the shared JUCE SliderState singleton - see
+   Resources/Web/field_pad.js). A small square recessed panel (same dark
+   "knob face" colour as every knob's own body), a faint dotted grid, a
+   thin centre crosshair, a small flat "listener" mark fixed at the
+   bottom centre (the ORIGINAL/centred reference point), and a round
+   puck that reads exactly like the tilt thumb it replaces - deliberately
+   flat and industrial, no glass/glow/3D, nothing that reads as a modern
+   web XY-pad widget. */
 
-.tilt {
+.field {
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: var(--space-xs);
+  gap: 0.2em;
   width: 100%;
+  min-width: 0;
+}
+
+.field__caption {
+  font-size: calc(var(--fs-scale) * 0.85);
+  font-weight: 700;
+  letter-spacing: var(--tracking-wider);
+  color: var(--ink-soft);
+}
+
+.field__pad {
+  position: relative;
+  /* Width is driven by the parent's own actual available space first
+     (a plain percentage, which participates correctly in flex-shrink),
+     capped at --field-pad-size as a ceiling on large windows - not the
+     other way around. A fixed clamp() width with max-width:100% as an
+     afterthought let this control's own intrinsic size push the whole
+     IMAGE column wider than its fair share of a 7-column flex row at
+     the smallest supported window size, overflowing the editor itself. */
+  width: 100%;
+  max-width: var(--field-pad-size, 4.6rem);
+  aspect-ratio: 1 / 1;
+  border-radius: 3px;
+  background: var(--knob-face);
+  border: 1.5px solid var(--ink-hairline-strong);
+  box-shadow: 0 0 0 1px var(--knob-face-edge) inset, 0 1px 3px rgba(0, 0, 0, 0.3);
   cursor: pointer;
   touch-action: none;
-  padding-block: 2px; /* comfortable hit target without growing the visual track */
+  outline: none;
 }
 
-.tilt:focus-visible {
-  outline: 2px solid var(--focus-ring);
-  outline-offset: 2px;
+.field__pad:focus-visible {
+  box-shadow: 0 0 0 1px var(--knob-face-edge) inset, 0 0 0 2px var(--module-accent), 0 0 0 4px var(--focus-ring-on-dark);
 }
 
-.tilt__side-label {
-  font-size: calc(var(--fs-scale) * 0.9);
-  font-weight: 800;
-  letter-spacing: 0.02em;
-  color: var(--ink-mid);
-}
-
-.tilt__track {
-  position: relative;
-  flex: 1 1 auto;
-  height: 3px;
-  background: var(--ink-hairline-strong);
-  border-radius: 1.5px;
-}
-
-.tilt__notch {
+/* Sparse dotted grid, not a dense modern-app graph paper - a handful of
+   faint intersection points, purely decorative. */
+.field__grid {
   position: absolute;
-  top: 50%;
+  inset: 0;
+  pointer-events: none;
+  background-image: radial-gradient(rgba(241, 233, 218, 0.16) 0.5px, transparent 0.5px);
+  background-size: 25% 25%;
+  background-position: 0 0;
+}
+
+.field__crosshair--v {
+  position: absolute;
+  top: 4%;
+  bottom: 4%;
   left: 50%;
-  width: 1.5px;
-  height: 9px;
-  background: var(--ink-mid);
-  transform: translate(-50%, -50%);
+  width: 1px;
+  background: rgba(241, 233, 218, 0.14);
+  pointer-events: none;
 }
 
-/* Fills from centre toward the thumb, so the bias reads at a glance -
-   not a 0-to-value fill the way a normal single-ended slider would. */
-.tilt__fill {
+.field__side-label {
   position: absolute;
   top: 50%;
-  height: 3px;
-  background: var(--ink-strong);
   transform: translateY(-50%);
-  left: min(50%, var(--tilt-pos, 50%));
-  right: min(50%, calc(100% - var(--tilt-pos, 50%)));
+  font-size: calc(var(--fs-scale) * 0.8);
+  font-weight: 800;
+  color: var(--ink-soft-on-dark, rgba(241, 233, 218, 0.5));
+  pointer-events: none;
 }
 
-.tilt__thumb {
+.field__side-label--l { left: 0.3em; }
+.field__side-label--r { right: 0.3em; }
+
+/* Small flat "listener/microphone" mark, fixed at bottom-centre - the
+   pad's own ORIGINAL/centred reference point, not interactive. */
+.field__listener {
   position: absolute;
-  top: 50%;
-  left: var(--tilt-pos, 50%);
-  width: 9px;
-  height: 9px;
+  left: 50%;
+  bottom: 6%;
+  width: 10px;
+  height: 10px;
+  transform: translateX(-50%);
+  pointer-events: none;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+
+.field__listener-cap {
+  width: 7px;
+  height: 5px;
+  border-radius: 3.5px 3.5px 1px 1px;
+  background: rgba(241, 233, 218, 0.45);
+}
+
+.field__listener-stem {
+  width: 1px;
+  height: 4px;
+  background: rgba(241, 233, 218, 0.45);
+}
+
+.field__puck {
+  position: absolute;
+  left: var(--pad-x, 50%);
+  top: var(--pad-y, 100%);
+  width: 11px;
+  height: 11px;
   border-radius: 50%;
   background: var(--knob-pointer);
   border: 1px solid var(--ink-strong);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
   transform: translate(-50%, -50%);
-  transition: left 60ms linear;
+  transition: left 60ms linear, top 60ms linear;
 }
 
-.tilt--dragging .tilt__thumb {
+.field__pad--dragging .field__puck {
   transition: none;
-}
-
-.tilt__value {
-  width: 100%;
-  text-align: center;
-  font-size: calc(var(--fs-scale) * 0.9);
-  font-weight: 700;
-  letter-spacing: 0.02em;
-  color: var(--ink-mid);
 }
 
 /* ---- Preamp filter indicator lines --------------------------------------- */

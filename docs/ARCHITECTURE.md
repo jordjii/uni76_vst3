@@ -315,19 +315,22 @@ continuous behaviour unchanged.
 
 ### Derived (non-parameter) visual indicators
 
-IMAGE's tri-point scale (`ORIGINAL`/`NATURAL`/`WIDE`, `aux_visuals.js`)
+IMAGE's tri-point scale (`ORIGINAL`/`FOCUS`/`WIDE`, `aux_visuals.js`)
 is a read-out derived purely from the `imager` parameter's value - it
 uses the same generic `bindTriScale` binding as EQ/SAT/PITCH/PAN/VERB's
 own tri-scales, does not create, read, or write any additional APVTS
 parameter, and does not represent `imageTilt` at all (see below). IMAGE
 is the one module with a *second*, genuinely interactive control living
-alongside its tri-scale in the same aux zone: a compact horizontal
-bipolar slider (`Resources/Web/tilt.js`) bound directly to its own
-`imageTilt` parameter via the same `getSliderState`/relay bridge every
-main knob uses - not a derived visual, a real second control, wired up
-in `app.js`'s dedicated `initImageTilt()` (kept separate from the generic
-`initModule()`/`MODULES` loop, which is built around exactly one control
-per module). See docs/DSP_IMAGE.md's "UI" section.
+alongside its tri-scale in the same aux zone: a square spatial field pad
+(`Resources/Web/field_pad.js`) whose X axis drives `imageTilt` and whose
+Y axis drives `imager` itself, bound directly to both parameters via the
+same `getSliderState`/relay bridge every main knob uses - not a derived
+visual, a real second control (in fact a second way to set `imager`
+too, kept in sync with the main knob through the shared SliderState
+singleton), wired up in `app.js`'s dedicated `initImageField()` (kept
+separate from the generic `initModule()`/`MODULES` loop, which is built
+around exactly one control per module). See docs/DSP_IMAGE.md's "UI:
+spatial field pad" section.
 
 EQ's, SAT's, PITCH's and PAN's tri-point scales are different in status
 (all four are now real DSP) but not in implementation: `DARK`/`PHONE`/

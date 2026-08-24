@@ -9,7 +9,7 @@
 
 import { getSliderState } from "./juce_webview.js";
 import { ParameterKnob } from "./knob.js";
-import { TiltSlider } from "./tilt.js";
+import { FieldPad } from "./field_pad.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
 import { initMeters } from "./meters.js";
 import { initModulePower } from "./module_power.js";
@@ -90,27 +90,31 @@ function initModule({ id, control, name, defaultNormalised, formatValue, discret
   });
 }
 
-// IMAGE TILT - the one deliberate exception to "one knob per module"
-// (see CLAUDE.md, docs/DSP_IMAGE.md): a second, independent, compact
-// control living inside the IMAGE module's own section, bound to its
-// own `imageTilt` parameter. Not folded into initModule()/MODULES above,
-// which is built around exactly one knob per module.
-function initImageTilt() {
-  const element = document.querySelector('.tilt[data-param="imageTilt"]');
+// IMAGE's spatial field pad - the one deliberate exception to "one knob
+// per module" (see CLAUDE.md, docs/DSP_IMAGE.md): a second, independent
+// control living inside the IMAGE module's own section that drives BOTH
+// `imager` and `imageTilt` at once. Not folded into initModule()/MODULES
+// above, which is built around exactly one control per module. Shares
+// `imager`'s SliderState singleton with the main IMAGE knob (both call
+// getSliderState("imager") and get the exact same object back - see
+// field_pad.js), so the two controls stay in sync automatically with no
+// extra wiring: whichever one changes the parameter, both receive the
+// resulting valueChangedEvent.
+function initImageField() {
+  const element = document.querySelector(".field__pad");
   if (!element) return;
 
-  const valueElement = document.querySelector(".module__aux--imager .tilt__value");
-
-  new TiltSlider({
+  new FieldPad({
     element,
-    sliderState: getSliderState("imageTilt"),
-    ariaLabel: "Image Tilt",
-    valueElement,
-    defaultNormalised: 0.5, // -100..100 range, so normalised 0.5 == 0 (CENTER)
+    xState: getSliderState("imageTilt"),
+    yState: getSliderState("imager"),
+    ariaLabel: "Image field",
+    xDefaultNormalised: 0.5, // imageTilt: -100..100, so 0.5 == 0 (CENTER)
+    yDefaultNormalised: 0,   // imager: 0..100%, so 0 == 0%
   });
 }
 
 MODULES.forEach(initModule);
-initImageTilt();
+initImageField();
 initMeters();
 initModulePower();

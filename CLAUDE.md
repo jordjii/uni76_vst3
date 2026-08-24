@@ -54,10 +54,11 @@ get oriented without re-reading the whole codebase.
   scale, not L/R balance - see the PAN section below. **IMAGE is the one
   exception**: alongside its main `imager` knob (width/imaging amount,
   same "one knob, one parameter" pattern as every other module), it also
-  carries a second, small, genuinely interactive control - a compact
-  horizontal bipolar slider (`Resources/Web/tilt.js`) bound to its own
-  `imageTilt` parameter (static L/R stereo balance/tilt, not a pan) - see
-  the IMAGE section below and docs/DSP_IMAGE.md. This is a real second
+  carries a second, small, genuinely interactive control - a square
+  spatial field pad (`Resources/Web/field_pad.js`) whose X axis drives
+  `imageTilt` and whose Y axis drives `imager` itself (kept in sync with
+  the main knob via the shared JUCE SliderState singleton - see the
+  IMAGE section below and docs/DSP_IMAGE.md). This is a real second
   control, unlike every other module's purely-derived tri-scale/filter-
   lines, and it does not extend to any other module without a separate,
   deliberate decision.
@@ -288,7 +289,7 @@ topology and measured data. The one module with **two** independent
 public parameters (a deliberate, explicit exception to the "one knob per
 module" rule - see "HTML/CSS/JS UI rule" above): `imager` (0-100%,
 frequency-dependent stereo width/imaging amount - `ORIGINAL(0%) ->
-NATURAL -> WIDE(100%)`) and `imageTilt` (-100..+100, a static L/R stereo
+FOCUS -> WIDE(100%)`) and `imageTilt` (-100..+100, a static L/R stereo
 image balance/tilt, default 0/CENTER - explicitly not a hard pan). Both
 axes are Mid/Side-domain and orthogonal by construction: `imager` only
 ever reshapes Side (a single low-shelf filter, low-frequency asymptote
@@ -310,11 +311,13 @@ IMAGE>0/TILT=CENTER, and IMAGE=0/TILT!=CENTER provable (not just
 measured) as the correct axis being the only one active. No oversampling,
 no delay-based widening, no time-varying modulation (TILT is explicitly
 static, unlike PAN) - zero added latency at every setting. UI: a second,
-small, compact horizontal bipolar control (`Resources/Web/tilt.js`) lives
-inside IMAGE's own panel alongside its main knob, fitting within a small
-dedicated height allowance in that one panel's aux zone
-(`modules.css`'s `.module__aux--imager`) without any redesign of the
-other six modules' panels.
+small square spatial field pad (`Resources/Web/field_pad.js`) lives
+inside IMAGE's own panel alongside its main knob - horizontal drag is
+`imageTilt`, vertical drag is `imager` itself, kept in sync with the
+main knob via the shared JUCE SliderState singleton - fitting within a
+dedicated height allowance in that one panel's aux zone (`modules.css`'s
+`.module__aux--imager`) without any redesign of the other six modules'
+panels. See docs/DSP_IMAGE.md's "UI: spatial field pad" section.
 
 ### Per-module enabled/disabled state (not a parameter)
 
@@ -725,7 +728,7 @@ MSVC 19.51):
   [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md)) - a deliberate, explicit
   exception to the "one knob per module" rule: two independent public
   parameters, `imager` (0-100%, frequency-dependent width/imaging amount
-  - `ORIGINAL(0%)/NATURAL/WIDE(100%)`) and the new `imageTilt` (-100..
+  - `ORIGINAL(0%)/FOCUS/WIDE(100%)`) and the new `imageTilt` (-100..
   +100, default 0/CENTER, a static L/R stereo-image balance/tilt -
   explicitly not a pan). Both axes are Mid/Side-domain and orthogonal by
   construction (`imager` only ever reshapes Side via a single low-shelf,
@@ -755,14 +758,52 @@ MSVC 19.51):
   bypass), correct defaults, and a full automation/state-round-trip
   pass; real WebView2 GUI screenshots at IMAGE0/TILTCENTER,
   IMAGE100/TILTCENTER, IMAGE100/TILTLEFT100 and IMAGE100/TILTRIGHT100
-  (`docs/screenshots/image-*.png`) confirm the new compact TILT control
-  (`Resources/Web/tilt.js`) renders correctly inside IMAGE's own panel
-  without disturbing the other six modules. No schema bump was needed
+  (`docs/screenshots/image-*.png`) confirm the compact linear TILT
+  control this round shipped rendered correctly inside IMAGE's own panel
+  without disturbing the other six modules - superseded by a later
+  UI-only round's spatial field pad (`Resources/Web/field_pad.js`, see
+  docs/DSP_IMAGE.md's "UI: spatial field pad" section); the parameter
+  contract and DSP are unchanged. No schema bump was needed
   for the new `imageTilt` parameter (see `Source/Core/PluginIdentity.h`'s
   documented reasoning - a brand-new parameter has no old value to
   reinterpret, unlike PITCH's v3 or PAN's v5 migrations) - verified via a
   hand-built legacy state missing the `imageTilt` node, which correctly
   falls back to its own default (0/CENTER).
+- **IMAGE spatial field pad** (UI-only follow-up round, no DSP/parameter
+  change - see docs/DSP_IMAGE.md's "UI: spatial field pad" section)
+  replaced the linear TILT slider above with a small square 2D pad
+  (`Resources/Web/field_pad.js`) that drives `imageTilt` (X axis) and
+  `imager` itself (Y axis, inverted so bottom=0%/top=100%) from a single
+  control, spatially: bottom-centre=original/centred,
+  top-centre=wide-centred, top-left/right=wide+left/right bias,
+  bottom-left/right=left/right bias with minimal image amount. The main
+  IMAGE knob is unchanged and stays the primary `imager` control - both
+  it and the pad write the same parameter and stay in sync for free via
+  `getSliderState("imager")`'s single JS-side singleton (both widgets
+  register listeners on the exact same object, so a change from either
+  one, or from host automation, notifies both). A small flat "listener/
+  microphone" mark (two CSS-only `<span>`s, no images/SVG) sits fixed at
+  the pad's bottom-centre as a non-interactive spatial reference point.
+  Real screenshot testing at all three supported window sizes (600x400/
+  960x640/1350x900) caught a genuine layout bug before it shipped: an
+  initial `width: clamp(...); max-width: 100%` construction let the
+  pad's own intrinsic size push the whole IMAGE column wider than its
+  fair share of the 7-column row at 600x400, overflowing the editor -
+  fixed by flipping the priority (`width: 100%; max-width: clamp(...)`,
+  parent-driven first, capped second). A comparison screenshot of the
+  *prior* linear-TILT UI at the same 600x400 size confirmed a separate,
+  pre-existing header/tri-scale text truncation at that size predates
+  this round and was not introduced or fixed by it (out of scope - this
+  round only touched IMAGE's own control, not the app's overall
+  minimum-width text layout). Real VST3 host validation confirmed
+  parameter/UI sync in both directions (host automation of `imager` moves
+  both the knob and the pad's Y position; host automation of
+  `imageTilt` moves the pad's X position) and that state restore on a
+  *fresh* plugin instance (no live automation call after load) renders
+  the puck at the correct position purely from the loaded APVTS state -
+  the same mechanism every other control already relies on, no new
+  persistence path needed. Screenshots at
+  `docs/screenshots/image-pad-{center,wide-center,wide-left,wide-right}.png`.
 
 ## Next steps (not started - waiting for a separate go-ahead)
 
