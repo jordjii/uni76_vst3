@@ -10,10 +10,14 @@
     publicly - renaming an ID breaks every saved session and automation
     lane that references it.
 
-    There are exactly 7 public parameters at this stage. Low Cut / High Cut
-    are deliberately NOT here: they will become internal implementation
-    details of the future PREAMP DSP module, not separate automatable
-    parameters.
+    There were exactly 7 public parameters through the plugin's initial
+    development (see CLAUDE.md's history). `imageTilt` is a deliberate,
+    explicit exception to that "one knob per module" rule, added once
+    IMAGE itself gained real DSP: IMAGE now has two independent axes -
+    `imager` (frequency-dependent width/imaging amount) and `imageTilt`
+    (a static stereo left/right balance-tilt on top of that same image) -
+    see docs/DSP_IMAGE.md. Low Cut / High Cut remain internal to PREAMP,
+    not separate automatable parameters.
 */
 
 namespace uni76::ParamID
@@ -25,6 +29,7 @@ namespace uni76::ParamID
     inline constexpr const char* panorama   = "panorama";
     inline constexpr const char* reverb     = "reverb";
     inline constexpr const char* imager     = "imager";
+    inline constexpr const char* imageTilt  = "imageTilt";
 
     /** Version tag passed to juce::ParameterID for every parameter below.
         JUCE mixes this into the VST3 parameter hash; bump it only if a
@@ -34,8 +39,8 @@ namespace uni76::ParamID
     inline constexpr int parameterVersionHint = 1;
 
     /** All parameter IDs, for iteration (tests, UI wiring, etc). */
-    inline constexpr std::array<const char*, 7> all
+    inline constexpr std::array<const char*, 8> all
     {
-        preamp, eq, saturation, pitch, panorama, reverb, imager
+        preamp, eq, saturation, pitch, panorama, reverb, imager, imageTilt
     };
 }

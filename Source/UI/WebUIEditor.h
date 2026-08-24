@@ -54,6 +54,7 @@ private:
     juce::WebSliderRelay panoramaRelay   { "panorama" };
     juce::WebSliderRelay reverbRelay     { "reverb" };
     juce::WebSliderRelay imagerRelay     { "imager" };
+    juce::WebSliderRelay imageTiltRelay  { "imageTilt" };
 
     juce::WebControlParameterIndexReceiver controlParameterIndexReceiver;
 
@@ -66,6 +67,7 @@ private:
     juce::WebSliderParameterAttachment panoramaAttachment;
     juce::WebSliderParameterAttachment reverbAttachment;
     juce::WebSliderParameterAttachment imagerAttachment;
+    juce::WebSliderParameterAttachment imageTiltAttachment;
 
     // Message-thread-only envelope state for the meter telemetry timer -
     // fast attack, slower release, applied here (not in JS, not on the

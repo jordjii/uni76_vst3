@@ -20,6 +20,8 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     pitchParameter = apvts.getRawParameterValue (uni76::ParamID::pitch);
     panoramaParameter = apvts.getRawParameterValue (uni76::ParamID::panorama);
     reverbParameter = apvts.getRawParameterValue (uni76::ParamID::reverb);
+    imagerParameter = apvts.getRawParameterValue (uni76::ParamID::imager);
+    imageTiltParameter = apvts.getRawParameterValue (uni76::ParamID::imageTilt);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -35,22 +37,26 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     pitchProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     panoramaProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     verbProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    imagerProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ, PAN and VERB all add no algorithmic latency (getLatencySamples()
-    // == 0 for each - PAN is a pure gain/filter morph, no oversampling, no
-    // lookahead, no delay-based widening; VERB's pre-delay/tank are wet-
-    // path effects, not a lookahead on the direct signal - see
-    // docs/DSP_VERB.md). PREAMP, SAT and PITCH each own independent
-    // processing with their own real latency - the plugin's total
-    // declared latency is their sum, since all six run in series in the
-    // signal chain and a host's plugin-delay-compensation needs the
-    // combined delay, not just one stage's.
+    // EQ, PAN, VERB and IMAGE all add no algorithmic latency
+    // (getLatencySamples() == 0 for each - PAN is a pure gain/filter
+    // morph, no oversampling, no lookahead, no delay-based widening;
+    // VERB's pre-delay/tank are wet-path effects, not a lookahead on the
+    // direct signal - see docs/DSP_VERB.md; IMAGE is likewise a pure
+    // gain/filter morph with no oversampling/lookahead/Haas-style delay
+    // - see docs/DSP_IMAGE.md). PREAMP, SAT and PITCH each own
+    // independent processing with their own real latency - the plugin's
+    // total declared latency is their sum, since all seven run in series
+    // in the signal chain and a host's plugin-delay-compensation needs
+    // the combined delay, not just one stage's.
     setLatencySamples (preampProcessor.getLatencySamples()
                         + eqProcessor.getLatencySamples()
                         + satProcessor.getLatencySamples()
                         + pitchProcessor.getLatencySamples()
                         + panoramaProcessor.getLatencySamples()
-                        + verbProcessor.getLatencySamples());
+                        + verbProcessor.getLatencySamples()
+                        + imagerProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
@@ -61,6 +67,7 @@ void UNI76AudioProcessor::releaseResources()
     pitchProcessor.reset();
     panoramaProcessor.reset();
     verbProcessor.reset();
+    imagerProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -121,7 +128,16 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 
     verbProcessor.process (buffer, reverbWet, reverbEnabled);
 
-    // Imager remains a strict passthrough at this stage - see CLAUDE.md.
+    // IMAGE reads two independent raw parameter values - `imager` (0..1,
+    // width/imaging amount) and `imageTilt` (-1..1 normalised, static
+    // L/R balance) - see docs/DSP_IMAGE.md. Both share the single
+    // `imagerEnabled` bypass flag (index 6): they are one module with
+    // two axes, not two separate modules.
+    const auto imageAmount = imagerParameter != nullptr ? imagerParameter->load() / 100.0f : 0.0f;
+    const auto imageTilt = imageTiltParameter != nullptr ? imageTiltParameter->load() / 100.0f : 0.0f;
+    const auto imagerEnabled = moduleEnableState.isEnabled (6); // index 6 = imager, see ModuleEnableState::propertyNames
+
+    imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled);
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.

@@ -56,6 +56,29 @@ namespace uni76
     */
     inline constexpr int stateSchemaVersion = 5;
 
+    /** `imageTilt` (docs/DSP_IMAGE.md) was added as a brand-new APVTS
+        parameter without bumping stateSchemaVersion, unlike PITCH's v3
+        and PAN's v5 bumps above. Those two needed explicit migration
+        code because an *existing* parameter ID's stored value stopped
+        meaning what it used to mean - a state saved before the change
+        still has a value for that ID, and letting APVTS reinterpret it
+        under the new meaning would be silently wrong. `imageTilt` has no
+        such old value to reinterpret: any state saved before this
+        parameter existed simply has no ValueTree child for it at all,
+        and juce::AudioProcessorValueTreeState::replaceState() already
+        leaves a parameter at its constructed default (0, CENTER - see
+        ParameterLayout.cpp's makeImageTiltParameter()) whenever the
+        incoming state has no matching child, with no special-case code
+        required - verified directly by
+        Tests/PluginTests.cpp's "Legacy state without imageTilt defaults
+        to 0 (CENTER)" test. Bumping the schema version for a genuinely
+        new, independently-defaulting parameter would only be
+        self-documentation for its own sake, not a functional need - see
+        this constant's own doc comment above ("bumped whenever the
+        shape of the saved state changes in a way that *requires
+        migration code*").
+    */
+
     /** Property name under which stateSchemaVersion is stored in the saved
         ValueTree, so setStateInformation can detect old presets.
     */

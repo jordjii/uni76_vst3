@@ -30,6 +30,20 @@ namespace uni76
                 -12, 12, 0,
                 juce::AudioParameterIntAttributes{}.withLabel ("ST"));
         }
+
+        // IMAGE TILT is a static L/R stereo-image balance, -100 (LEFT) ..
+        // +100 (RIGHT), default 0 (CENTER) - see docs/DSP_IMAGE.md. Kept
+        // as a float (not an AudioParameterInt like PITCH) since a
+        // continuous balance control has no natural discrete-step count
+        // the way PITCH's 25 semitone positions do.
+        std::unique_ptr<juce::AudioParameterFloat> makeImageTiltParameter()
+        {
+            return std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID { ParamID::imageTilt, ParamID::parameterVersionHint },
+                "Image Tilt",
+                juce::NormalisableRange<float> { -100.0f, 100.0f, 0.01f },
+                0.0f);
+        }
     }
 
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
@@ -52,6 +66,7 @@ namespace uni76
         params.push_back (makePercentParameter (ParamID::panorama,   "Panorama",   0.0f));
         params.push_back (makePercentParameter (ParamID::reverb,     "Reverb",     0.0f));
         params.push_back (makePercentParameter (ParamID::imager,     "Imager",     0.0f));
+        params.push_back (makeImageTiltParameter());
 
         return { params.begin(), params.end() };
     }

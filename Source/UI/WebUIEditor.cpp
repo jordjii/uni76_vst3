@@ -26,6 +26,7 @@ namespace
         juce::WebSliderRelay& panorama,
         juce::WebSliderRelay& reverb,
         juce::WebSliderRelay& imager,
+        juce::WebSliderRelay& imageTilt,
         juce::WebControlParameterIndexReceiver& indexReceiver,
         UNI76AudioProcessor& processor)
     {
@@ -52,6 +53,7 @@ namespace
             .withOptionsFrom (panorama)
             .withOptionsFrom (reverb)
             .withOptionsFrom (imager)
+            .withOptionsFrom (imageTilt)
             .withOptionsFrom (indexReceiver)
             // The 7 module-enabled flags are persistent but NOT DAW
             // automation parameters (see Core/ModuleEnableState.h), so
@@ -92,7 +94,7 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     : AudioProcessorEditor (&p),
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
-                                    panoramaRelay, reverbRelay, imagerRelay,
+                                    panoramaRelay, reverbRelay, imagerRelay, imageTiltRelay,
                                     controlParameterIndexReceiver, p)),
       preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
                              preampRelay, processor.getValueTreeState().undoManager),
@@ -107,7 +109,9 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       reverbAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::reverb),
                              reverbRelay, processor.getValueTreeState().undoManager),
       imagerAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::imager),
-                             imagerRelay, processor.getValueTreeState().undoManager)
+                             imagerRelay, processor.getValueTreeState().undoManager),
+      imageTiltAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::imageTilt),
+                             imageTiltRelay, processor.getValueTreeState().undoManager)
 {
     addAndMakeVisible (webView);
     webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());

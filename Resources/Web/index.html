@@ -323,13 +323,28 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux module__aux--imager">
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
-              <span>NARROW</span><span>NATURAL</span><span>WIDE</span>
+              <span>ORIGINAL</span><span>NATURAL</span><span>WIDE</span>
             </div>
           </div>
+
+          <!-- IMAGE TILT - a second, independent, compact horizontal
+               bipolar control bound to its own `imageTilt` parameter
+               (-100..+100, default 0/CENTER). Deliberately not a second
+               large knob - see docs/DSP_IMAGE.md's "UI" section. -->
+          <div class="tilt" data-param="imageTilt" style="--tilt-pos: 50%">
+            <span class="tilt__side-label tilt__side-label--l" aria-hidden="true">L</span>
+            <div class="tilt__track">
+              <span class="tilt__notch" aria-hidden="true"></span>
+              <span class="tilt__fill" aria-hidden="true"></span>
+              <span class="tilt__thumb"></span>
+            </div>
+            <span class="tilt__side-label tilt__side-label--r" aria-hidden="true">R</span>
+          </div>
+          <div class="tilt__value">CENTER</div>
         </div>
       </section>
     </main>

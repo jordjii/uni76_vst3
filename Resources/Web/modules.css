@@ -141,4 +141,14 @@
   display: flex;
   flex-direction: column;
   justify-content: flex-end;
+  gap: var(--space-xs);
+}
+
+/* IMAGE is the one module whose aux zone carries a second, genuinely
+   interactive control (TILT - see scales.css's `.tilt` and
+   docs/DSP_IMAGE.md) alongside its usual read-only tri-scale, so it
+   alone gets a little extra height here. This does not affect any of
+   the other six modules' panels. */
+.module__aux--imager {
+  flex-basis: calc(var(--zone-aux-height) + 1.6rem);
 }

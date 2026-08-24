@@ -19,6 +19,8 @@
 #include "DSP/PanoramaCurves.h"
 #include "DSP/VerbProcessor.h"
 #include "DSP/VerbCurves.h"
+#include "DSP/ImagerProcessor.h"
+#include "DSP/ImagerCurves.h"
 
 #include <algorithm>
 #include <array>
@@ -71,12 +73,12 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 7 parameter IDs exist with the correct defaults (EQ 50%, everything else 0%)");
+        beginTest ("All 8 parameter IDs exist with the correct defaults (EQ 50%, everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
 
-            expectEquals ((int) uni76::ParamID::all.size(), 7);
+            expectEquals ((int) uni76::ParamID::all.size(), 8);
 
             for (const auto* id : uni76::ParamID::all)
             {
@@ -120,11 +122,14 @@ public:
                 // Every other parameter was never touched before the save,
                 // so it should restore to its own construction-time default
                 // (EQ 50%, everything else 0%) - not a single shared value.
-                // PITCH is special-cased to 0.5f too: its default (0 ST)
-                // sits at the *normalised* midpoint of its -12..+12 range,
-                // same as EQ's PHONE default sits at the midpoint of 0..100.
+                // PITCH and imageTilt are special-cased to 0.5f too: PITCH's
+                // default (0 ST) sits at the *normalised* midpoint of its
+                // -12..+12 range, same as EQ's PHONE default sits at the
+                // midpoint of 0..100; imageTilt's default (0/CENTER) is
+                // likewise the normalised midpoint of its -100..100 range.
                 const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
-                                             || std::strcmp (id, uni76::ParamID::pitch) == 0;
+                                             || std::strcmp (id, uni76::ParamID::pitch) == 0
+                                             || std::strcmp (id, uni76::ParamID::imageTilt) == 0;
                 const auto expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
 
                 if (auto* param = apvts.getParameter (id))
@@ -245,7 +250,17 @@ public:
                 param->setValueNotifyingHost (0.5f);
                 expectWithinAbsoluteError (param->getValue(), 0.5f, 0.0001f, id);
 
-                if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
+                // imageTilt is -100..100 (normalised 0.5 == 0/CENTER), not
+                // the plain 0..100% linear range every other float
+                // parameter here uses - see ParameterLayout.cpp's
+                // makeImageTiltParameter(). Its own normalised<->real-
+                // value linearity is checked separately below.
+                if (std::strcmp (id, uni76::ParamID::imageTilt) == 0)
+                {
+                    if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
+                        expectWithinAbsoluteError (floatParam->get(), 0.0f, 0.01f, id);
+                }
+                else if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
                     expectWithinAbsoluteError (floatParam->get(), 50.0f, 0.01f, id);
 
                 param->setValueNotifyingHost (1.0f);
@@ -6813,6 +6828,1080 @@ public:
 };
 
 static UNI76VerbIntegrationTests uni76VerbIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
+
+namespace
+{
+    // ---- IMAGE test helpers -----------------------------------------------
+
+    /** Feeds an already-built stereo buffer through `imager` in fixed-size
+        blocks, mirroring exactly how PluginProcessor::processBlock() calls
+        ImagerProcessor::process(). */
+    juce::AudioBuffer<float> runImagerProcessor (uni76::dsp::ImagerProcessor& imager, const juce::AudioBuffer<float>& input,
+                                                  int blockSize, float imageNormalised01, float tiltNormalisedMinus1to1, bool enabled)
+    {
+        const auto numChannels = input.getNumChannels();
+        const auto totalSamples = input.getNumSamples();
+        juce::AudioBuffer<float> result (numChannels, totalSamples);
+
+        int done = 0;
+        while (done < totalSamples)
+        {
+            const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+            juce::AudioBuffer<float> block (numChannels, thisBlock);
+            for (int ch = 0; ch < numChannels; ++ch)
+                block.copyFrom (ch, 0, input, ch, done, thisBlock);
+
+            imager.process (block, imageNormalised01, tiltNormalisedMinus1to1, enabled);
+
+            for (int ch = 0; ch < numChannels; ++ch)
+                result.copyFrom (ch, done, block, ch, 0, thisBlock);
+            done += thisBlock;
+        }
+        return result;
+    }
+
+    /** A short synthetic "vocal-like" mono source (a fundamental + a few
+        partials), returned as identical-L/R stereo - centred mono content
+        within a stereo bus, the way a real centred vocal/lead sits. */
+    juce::AudioBuffer<float> generateVocalLikeStereo (int totalSamples, double sampleRate)
+    {
+        const std::vector<float> freqs { 180.0f, 360.0f, 540.0f, 900.0f, 1260.0f };
+        const std::vector<float> amps  { 0.22f, 0.12f, 0.08f, 0.04f, 0.02f };
+        auto mono = generateChord (totalSamples, sampleRate, freqs, amps);
+        juce::AudioBuffer<float> stereo (2, totalSamples);
+        stereo.copyFrom (0, 0, mono, 0, 0, totalSamples);
+        stereo.copyFrom (1, 0, mono, 0, 0, totalSamples);
+        return stereo;
+    }
+}
+
+class UNI76ImagerProcessorTests final : public juce::UnitTest
+{
+public:
+    UNI76ImagerProcessorTests() : juce::UnitTest ("uni76::dsp::ImagerProcessor", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Construct/prepare/reset does not crash; latency is always exactly 0");
+        {
+            const double rates[] { 44100.0, 48000.0, 88200.0, 96000.0, 176400.0, 192000.0 };
+            const int blocks[] { 32, 64, 128, 256, 512, 1024, 2048 };
+
+            for (auto sr : rates)
+            {
+                for (auto bs : blocks)
+                {
+                    uni76::dsp::ImagerProcessor imager;
+                    imager.prepare (sr, bs, 2);
+                    expectEquals (imager.getLatencySamples(), 0);
+                    imager.reset();
+                    expectEquals (imager.getLatencySamples(), 0);
+                }
+            }
+        }
+
+        beginTest ("Latency is always 0 regardless of IMAGE/TILT/enabled state");
+        {
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (44100.0, 512, 2);
+            for (auto image : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+                for (auto tilt : { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f })
+                    for (auto enabled : { true, false })
+                    {
+                        juce::AudioBuffer<float> buffer (2, 512);
+                        buffer.clear();
+                        imager.process (buffer, image, tilt, enabled);
+                        expectEquals (imager.getLatencySamples(), 0);
+                    }
+        }
+
+        beginTest ("IMAGE=0/TILT=0 (CENTER) is a bit-exact (up to float rounding) identity transform");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+
+            const auto totalSamples = (int) (2.0 * sr);
+            auto input = generateIdenticalStereo (totalSamples, sr, 220.0f, 0.2f);
+            {
+                auto extra = generateChord (totalSamples, sr, { 440.0f, 1500.0f, 4000.0f }, { 0.15f, 0.1f, 0.08f });
+                input.addFrom (0, 0, extra, 0, 0, totalSamples);
+                input.addFrom (1, 0, extra, 0, 0, totalSamples);
+            }
+            auto output = runImagerProcessor (imager, input, blockSize, 0.0f, 0.0f, true);
+
+            double sumSq = 0.0, maxDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < totalSamples; ++i)
+                {
+                    const auto diff = (double) (output.getSample (ch, i) - input.getSample (ch, i));
+                    sumSq += diff * diff;
+                    maxDiff = juce::jmax (maxDiff, std::abs (diff));
+                }
+            const auto rmsDiff = std::sqrt (sumSq / (double) (2 * totalSamples));
+            std::cout << "\n=== IMAGE CENTER (0/0) null test === RMS diff=" << rmsDiff << " max diff=" << maxDiff << std::endl << std::endl;
+            expect (rmsDiff < 1.0e-5, "CENTER should be a near-bit-exact identity transform");
+        }
+
+        beginTest ("IMAGE>0/TILT=0: only imaging works (symmetric, no L/R bias)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (2.0 * sr);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            auto input = generateChord (totalSamples, sr, { 300.0f, 3000.0f }, { 0.2f, 0.2f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            auto output = runImagerProcessor (imager, stereoInput, blockSize, 1.0f, 0.0f, true);
+            expect (bufferIsFinite (output), "IMAGE=100/TILT=0 should stay finite");
+
+            const auto settle = (int) (0.3 * sr);
+            const auto stats = measureStereo (output, settle, totalSamples - settle);
+            std::cout << "\n=== IMAGE=100/TILT=0 === rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl << std::endl;
+            expectWithinAbsoluteError ((float) (stats.rmsL / juce::jmax (stats.rmsR, 1.0e-9)), 1.0f, 0.02f,
+                                       "symmetric mono-in-stereo source through IMAGE amount alone should not bias L vs R");
+        }
+
+        beginTest ("IMAGE=0/TILT!=0: only tilt works (matches the closed-form tilt gain on Mid, Side untouched)");
+        {
+            // At IMAGE=0, TILT's own effect is entirely explained by
+            // ImagerCurves.h's imageTiltGains() applied to Mid (Side
+            // passes straight through, since the width shelf is an exact
+            // identity at t=0 - see ImagerProcessor.cpp). The OUTPUT's
+            // own naive M/S decomposition (0.5*(L-R)) is *not* the same
+            // thing as the untouched Side signal once TILT is active -
+            // TILT deliberately creates an L/R gain imbalance on Mid,
+            // and that imbalance itself shows up as "Side" energy under
+            // a plain M/S read of the output. That is correct, intended
+            // behaviour, not a bug - this test checks the real
+            // invariant (matches the closed-form gain applied to Mid,
+            // computed at a frequency far enough above the tilt
+            // safety shelf's corner that its response has converged
+            // close to the flat high-frequency asymptote) instead of
+            // the wrong one.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (2.0 * sr);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+
+            juce::AudioBuffer<float> input (2, totalSamples);
+            input.clear();
+            {
+                auto l = generateSine (1, totalSamples, sr, 3000.0f, 0.2f);
+                auto r = generateSine (1, totalSamples, sr, 4200.0f, 0.2f);
+                input.copyFrom (0, 0, l, 0, 0, totalSamples);
+                input.copyFrom (1, 0, r, 0, 0, totalSamples);
+            }
+
+            constexpr float tiltNorm = 1.0f;
+            auto atTilt = runImagerProcessor (imager, input, blockSize, 0.0f, tiltNorm, true);
+
+            float gL = 1.0f, gR = 1.0f;
+            uni76::dsp::imageTiltGains (tiltNorm, gL, gR);
+
+            const auto settle = (int) (0.3 * sr);
+            double diffSq = 0.0, refSq = 0.0;
+            for (int i = settle; i < totalSamples; ++i)
+            {
+                const auto l0 = (double) input.getSample (0, i);
+                const auto r0 = (double) input.getSample (1, i);
+                const auto mid = 0.5 * (l0 + r0);
+                const auto side = 0.5 * (l0 - r0);
+                const auto expectedL = mid * (double) gL + side;
+                const auto expectedR = mid * (double) gR - side;
+
+                const auto actualL = (double) atTilt.getSample (0, i);
+                const auto actualR = (double) atTilt.getSample (1, i);
+                diffSq += (actualL - expectedL) * (actualL - expectedL) + (actualR - expectedR) * (actualR - expectedR);
+                refSq += expectedL * expectedL + expectedR * expectedR;
+            }
+            const auto relDiff = refSq > 1.0e-12 ? std::sqrt (diffSq / refSq) : 0.0;
+            std::cout << "\n=== IMAGE=0/TILT=100 closed-form match === relDiff=" << relDiff << std::endl << std::endl;
+            expect (relDiff < 0.03, "at IMAGE=0, TILT's output should closely match the closed-form gL/gR applied to Mid, relDiff=" + juce::String (relDiff));
+        }
+
+        beginTest ("TILT: -100 tilts left, +100 tilts right (monotonic centroid)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 500.0f, 1200.0f }, { 0.2f, 0.15f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            const float tilts[] { -1.0f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 1.0f };
+            double previousCentroid = -2.0;
+            std::cout << "\n=== TILT centroid sweep ===" << std::endl;
+            for (auto tilt : tilts)
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.0f, tilt, true);
+                const auto settle = (int) (0.3 * sr);
+                auto series = centroidSeries (output, settle, totalSamples - settle, totalSamples - settle);
+                const auto centroid = series.empty() ? 0.0 : series[0];
+                std::cout << "  tilt=" << (tilt * 100.0f) << ": centroid=" << centroid << std::endl;
+                expect (centroid > previousCentroid - 1.0e-6, "centroid must move monotonically Left->Center->Right as tilt increases");
+                previousCentroid = centroid;
+                if (tilt < -0.01f) expect (centroid < -0.01, "negative tilt should read as left-biased");
+                if (tilt > 0.01f) expect (centroid > 0.01, "positive tilt should read as right-biased");
+                if (tilt == 0.0f) expectWithinAbsoluteError (centroid, 0.0, 1.0e-6, "tilt=0 centroid should match the untilted source exactly");
+            }
+            std::cout << "=== end TILT centroid sweep ===" << std::endl << std::endl;
+        }
+
+        beginTest ("TILT: opposite channel never disappears, even at +-100%");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 400.0f, 900.0f, 2200.0f }, { 0.2f, 0.15f, 0.1f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            for (auto tilt : { -1.0f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.0f, tilt, true);
+                const auto settle = (int) (0.3 * sr);
+                const auto stats = measureStereo (output, settle, totalSamples - settle);
+                const auto quieter = juce::jmin (stats.rmsL, stats.rmsR);
+                const auto louder = juce::jmax (stats.rmsL, stats.rmsR);
+                std::cout << "  tilt=" << (tilt * 100.0f) << ": rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl;
+                expect (quieter > 1.0e-4, "the quieter channel must remain clearly nonzero at full tilt, quieter=" + juce::String ((float) quieter));
+                expect (quieter / louder > 0.02, "the quieter channel must not be reduced by more than ~34dB at full tilt");
+            }
+        }
+
+        beginTest ("TILT symmetry: output(-X).L ~= output(+X).R and output(-X).R ~= output(+X).L");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.5 * sr);
+
+            // A genuinely asymmetric stereo source. The correct symmetry
+            // relationship - proved algebraically from imageTiltGains()'s
+            // gL(theta)==gR(-theta) identity (ImagerCurves.h) - compares
+            // TILT(-x) on (L,R) against TILT(+x) on the *channel-swapped*
+            // input (R,L): f(-x,L,R).L == f(+x,R,L).R and
+            // f(-x,L,R).R == f(+x,R,L).L. Using the same (unswapped) input
+            // for both sides, as an earlier version of this test
+            // mistakenly did, does not hold in general once TILT creates
+            // its own L/R asymmetry - Side's sign does not flip along
+            // with the tilt sign unless the input itself is also mirrored.
+            juce::AudioBuffer<float> input (2, totalSamples);
+            input.clear();
+            {
+                auto a = generateChord (totalSamples, sr, { 300.0f, 1100.0f }, { 0.2f, 0.12f });
+                auto b = generateChord (totalSamples, sr, { 500.0f, 1700.0f }, { 0.18f, 0.09f });
+                input.copyFrom (0, 0, a, 0, 0, totalSamples);
+                input.addFrom (0, 0, b, 0, 0, totalSamples, 0.4f);
+                input.copyFrom (1, 0, b, 0, 0, totalSamples);
+                input.addFrom (1, 0, a, 0, 0, totalSamples, 0.4f);
+            }
+            juce::AudioBuffer<float> inputSwapped (2, totalSamples);
+            inputSwapped.copyFrom (0, 0, input, 1, 0, totalSamples);
+            inputSwapped.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            for (auto x : { 0.25f, 0.5f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imagerNeg;
+                imagerNeg.prepare (sr, blockSize, 2);
+                auto outputNeg = runImagerProcessor (imagerNeg, input, blockSize, 0.0f, -x, true);
+
+                uni76::dsp::ImagerProcessor imagerPos;
+                imagerPos.prepare (sr, blockSize, 2);
+                auto outputPos = runImagerProcessor (imagerPos, inputSwapped, blockSize, 0.0f, x, true);
+
+                const auto settle = (int) (0.3 * sr);
+                double diffLR = 0.0, refLR = 0.0, diffRL = 0.0, refRL = 0.0;
+                for (int i = settle; i < totalSamples; ++i)
+                {
+                    const auto negL = (double) outputNeg.getSample (0, i);
+                    const auto posR = (double) outputPos.getSample (1, i);
+                    diffLR += (negL - posR) * (negL - posR);
+                    refLR += posR * posR;
+
+                    const auto negR = (double) outputNeg.getSample (1, i);
+                    const auto posL = (double) outputPos.getSample (0, i);
+                    diffRL += (negR - posL) * (negR - posL);
+                    refRL += posL * posL;
+                }
+                const auto relLR = refLR > 1.0e-12 ? std::sqrt (diffLR / refLR) : 0.0;
+                const auto relRL = refRL > 1.0e-12 ? std::sqrt (diffRL / refRL) : 0.0;
+                std::cout << "  x=" << (x * 100.0f) << ": relDiff(negL,posR)=" << relLR << " relDiff(negR,posL)=" << relRL << std::endl;
+                expect (relLR < 0.02, "TILT(-x).L should mirror TILT(+x).R");
+                expect (relRL < 0.02, "TILT(-x).R should mirror TILT(+x).L");
+            }
+        }
+
+        beginTest ("TILT: combined loudness (RMS) stays stable across the whole -100..+100 sweep");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 250.0f, 800.0f, 2500.0f }, { 0.15f, 0.15f, 0.1f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            std::cout << "\n=== TILT combined-loudness stability ===" << std::endl;
+            double referenceCombined = -1.0;
+            for (auto tilt : { -1.0f, -0.75f, -0.5f, -0.25f, 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.0f, tilt, true);
+                const auto settle = (int) (0.3 * sr);
+
+                double sumSq = 0.0;
+                int n = 0;
+                for (int i = settle; i < totalSamples; ++i)
+                {
+                    const auto l = (double) output.getSample (0, i);
+                    const auto r = (double) output.getSample (1, i);
+                    sumSq += l * l + r * r;
+                    ++n;
+                }
+                const auto combinedRms = std::sqrt (sumSq / (double) n);
+                if (referenceCombined < 0.0) referenceCombined = combinedRms;
+                const auto deltaDb = 20.0 * std::log10 (combinedRms / referenceCombined);
+                std::cout << "  tilt=" << (tilt * 100.0f) << ": combinedRms=" << combinedRms << " deltaVsCenter=" << deltaDb << "dB" << std::endl;
+                expect (std::abs (deltaDb) < 1.5, "combined loudness should stay close to stable across the tilt range, delta=" + juce::String (deltaDb) + "dB");
+            }
+            std::cout << "=== end combined-loudness stability ===" << std::endl << std::endl;
+        }
+
+        beginTest ("TILT: low bass is protected, highs get the full tilt amount");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+
+            auto measureLRDb = [&] (float freqHz, float tilt)
+            {
+                auto tone = generateSine (1, totalSamples, sr, freqHz, 0.2f);
+                juce::AudioBuffer<float> stereoInput (2, totalSamples);
+                stereoInput.copyFrom (0, 0, tone, 0, 0, totalSamples);
+                stereoInput.copyFrom (1, 0, tone, 0, 0, totalSamples);
+
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.0f, tilt, true);
+
+                const auto settle = (int) (0.3 * sr);
+                const auto win = juce::jmin (totalSamples - settle, periodicAnalysisLength (sr, freqHz, 20));
+                const auto magL = goertzelMagnitude (output, 0, totalSamples - win, win, sr, freqHz);
+                const auto magR = goertzelMagnitude (output, 1, totalSamples - win, win, sr, freqHz);
+                return 20.0f * std::log10 (juce::jmax (magL, 1.0e-9f) / juce::jmax (magR, 1.0e-9f));
+            };
+
+            const auto bassLRDb = std::abs (measureLRDb (50.0f, 1.0f));
+            const auto highLRDb = std::abs (measureLRDb (4000.0f, 1.0f));
+            std::cout << "\n=== TILT frequency-dependent bass safety === 50Hz L/R=" << bassLRDb << "dB 4kHz L/R=" << highLRDb << "dB" << std::endl << std::endl;
+            expect (bassLRDb < 1.5f, "50Hz should stay close to centred even at full tilt, L/R=" + juce::String (bassLRDb) + "dB");
+            expect (highLRDb > bassLRDb + 3.0f, "high frequencies should show clearly more L/R difference than deep bass at full tilt");
+        }
+
+        beginTest ("TILT: centred vocal-like source is retained, not eliminated, at +-100%");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.5 * sr);
+            auto input = generateVocalLikeStereo (totalSamples, sr);
+
+            for (auto tilt : { -1.0f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, input, blockSize, 0.0f, tilt, true);
+                const auto settle = (int) (0.3 * sr);
+                const auto stats = measureStereo (output, settle, totalSamples - settle);
+                std::cout << "  vocal tilt=" << (tilt * 100.0f) << ": rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl;
+                expect (juce::jmin (stats.rmsL, stats.rmsR) > 1.0e-3, "the vocal must remain audible in both channels at full tilt");
+            }
+        }
+
+        beginTest ("TILT does not collapse existing stereo width (Side/Mid ratio stays meaningful)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+
+            juce::AudioBuffer<float> input (2, totalSamples);
+            input.clear();
+            {
+                auto l = generateChord (totalSamples, sr, { 300.0f, 900.0f }, { 0.2f, 0.15f });
+                auto r = generateChord (totalSamples, sr, { 350.0f, 1100.0f }, { 0.18f, 0.13f });
+                input.copyFrom (0, 0, l, 0, 0, totalSamples);
+                input.copyFrom (1, 0, r, 0, 0, totalSamples);
+            }
+
+            const auto settle = (int) (0.3 * sr);
+            uni76::dsp::ImagerProcessor imagerZero;
+            imagerZero.prepare (sr, blockSize, 2);
+            const auto statsZero = measureStereo (runImagerProcessor (imagerZero, input, blockSize, 0.0f, 0.0f, true), settle, totalSamples - settle);
+
+            std::cout << "\n=== TILT width preservation (Side/Mid) === tilt=0: " << statsZero.sideMidRatio << std::endl;
+            for (auto tilt : { -1.0f, -0.5f, 0.5f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                const auto stats = measureStereo (runImagerProcessor (imager, input, blockSize, 0.0f, tilt, true), settle, totalSamples - settle);
+                std::cout << "  tilt=" << (tilt * 100.0f) << ": Side/Mid=" << stats.sideMidRatio << std::endl;
+                expect (stats.sideMidRatio > statsZero.sideMidRatio * 0.5, "width must not collapse dramatically at any tilt setting");
+            }
+            std::cout << "=== end TILT width preservation ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Correlation stays sane across the IMAGE x TILT matrix");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 300.0f, 700.0f, 1500.0f }, { 0.15f, 0.15f, 0.1f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            std::cout << "\n=== IMAGE x TILT correlation matrix ===" << std::endl;
+            for (auto image : { 0.0f, 0.5f, 1.0f })
+            {
+                for (auto tilt : { -1.0f, -0.5f, 0.0f, 0.5f, 1.0f })
+                {
+                    uni76::dsp::ImagerProcessor imager;
+                    imager.prepare (sr, blockSize, 2);
+                    auto output = runImagerProcessor (imager, stereoInput, blockSize, image, tilt, true);
+                    const auto settle = (int) (0.3 * sr);
+                    const auto stats = measureStereo (output, settle, totalSamples - settle);
+                    std::cout << "  image=" << (image * 100.0f) << "% tilt=" << (tilt * 100.0f) << ": correlation=" << stats.correlation << std::endl;
+                    expect (stats.correlation > -0.5, "correlation should not be driven aggressively negative anywhere in the matrix");
+                }
+            }
+            std::cout << "=== end correlation matrix ===" << std::endl << std::endl;
+        }
+
+        beginTest ("Mono fold-down stays safe at IMAGE=100/TILT=+-100");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 300.0f, 900.0f, 2200.0f }, { 0.15f, 0.12f, 0.08f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            const auto settle = (int) (0.3 * sr);
+            uni76::dsp::ImagerProcessor imagerZero;
+            imagerZero.prepare (sr, blockSize, 2);
+            const auto zeroOut = runImagerProcessor (imagerZero, stereoInput, blockSize, 0.0f, 0.0f, true);
+            double refSumSq = 0.0;
+            for (int i = settle; i < totalSamples; ++i)
+            {
+                const auto m = 0.5 * ((double) zeroOut.getSample (0, i) + (double) zeroOut.getSample (1, i));
+                refSumSq += m * m;
+            }
+            const auto refRms = std::sqrt (refSumSq / (double) (totalSamples - settle));
+
+            for (auto tilt : { -1.0f, 1.0f })
+            {
+                uni76::dsp::ImagerProcessor imager;
+                imager.prepare (sr, blockSize, 2);
+                auto output = runImagerProcessor (imager, stereoInput, blockSize, 1.0f, tilt, true);
+                double sumSq = 0.0;
+                for (int i = settle; i < totalSamples; ++i)
+                {
+                    const auto m = 0.5 * ((double) output.getSample (0, i) + (double) output.getSample (1, i));
+                    sumSq += m * m;
+                }
+                const auto rms = std::sqrt (sumSq / (double) (totalSamples - settle));
+                const auto deltaDb = 20.0 * std::log10 (juce::jmax (rms, 1.0e-9) / juce::jmax (refRms, 1.0e-9));
+                std::cout << "  IMAGE=100/tilt=" << (tilt * 100.0f) << ": mono fold-down change=" << deltaDb << "dB" << std::endl;
+                expect (std::abs (deltaDb) < 6.0, "mono fold-down should not catastrophically collapse or blow up at IMAGE100+TILT100");
+            }
+        }
+
+        beginTest ("Mono source (identical L/R) can be tilted left/right by TILT alone");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateIdenticalStereo (totalSamples, sr, 440.0f, 0.2f);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            auto output = runImagerProcessor (imager, input, blockSize, 0.0f, 1.0f, true);
+            const auto settle = (int) (0.3 * sr);
+            const auto stats = measureStereo (output, settle, totalSamples - settle);
+            std::cout << "\n=== mono source + TILT=100 === rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl << std::endl;
+            expect (stats.rmsR > stats.rmsL * 1.5, "a mono source should become clearly right-biased at TILT=+100 - this is expected, not a bug");
+        }
+
+        beginTest ("IMAGE amount alone does not stereoize a mono source");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateIdenticalStereo (totalSamples, sr, 440.0f, 0.2f);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            auto output = runImagerProcessor (imager, input, blockSize, 1.0f, 0.0f, true);
+            const auto settle = (int) (0.3 * sr);
+            const auto stats = measureStereo (output, settle, totalSamples - settle);
+            std::cout << "\n=== mono source + IMAGE=100/TILT=0 === Side RMS=" << stats.rmsSide << std::endl << std::endl;
+            expect (stats.rmsSide < 1.0e-5, "IMAGE amount by itself must never synthesise Side content from a mono source");
+        }
+
+        beginTest ("Real mono bus (numChannels=1): TILT and IMAGE are both DSP-neutral, no gain change");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateSine (1, totalSamples, sr, 440.0f, 0.2f);
+
+            for (auto tilt : { -1.0f, 1.0f })
+            {
+                for (auto image : { 0.0f, 1.0f })
+                {
+                    uni76::dsp::ImagerProcessor imager;
+                    imager.prepare (sr, blockSize, 1);
+                    auto output = runImagerProcessor (imager, input, blockSize, image, tilt, true);
+
+                    double diffSq = 0.0, refSq = 0.0;
+                    for (int i = 0; i < totalSamples; ++i)
+                    {
+                        const auto diff = (double) output.getSample (0, i) - (double) input.getSample (0, i);
+                        diffSq += diff * diff;
+                        refSq += (double) input.getSample (0, i) * (double) input.getSample (0, i);
+                    }
+                    const auto relDiff = refSq > 1.0e-12 ? std::sqrt (diffSq / refSq) : 0.0;
+                    expect (relDiff < 1.0e-5, "a real mono bus must stay completely untouched regardless of IMAGE/TILT");
+                }
+            }
+        }
+
+        beginTest ("No pitch change / no time modulation: a steady tone's level stays stable across two separated windows");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (3.0 * sr);
+            auto tone = generateSine (1, totalSamples, sr, 1000.0f, 0.2f);
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, tone, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, tone, 0, 0, totalSamples);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.5f, 0.5f, true);
+
+            const auto win = periodicAnalysisLength (sr, 1000.0f, 40);
+            const auto earlyMag = goertzelMagnitude (output, 0, (int) (0.5 * sr), win, sr, 1000.0f);
+            const auto lateMag = goertzelMagnitude (output, 0, totalSamples - win, win, sr, 1000.0f);
+            const auto deltaDb = 20.0f * std::log10 (juce::jmax (lateMag, 1.0e-9f) / juce::jmax (earlyMag, 1.0e-9f));
+            std::cout << "\n=== IMAGE static-output check === early->late 1kHz change=" << deltaDb << "dB" << std::endl << std::endl;
+            expect (std::abs (deltaDb) < 0.1f, "a static IMAGE/TILT setting must not modulate level over time - delta=" + juce::String (deltaDb) + "dB");
+        }
+
+        beginTest ("NaN/Inf macro input and audio samples are sanitised, all sample rates/block sizes stay finite");
+        {
+            const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+            const int blocks[] { 32, 128, 512, 2048 };
+
+            for (auto sr : rates)
+            {
+                for (auto bs : blocks)
+                {
+                    uni76::dsp::ImagerProcessor imager;
+                    imager.prepare (sr, bs, 2);
+                    juce::AudioBuffer<float> buffer (2, bs);
+                    buffer.clear();
+                    buffer.setSample (0, 0, std::numeric_limits<float>::quiet_NaN());
+                    buffer.setSample (1, 0, std::numeric_limits<float>::infinity());
+                    imager.process (buffer, std::numeric_limits<float>::quiet_NaN(), std::numeric_limits<float>::infinity(), true);
+                    expect (bufferIsFinite (buffer), "NaN/Inf input should be sanitised at " + juce::String (sr) + "Hz/" + juce::String (bs));
+
+                    // A second block confirms the smoother itself recovered
+                    // cleanly (matching the VERB regression test pattern -
+                    // see docs/DSP_VERB.md's "A real bug found by Debug-mode
+                    // testing" section).
+                    juce::AudioBuffer<float> secondBlock (2, bs);
+                    for (int ch = 0; ch < 2; ++ch)
+                        for (int i = 0; i < bs; ++i)
+                            secondBlock.setSample (ch, i, 0.1f);
+                    imager.process (secondBlock, 0.5f, 0.5f, true);
+                    expect (bufferIsFinite (secondBlock), "processing after NaN macro input should stay finite on the next block too");
+                }
+            }
+        }
+
+        beginTest ("Silence in produces silence out - no added noise/hiss/hum");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            juce::AudioBuffer<float> silence (2, (int) (1.0 * sr));
+            silence.clear();
+            auto output = runImagerProcessor (imager, silence, blockSize, 0.5f, 0.5f, true);
+
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < output.getNumSamples(); ++i)
+                    peak = juce::jmax (peak, std::abs (output.getSample (ch, i)));
+            expect (peak < 1.0e-6f, "silence in should give silence out, peak=" + juce::String (peak));
+        }
+
+        beginTest ("Bypass (enabled=false) mutes both axes - dry stays exact; automation is click-free");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (1.0 * sr);
+            auto input = generateChord (totalSamples, sr, { 300.0f, 900.0f }, { 0.2f, 0.15f });
+            juce::AudioBuffer<float> stereoInput (2, totalSamples);
+            stereoInput.copyFrom (0, 0, input, 0, 0, totalSamples);
+            stereoInput.copyFrom (1, 0, input, 0, 0, totalSamples);
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+            auto output = runImagerProcessor (imager, stereoInput, blockSize, 1.0f, 1.0f, false);
+
+            double diffSq = 0.0, refSq = 0.0;
+            const auto settle = (int) (0.15 * sr); // past the bypass smoother's own short ramp
+            for (int i = settle; i < totalSamples; ++i)
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    const auto diff = (double) output.getSample (ch, i) - (double) stereoInput.getSample (ch, i);
+                    diffSq += diff * diff;
+                    refSq += (double) stereoInput.getSample (ch, i) * (double) stereoInput.getSample (ch, i);
+                }
+            const auto relDiff = refSq > 1.0e-12 ? std::sqrt (diffSq / refSq) : 0.0;
+            expect (relDiff < 1.0e-4, "disabled IMAGE should be an exact dry passthrough once the bypass ramp settles");
+
+            float maxJump = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 1; i < output.getNumSamples(); ++i)
+                    maxJump = juce::jmax (maxJump, std::abs (output.getSample (ch, i) - output.getSample (ch, i - 1)));
+            expect (maxJump < 1.0f, "bypass transition should not create an extreme sample-to-sample discontinuity");
+        }
+
+        beginTest ("Mono bus (numChannels=1) stays completely untouched at every setting");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 1);
+            auto input = generateSine (1, (int) (1.0 * sr), sr, 1000.0f, 0.3f);
+            juce::AudioBuffer<float> output (1, input.getNumSamples());
+            int done = 0;
+            while (done < input.getNumSamples())
+            {
+                const auto thisBlock = juce::jmin (blockSize, input.getNumSamples() - done);
+                juce::AudioBuffer<float> block (1, thisBlock);
+                block.copyFrom (0, 0, input, 0, done, thisBlock);
+                imager.process (block, 1.0f, 1.0f, true);
+                output.copyFrom (0, done, block, 0, 0, thisBlock);
+                done += thisBlock;
+            }
+            expect (bufferIsFinite (output), "mono bus should stay finite regardless of IMAGE/TILT");
+        }
+    }
+};
+
+static UNI76ImagerProcessorTests uni76ImagerProcessorTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76ImagerIntegrationTests final : public juce::UnitTest
+{
+public:
+    UNI76ImagerIntegrationTests() : juce::UnitTest ("UNI76AudioProcessor+IMAGE", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Fresh instance: imager defaults to 0%, imageTilt defaults to 0 (CENTER)");
+        {
+            UNI76AudioProcessor processor;
+            auto& apvts = processor.getValueTreeState();
+            auto* imagerParam = apvts.getParameter (uni76::ParamID::imager);
+            auto* tiltParam = apvts.getParameter (uni76::ParamID::imageTilt);
+            expect (imagerParam != nullptr && tiltParam != nullptr);
+            if (imagerParam != nullptr)
+                expectWithinAbsoluteError (imagerParam->getValue(), 0.0f, 0.001f, "imager should default to 0%");
+            if (tiltParam != nullptr)
+                expectWithinAbsoluteError (tiltParam->getValue(), 0.5f, 0.001f, "imageTilt should default to its normalised midpoint (0/CENTER)");
+
+            if (auto* tiltFloat = dynamic_cast<juce::AudioParameterFloat*> (tiltParam))
+            {
+                expectWithinAbsoluteError (tiltFloat->get(), 0.0f, 0.001f, "imageTilt real value should default to exactly 0 (CENTER)");
+                expectWithinAbsoluteError (tiltFloat->range.start, -100.0f, 0.001f);
+                expectWithinAbsoluteError (tiltFloat->range.end, 100.0f, 0.001f);
+            }
+        }
+
+        beginTest ("Total plugin latency is unchanged by IMAGE (still PREAMP+EQ+SAT+PITCH, PAN+VERB+IMAGE all add 0)");
+        {
+            const double rates[] { 44100.0, 48000.0, 96000.0, 192000.0 };
+            for (auto sr : rates)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, 512);
+
+                uni76::dsp::PreampProcessor preamp; preamp.prepare (sr, 512, 2);
+                uni76::dsp::EqProcessor eq; eq.prepare (sr, 512, 2);
+                uni76::dsp::SatProcessor sat; sat.prepare (sr, 512, 2);
+                uni76::dsp::PitchProcessor pitch; pitch.prepare (sr, 512, 2);
+                uni76::dsp::PanoramaProcessor pan; pan.prepare (sr, 512, 2);
+                uni76::dsp::VerbProcessor verb; verb.prepare (sr, 512, 2);
+                uni76::dsp::ImagerProcessor imager; imager.prepare (sr, 512, 2);
+
+                expectEquals (imager.getLatencySamples(), 0);
+                expectEquals (processor.getLatencySamples(),
+                               preamp.getLatencySamples() + eq.getLatencySamples() + sat.getLatencySamples()
+                               + pitch.getLatencySamples() + pan.getLatencySamples() + verb.getLatencySamples()
+                               + imager.getLatencySamples());
+            }
+        }
+
+        beginTest ("PAN=100 + TILT: motion continues, PAN LFO period is unchanged by TILT");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (10.0 * sr);
+
+            auto runPanThenTilt = [&] (float tilt)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, blockSize);
+                auto& apvts = processor.getValueTreeState();
+                apvts.getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (1.0f);
+                apvts.getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (0.5f + tilt * 0.5f);
+
+                juce::AudioBuffer<float> buffer (2, totalSamples);
+                buffer.clear();
+                {
+                    auto highs = generateChord (totalSamples, sr, { 3000.0f, 4500.0f }, { 0.15f, 0.1f });
+                    buffer.addFrom (0, 0, highs, 0, 0, totalSamples);
+                    buffer.addFrom (1, 0, highs, 0, 0, totalSamples);
+                }
+
+                juce::MidiBuffer midi;
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    block.copyFrom (0, 0, buffer, 0, done, thisBlock);
+                    block.copyFrom (1, 0, buffer, 1, done, thisBlock);
+                    processor.processBlock (block, midi);
+                    buffer.copyFrom (0, done, block, 0, 0, thisBlock);
+                    buffer.copyFrom (1, done, block, 1, 0, thisBlock);
+                    done += thisBlock;
+                }
+                return buffer;
+            };
+
+            const auto settle = (int) (0.5 * sr);
+            const auto windowLen = (int) (0.05 * sr);
+
+            auto outputCenter = runPanThenTilt (0.0f);
+            auto outputLeft = runPanThenTilt (-1.0f);
+            auto outputRight = runPanThenTilt (1.0f);
+            expect (bufferIsFinite (outputCenter) && bufferIsFinite (outputLeft) && bufferIsFinite (outputRight),
+                    "PAN+TILT combined chain should stay finite");
+
+            auto seriesCenter = centroidSeries (outputCenter, settle, totalSamples - settle, windowLen);
+            auto seriesLeft = centroidSeries (outputLeft, settle, totalSamples - settle, windowLen);
+            auto seriesRight = centroidSeries (outputRight, settle, totalSamples - settle, windowLen);
+
+            auto statsCenter = analyzeSeries (seriesCenter);
+            auto statsLeft = analyzeSeries (seriesLeft);
+            auto statsRight = analyzeSeries (seriesRight);
+
+            std::cout << "\n=== PAN100+TILT centroid bias ===" << std::endl;
+            std::cout << "  TILT=0:    mean=" << statsCenter.mean << " excursion=" << statsCenter.rmsExcursion << std::endl;
+            std::cout << "  TILT=-100: mean=" << statsLeft.mean << " excursion=" << statsLeft.rmsExcursion << std::endl;
+            std::cout << "  TILT=+100: mean=" << statsRight.mean << " excursion=" << statsRight.rmsExcursion << std::endl;
+            std::cout << "=== end PAN100+TILT centroid bias ===" << std::endl << std::endl;
+
+            // Item 25: TILT shifts the average bias of PAN's own motion trajectory.
+            expect (statsLeft.mean < statsCenter.mean - 0.02, "TILT=-100 should bias PAN's average trajectory left");
+            expect (statsRight.mean > statsCenter.mean + 0.02, "TILT=+100 should bias PAN's average trajectory right");
+
+            // Item 24: motion continues (excursion doesn't collapse to
+            // near-zero) at any tilt. TILT's own bounded Mid-domain gain
+            // pair legitimately shrinks the *centroid ratio*'s excursion
+            // somewhat even though the underlying motion is unaffected in
+            // absolute (dB) terms: at full tilt one channel's Mid content
+            // is heavily attenuated (see ImagerCurves.h's thetaMax), which
+            // shifts each channel's own energy baseline enough to compress
+            // (Renergy-Lenergy)/(Renergy+Lenergy)'s swing without the
+            // motion itself becoming inaudible - measured ~37-39% of the
+            // untilted excursion on this test's synthetic source, still
+            // clearly nonzero and far from "motion vanished." The
+            // assertion below checks for that ("still clearly audible/
+            // present"), not "unchanged in magnitude" - see
+            // docs/DSP_IMAGE.md's "PAN interaction" section.
+            expect (statsLeft.rmsExcursion > statsCenter.rmsExcursion * 0.25, "PAN's motion should still be clearly audible under TILT=-100");
+            expect (statsRight.rmsExcursion > statsCenter.rmsExcursion * 0.25, "PAN's motion should still be clearly audible under TILT=+100");
+
+            // Item 24: LFO period is unaffected by TILT - estimate the period
+            // via zero-crossing spacing of the (mean-removed) centroid series
+            // and confirm all three land close together.
+            auto estimatePeriodSamples = [&] (const std::vector<double>& series, double mean) -> double
+            {
+                std::vector<int> crossings;
+                for (size_t i = 1; i < series.size(); ++i)
+                    if ((series[i - 1] - mean) < 0.0 && (series[i] - mean) >= 0.0)
+                        crossings.push_back ((int) i);
+                if (crossings.size() < 2) return 0.0;
+                return (double) (crossings.back() - crossings.front()) / (double) (crossings.size() - 1) * (double) windowLen;
+            };
+
+            const auto periodCenter = estimatePeriodSamples (seriesCenter, statsCenter.mean);
+            const auto periodLeft = estimatePeriodSamples (seriesLeft, statsLeft.mean);
+            const auto periodRight = estimatePeriodSamples (seriesRight, statsRight.mean);
+            std::cout << "  LFO period estimate (samples): center=" << periodCenter << " left=" << periodLeft << " right=" << periodRight << std::endl;
+            if (periodCenter > 0.0 && periodLeft > 0.0)
+                expect (std::abs (periodLeft - periodCenter) / periodCenter < 0.15, "TILT must not change PAN's own LFO period");
+            if (periodCenter > 0.0 && periodRight > 0.0)
+                expect (std::abs (periodRight - periodCenter) / periodCenter < 0.15, "TILT must not change PAN's own LFO period");
+        }
+
+        beginTest ("VERB+IMAGE+TILT: full wet chain stays finite and stable");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (2.0 * sr);
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, blockSize);
+            auto& apvts = processor.getValueTreeState();
+            apvts.getParameter (uni76::ParamID::reverb)->setValueNotifyingHost (0.6f);
+            apvts.getParameter (uni76::ParamID::imager)->setValueNotifyingHost (0.7f);
+            apvts.getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (0.75f); // +50
+
+            juce::AudioBuffer<float> buffer (2, totalSamples);
+            buffer.clear();
+            {
+                auto content = generateChord (totalSamples, sr, { 100.0f, 500.0f, 3000.0f }, { 0.15f, 0.12f, 0.08f });
+                buffer.addFrom (0, 0, content, 0, 0, totalSamples);
+                buffer.addFrom (1, 0, content, 0, 0, totalSamples);
+            }
+
+            juce::MidiBuffer midi;
+            int done = 0;
+            while (done < totalSamples)
+            {
+                const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                juce::AudioBuffer<float> block (2, thisBlock);
+                block.copyFrom (0, 0, buffer, 0, done, thisBlock);
+                block.copyFrom (1, 0, buffer, 1, done, thisBlock);
+                processor.processBlock (block, midi);
+                buffer.copyFrom (0, done, block, 0, 0, thisBlock);
+                buffer.copyFrom (1, done, block, 1, 0, thisBlock);
+                done += thisBlock;
+            }
+            expect (bufferIsFinite (buffer), "VERB+IMAGE+TILT combined chain should stay finite");
+
+            float peak = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < totalSamples; ++i)
+                    peak = juce::jmax (peak, std::abs (buffer.getSample (ch, i)));
+            expect (peak < 4.0f, "VERB+IMAGE+TILT should not blow up the signal, peak=" + juce::String (peak));
+        }
+
+        beginTest ("Full chain PREAMP+EQ+SAT+PITCH+PAN+VERB+IMAGE+TILT stays finite/stable for representative combinations");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            const auto totalSamples = (int) (2.0 * sr);
+
+            struct Combo { float preamp, eq, sat; int pitch; float pan, verb, image, tilt; };
+            const Combo combos[]
+            {
+                { 0.3f, 0.5f, 0.2f, 3, 0.5f, 0.3f, 0.5f, 0.75f },   // TILT +50
+                { 0.6f, 0.25f, 0.5f, -5, 1.0f, 0.6f, 1.0f, 0.0f },  // CENTER
+                { 0.0f, 0.75f, 0.0f, 0, 0.0f, 0.0f, 0.0f, 0.0f },   // TILT -100
+            };
+
+            for (auto& c : combos)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, blockSize);
+                auto& apvts = processor.getValueTreeState();
+                apvts.getParameter (uni76::ParamID::preamp)->setValueNotifyingHost (c.preamp);
+                apvts.getParameter (uni76::ParamID::eq)->setValueNotifyingHost (c.eq);
+                apvts.getParameter (uni76::ParamID::saturation)->setValueNotifyingHost (c.sat);
+                apvts.getParameter (uni76::ParamID::pitch)->setValueNotifyingHost ((float) (c.pitch + 12) / 24.0f);
+                apvts.getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (c.pan);
+                apvts.getParameter (uni76::ParamID::reverb)->setValueNotifyingHost (c.verb);
+                apvts.getParameter (uni76::ParamID::imager)->setValueNotifyingHost (c.image);
+                apvts.getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (c.tilt);
+
+                juce::AudioBuffer<float> buffer (2, totalSamples);
+                buffer.clear();
+                {
+                    auto content = generateChord (totalSamples, sr, { 80.0f, 440.0f, 2000.0f, 6000.0f }, { 0.15f, 0.15f, 0.1f, 0.05f });
+                    buffer.addFrom (0, 0, content, 0, 0, totalSamples);
+                    buffer.addFrom (1, 0, content, 0, 0, totalSamples);
+                }
+
+                juce::MidiBuffer midi;
+                int done = 0;
+                while (done < totalSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, totalSamples - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    block.copyFrom (0, 0, buffer, 0, done, thisBlock);
+                    block.copyFrom (1, 0, buffer, 1, done, thisBlock);
+                    processor.processBlock (block, midi);
+                    buffer.copyFrom (0, done, block, 0, 0, thisBlock);
+                    buffer.copyFrom (1, done, block, 1, 0, thisBlock);
+                    done += thisBlock;
+                }
+                expect (bufferIsFinite (buffer), "full 7-module chain should stay finite for every representative combination");
+            }
+        }
+
+        beginTest ("imageTilt automation sweep is click-free and stays finite");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, blockSize);
+            auto& apvts = processor.getValueTreeState();
+            apvts.getParameter (uni76::ParamID::imager)->setValueNotifyingHost (0.5f);
+
+            juce::MidiBuffer midi;
+            juce::AudioBuffer<float> full (2, 0);
+            const std::vector<float> sweep { 0.5f, 0.0f, 1.0f, 0.25f, 0.75f, 0.5f };
+            for (auto normalised : sweep)
+            {
+                apvts.getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (normalised);
+
+                // Chunked into blockSize-sized pieces, matching the max
+                // block size prepareToPlay() declared above - calling
+                // processBlock() with a larger buffer than that overruns
+                // internal scratch buffers sized to it (e.g. ImagerProcessor's
+                // own dryScratch) - this is the exact self-inflicted bug
+                // class documented in docs/DSP_VERB.md's host-validation
+                // section from the earlier VERB round.
+                const auto stepSamples = (int) (0.1 * sr);
+                juce::AudioBuffer<float> step (2, stepSamples);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int i = 0; i < stepSamples; ++i)
+                        step.setSample (ch, i, 0.2f * std::sin ((float) i * 0.05f));
+
+                int done = 0;
+                while (done < stepSamples)
+                {
+                    const auto thisBlock = juce::jmin (blockSize, stepSamples - done);
+                    juce::AudioBuffer<float> block (2, thisBlock);
+                    block.copyFrom (0, 0, step, 0, done, thisBlock);
+                    block.copyFrom (1, 0, step, 1, done, thisBlock);
+                    processor.processBlock (block, midi);
+                    step.copyFrom (0, done, block, 0, 0, thisBlock);
+                    step.copyFrom (1, done, block, 1, 0, thisBlock);
+                    done += thisBlock;
+                }
+                expect (bufferIsFinite (step), "automation step should stay finite");
+
+                const auto oldSize = full.getNumSamples();
+                full.setSize (2, oldSize + stepSamples, true, true, true);
+                full.copyFrom (0, oldSize, step, 0, 0, stepSamples);
+                full.copyFrom (1, oldSize, step, 1, 0, stepSamples);
+            }
+
+            float maxJump = 0.0f;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 1; i < full.getNumSamples(); ++i)
+                    maxJump = juce::jmax (maxJump, std::abs (full.getSample (ch, i) - full.getSample (ch, i - 1)));
+            expect (maxJump < 1.0f, "imageTilt automation should not create an extreme sample-to-sample discontinuity");
+        }
+
+        beginTest ("imagerEnabled bypass mutes both IMAGE axes and persists through state save/restore");
+        {
+            UNI76AudioProcessor processor;
+            processor.getModuleEnableState().setEnabled (6, false);
+            processor.getValueTreeState().getParameter (uni76::ParamID::imager)->setValueNotifyingHost (0.8f);
+            processor.getValueTreeState().getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (0.9f);
+
+            juce::MemoryBlock state;
+            processor.getStateInformation (state);
+
+            UNI76AudioProcessor processor2;
+            processor2.setStateInformation (state.getData(), (int) state.getSize());
+            expect (! processor2.getModuleEnableState().isEnabled (6), "imagerEnabled=false should survive save/restore");
+            expectWithinAbsoluteError (processor2.getValueTreeState().getParameter (uni76::ParamID::imager)->getValue(), 0.8f, 0.001f);
+            expectWithinAbsoluteError (processor2.getValueTreeState().getParameter (uni76::ParamID::imageTilt)->getValue(), 0.9f, 0.001f);
+        }
+
+        beginTest ("imageTilt value round-trips through a real getStateInformation()/setStateInformation() save+restore");
+        {
+            UNI76AudioProcessor processor;
+            processor.getValueTreeState().getParameter (uni76::ParamID::imageTilt)->setValueNotifyingHost (0.15f); // -70
+
+            juce::MemoryBlock state;
+            processor.getStateInformation (state);
+
+            UNI76AudioProcessor processor2;
+            processor2.setStateInformation (state.getData(), (int) state.getSize());
+            expectWithinAbsoluteError (processor2.getValueTreeState().getParameter (uni76::ParamID::imageTilt)->getValue(), 0.15f, 0.001f);
+        }
+
+        beginTest ("Legacy state without imageTilt defaults to 0 (CENTER)");
+        {
+            // Hand-built to look like a real state saved *before* imageTilt
+            // existed: a PARAMETERS tree with every other parameter but no
+            // <PARAM id="imageTilt".../> child at all - see
+            // Core/PluginIdentity.h's documented decision not to bump
+            // stateSchemaVersion for this addition.
+            juce::ValueTree legacyState ("PARAMETERS");
+            legacyState.setProperty (uni76::stateSchemaVersionProperty, uni76::stateSchemaVersion, nullptr);
+
+            for (const auto* id : uni76::ParamID::all)
+            {
+                if (std::strcmp (id, uni76::ParamID::imageTilt) == 0)
+                    continue; // deliberately omitted - the whole point of this test
+
+                juce::ValueTree param ("PARAM");
+                param.setProperty ("id", juce::String (id), nullptr);
+                param.setProperty ("value", std::strcmp (id, uni76::ParamID::pitch) == 0 ? 0.5 : 0.3, nullptr);
+                legacyState.appendChild (param, nullptr);
+            }
+
+            juce::MemoryBlock data;
+            if (auto xml = legacyState.createXml())
+                juce::AudioProcessor::copyXmlToBinary (*xml, data);
+
+            UNI76AudioProcessor processor;
+            processor.setStateInformation (data.getData(), (int) data.getSize());
+
+            auto* tiltParam = processor.getValueTreeState().getParameter (uni76::ParamID::imageTilt);
+            expect (tiltParam != nullptr);
+            if (tiltParam != nullptr)
+                expectWithinAbsoluteError (tiltParam->getValue(), 0.5f, 0.001f, "imageTilt should fall back to its own default (0/CENTER) when absent from a legacy state");
+        }
+    }
+};
+
+static UNI76ImagerIntegrationTests uni76ImagerIntegrationTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

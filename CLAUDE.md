@@ -44,17 +44,27 @@ get oriented without re-reading the whole codebase.
   `Resources/Web/knob.js`. The only permitted decorative effect beyond flat
   colour is very low-opacity CSS-generated grain/gradient (see the
   `.app::after` rule in `shell.css`) - never anything that reads as 3D.
-- **One primary knob per processor.** Each of the 7 modules gets exactly
-  one large interactive knob bound to its one public parameter. Any
-  secondary read-out (the Preamp filter-position lines, the tri-point
-  scales on EQ/Pitch/Pan/Verb/Imager) is purely a derived visual computed
-  from that same parameter's value in JS - never a second control, never a
-  second parameter. PAN's tri-scale (`ORIGINAL`/`WIDE`/`MOTION`) is a
-  stereo width + slow ear-to-ear motion scale, not L/R balance - see the
-  PAN section below.
-- **7 immutable public parameters.** See below - the UI must never grow an
-  8th knob or a new APVTS parameter without a deliberate, separate
-  decision.
+- **One primary knob per processor - with one deliberate exception.**
+  Each of the 7 modules gets exactly one large interactive knob bound to
+  its one public parameter. Any secondary read-out (the Preamp
+  filter-position lines, the tri-point scales on EQ/Pitch/Pan/Verb/Image)
+  is purely a derived visual computed from that same parameter's value in
+  JS - never a second control, never a second parameter. PAN's tri-scale
+  (`ORIGINAL`/`WIDE`/`MOTION`) is a stereo width + slow ear-to-ear motion
+  scale, not L/R balance - see the PAN section below. **IMAGE is the one
+  exception**: alongside its main `imager` knob (width/imaging amount,
+  same "one knob, one parameter" pattern as every other module), it also
+  carries a second, small, genuinely interactive control - a compact
+  horizontal bipolar slider (`Resources/Web/tilt.js`) bound to its own
+  `imageTilt` parameter (static L/R stereo balance/tilt, not a pan) - see
+  the IMAGE section below and docs/DSP_IMAGE.md. This is a real second
+  control, unlike every other module's purely-derived tri-scale/filter-
+  lines, and it does not extend to any other module without a separate,
+  deliberate decision.
+- **8 immutable public parameters.** See below - the UI must never grow a
+  9th public parameter without a deliberate, separate decision (the
+  IMAGE/`imageTilt` addition above was exactly such a decision, already
+  made and shipped).
 - No network requests from the frontend, ever. The one vendored exception
   to "no external JS" is `Resources/Web/juce_webview.js`, an unmodified
   local copy of JUCE's own `@juce-framework/webview` frontend module -
@@ -83,38 +93,48 @@ Do not duplicate these values by hand elsewhere - `include()` that file, or
 read from `Source/Core/PluginIdentity.h` for the C++-only schema-version
 constant.
 
-### The 7 public parameters (stable IDs, do not rename)
+### The 8 public parameters (stable IDs, do not rename)
 
-`preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager` -
-see [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
+`preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager`,
+`imageTilt` - see
+[`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
 Six are `0..100%` `AudioParameterFloat`s: default `50%` for `eq` (its
 centred/flat "PHONE" position), `0%` for the other five - including
 `panorama` (fully off/ORIGINAL, matching a console where drive/
-saturation/width/space/image all start at zero). `pitch` is the one
-exception - a discrete `AudioParameterInt`, `-12..+12` semitones, step 1,
-default `0` (25 fixed positions, no cents - see
-[docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s "Parameter and state migration"
-section). `panorama`'s internal ID is a naming holdover - the module it
-drives is a stereo width + slow motion control, not an L/R balance pan,
-see below. Low Cut / High Cut are **not** separate parameters - they are
-internal to `Source/DSP/PreampProcessor`, derived entirely from `preamp`
-(see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
+saturation/width/space/image all start at zero). `pitch` is a discrete
+`AudioParameterInt`, `-12..+12` semitones, step 1, default `0` (25 fixed
+positions, no cents - see [docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s
+"Parameter and state migration" section). `imageTilt` is the other
+exception - a continuous `AudioParameterFloat`, `-100..+100`, default `0`
+(CENTER, sitting at the range's exact midpoint, same normalised-midpoint
+shape as `eq`'s 50% PHONE default and `pitch`'s 0 ST default) - a
+deliberate, explicit exception to the "one parameter per module" rule
+(see [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md)): IMAGE alone has two
+independent axes, `imager` (frequency-dependent width/imaging amount)
+and `imageTilt` (a static L/R stereo balance/tilt on top of that same
+image - not a pan). `panorama`'s internal ID is a naming holdover - the
+module it drives is a stereo width + slow motion control, not an L/R
+balance pan, see below. Low Cut / High Cut are **not** separate
+parameters - they are internal to `Source/DSP/PreampProcessor`, derived
+entirely from `preamp` (see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
 
-## PREAMP + EQ + SAT + PITCH + PAN + VERB DSP (the only modules with real audio processing so far)
+## PREAMP + EQ + SAT + PITCH + PAN + VERB + IMAGE DSP (all seven modules now have real audio processing)
 
 Chain order: `Input -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> VERB ->
-(IMAGE) -> Output` - `PluginProcessor::processBlock()` calls
+IMAGE -> Output` - `PluginProcessor::processBlock()` calls
 `preampProcessor.process()`, then `eqProcessor.process()`, then
 `satProcessor.process()`, then `pitchProcessor.process()`, then
-`panoramaProcessor.process()`, then `verbProcessor.process()`, in that
-order. Total plugin latency is the **sum** of every stage's own latency
-(`preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples()
+`panoramaProcessor.process()`, then `verbProcessor.process()`, then
+`imagerProcessor.process()` (reading both `imager` and `imageTilt`), in
+that order. Total plugin latency is the **sum** of every stage's own
+latency (`preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples()
 + satProcessor.getLatencySamples() + pitchProcessor.getLatencySamples()
-+ panoramaProcessor.getLatencySamples() + verbProcessor.getLatencySamples()`,
-computed in `prepareToPlay`) - EQ, PAN and VERB all always contribute 0;
-PITCH always contributes a nonzero, sample-rate-proportional amount
-(unlike PREAMP/SAT, it does not drop to 0 at high sample rates - see
-docs/DSP_PITCH.md's "Fixed latency" section).
++ panoramaProcessor.getLatencySamples() + verbProcessor.getLatencySamples()
++ imagerProcessor.getLatencySamples()`, computed in `prepareToPlay`) -
+EQ, PAN, VERB and IMAGE all always contribute 0; PITCH always contributes
+a nonzero, sample-rate-proportional amount (unlike PREAMP/SAT, it does
+not drop to 0 at high sample rates - see docs/DSP_PITCH.md's "Fixed
+latency" section).
 
 `Source/DSP/PreampProcessor.*` implements the `01 PREAMP / TRANSFORMER`
 module's full signal chain - see
@@ -262,9 +282,39 @@ delay/tank recirculation are wet-path effects, not a lookahead on the
 direct signal), same `reverbEnabled`-driven bypass pattern as PAN
 (mutes only the wet contribution, no delay-alignment needed).
 
-**Imager remains a strict passthrough** - do not add DSP to it without a
-separate, deliberate decision. `Source/DSP/Imager.h` is still an empty
-placeholder.
+`Source/DSP/ImagerProcessor.*` implements the `07 IMAGE / STEREO IMAGE`
+module - see [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md) for the full
+topology and measured data. The one module with **two** independent
+public parameters (a deliberate, explicit exception to the "one knob per
+module" rule - see "HTML/CSS/JS UI rule" above): `imager` (0-100%,
+frequency-dependent stereo width/imaging amount - `ORIGINAL(0%) ->
+NATURAL -> WIDE(100%)`) and `imageTilt` (-100..+100, a static L/R stereo
+image balance/tilt, default 0/CENTER - explicitly not a hard pan). Both
+axes are Mid/Side-domain and orthogonal by construction: `imager` only
+ever reshapes Side (a single low-shelf filter, low-frequency asymptote
+shrinking toward centre as the macro rises for low-end centering/mono
+compatibility, high-frequency asymptote growing up to 2x for a real
+mastering-imager-style widen - Mid is never touched, so a mono source is
+never stereoized by this axis alone); `imageTilt` only ever reshapes Mid
+(a bounded, constant-power gain pair - `gL^2+gR^2==2` exactly, for any
+tilt value, the same algebraic proof PAN's own motion rotation uses -
+applied via two independent per-channel low-shelf filters whose
+low-frequency asymptote is always exactly 1.0/no-tilt and whose
+high-frequency asymptote is the full tilt gain, reusing PAN's own
+proven-safe single-shelf-not-band-split-then-sum construction so no
+frequency-response bump is possible by construction - Side is never
+touched, so existing stereo width is always fully preserved regardless
+of tilt). Both axes evaluate to their own identity value at their own
+zero point, which is what makes all three of IMAGE=0/TILT=CENTER,
+IMAGE>0/TILT=CENTER, and IMAGE=0/TILT!=CENTER provable (not just
+measured) as the correct axis being the only one active. No oversampling,
+no delay-based widening, no time-varying modulation (TILT is explicitly
+static, unlike PAN) - zero added latency at every setting. UI: a second,
+small, compact horizontal bipolar control (`Resources/Web/tilt.js`) lives
+inside IMAGE's own panel alongside its main knob, fitting within a small
+dedicated height allowance in that one panel's aux zone
+(`modules.css`'s `.module__aux--imager`) without any redesign of the
+other six modules' panels.
 
 ### Per-module enabled/disabled state (not a parameter)
 
@@ -324,8 +374,8 @@ particular:
 ## Current status (as of this entry)
 
 **Stage: technical foundation + production UI + PREAMP DSP (frozen after
-sound calibration) + EQ DSP + SAT DSP + PITCH DSP + PAN DSP. Reverb and
-Imager remain deliberately passthrough.**
+sound calibration) + EQ DSP + SAT DSP + PITCH DSP + PAN DSP + VERB DSP +
+IMAGE DSP. All 7 modules now have real audio processing.**
 
 Verified on this machine (Windows, Visual Studio Community 2026 /
 MSVC 19.51):
@@ -671,13 +721,55 @@ MSVC 19.51):
   (PAN's knob input handling is shared, unmodified `knob.js` code, already
   covered by PITCH's synthetic-mouse pass). Screenshots saved at
   `docs/screenshots/pan-final.png` (PAN ~100%, MOTION).
+- **IMAGE DSP** (the seventh and final module to get real DSP, see
+  [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md)) - a deliberate, explicit
+  exception to the "one knob per module" rule: two independent public
+  parameters, `imager` (0-100%, frequency-dependent width/imaging amount
+  - `ORIGINAL(0%)/NATURAL/WIDE(100%)`) and the new `imageTilt` (-100..
+  +100, default 0/CENTER, a static L/R stereo-image balance/tilt -
+  explicitly not a pan). Both axes are Mid/Side-domain and orthogonal by
+  construction (`imager` only ever reshapes Side via a single low-shelf,
+  never Mid; `imageTilt` only ever reshapes Mid via a bounded constant-
+  power gain pair applied through two per-channel low-shelf filters,
+  never Side), which makes all three identity cases (IMAGE=0/TILT=CENTER,
+  IMAGE>0/TILT=CENTER, IMAGE=0/TILT!=CENTER) provable, not just measured -
+  CENTER/0% null test measured RMS diff < 1e-5. `imageTilt`'s gain law
+  (`gL=sqrt(2)*cos(pi/4+theta)`, `gR=sqrt(2)*sin(pi/4+theta)`) is
+  provably constant-power (`gL^2+gR^2==2` for any tilt, measured exactly
+  2.000 at every tested value) and provably symmetric
+  (`gL(theta)==gR(-theta)`, measured relative difference at
+  floating-point precision on a genuinely asymmetric source); combined
+  loudness stays within ~0.22dB across the full -100..+100 sweep; the
+  quiet channel never fully disappears even at full tilt (bounded to
+  `thetaMax=42deg`, short of the true 45deg "vanish point" - measured
+  ~-22.6dB down, never silent) and correlation never goes negative
+  (measured 0.34 at full tilt, down from 1.0 at CENTER). A frequency-
+  dependent bass-safety shelf (reusing PAN's own proven-safe single-
+  shelf-not-band-split-then-sum construction, so no frequency-response
+  bump is possible by construction) keeps tilt under 1.4dB below 80Hz
+  even at full ±100%, converging to the full theoretical gain-ratio by
+  ~1-2kHz. PAN+TILT integration confirmed TILT shifts the *average* bias
+  of PAN's own motion trajectory while motion continues and PAN's ~0.3Hz
+  LFO period stays unaffected (measured within 0.75%). Real VST3 host
+  validation confirmed 9 host-visible parameters (8 UNI 76 + 1 host
+  bypass), correct defaults, and a full automation/state-round-trip
+  pass; real WebView2 GUI screenshots at IMAGE0/TILTCENTER,
+  IMAGE100/TILTCENTER, IMAGE100/TILTLEFT100 and IMAGE100/TILTRIGHT100
+  (`docs/screenshots/image-*.png`) confirm the new compact TILT control
+  (`Resources/Web/tilt.js`) renders correctly inside IMAGE's own panel
+  without disturbing the other six modules. No schema bump was needed
+  for the new `imageTilt` parameter (see `Source/Core/PluginIdentity.h`'s
+  documented reasoning - a brand-new parameter has no old value to
+  reinterpret, unlike PITCH's v3 or PAN's v5 migrations) - verified via a
+  hand-built legacy state missing the `imageTilt` node, which correctly
+  falls back to its own default (0/CENTER).
 
 ## Next steps (not started - waiting for a separate go-ahead)
 
-DSP for the remaining module (Imager - PREAMP, EQ, SAT, PITCH, PAN and
-VERB are done, see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md),
-[docs/DSP_EQ.md](docs/DSP_EQ.md), [docs/DSP_SAT.md](docs/DSP_SAT.md),
-[docs/DSP_PITCH.md](docs/DSP_PITCH.md), [docs/DSP_PAN.md](docs/DSP_PAN.md)
-and [docs/DSP_VERB.md](docs/DSP_VERB.md)), presets browser, copy
-protection, licensing system. See [docs/RELEASE.md](docs/RELEASE.md)
-for the pre-public-release checklist.
+Presets browser, copy protection, licensing system - see
+[docs/RELEASE.md](docs/RELEASE.md) for the pre-public-release checklist.
+All 7 modules' DSP is now complete (see
+[docs/DSP_PREAMP.md](docs/DSP_PREAMP.md), [docs/DSP_EQ.md](docs/DSP_EQ.md),
+[docs/DSP_SAT.md](docs/DSP_SAT.md), [docs/DSP_PITCH.md](docs/DSP_PITCH.md),
+[docs/DSP_PAN.md](docs/DSP_PAN.md), [docs/DSP_VERB.md](docs/DSP_VERB.md)
+and [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md)).

@@ -33,6 +33,7 @@ namespace uni76::ui
 
                 { "app.js",          { BinaryData::app_js,          BinaryData::app_jsSize,          "text/javascript" } },
                 { "knob.js",         { BinaryData::knob_js,         BinaryData::knob_jsSize,         "text/javascript" } },
+                { "tilt.js",         { BinaryData::tilt_js,         BinaryData::tilt_jsSize,         "text/javascript" } },
                 { "aux_visuals.js",  { BinaryData::aux_visuals_js,  BinaryData::aux_visuals_jsSize,  "text/javascript" } },
                 { "meters.js",       { BinaryData::meters_js,       BinaryData::meters_jsSize,       "text/javascript" } },
                 { "module_power.js", { BinaryData::module_power_js, BinaryData::module_power_jsSize, "text/javascript" } },

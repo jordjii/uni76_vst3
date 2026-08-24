@@ -6,7 +6,8 @@ sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
 [docs/DSP_SAT.md](DSP_SAT.md)) + PITCH DSP (see
 [docs/DSP_PITCH.md](DSP_PITCH.md)) + PAN DSP (see
 [docs/DSP_PAN.md](DSP_PAN.md)) + VERB DSP (see
-[docs/DSP_VERB.md](DSP_VERB.md)). Imager remains a strict passthrough.
+[docs/DSP_VERB.md](DSP_VERB.md)) + IMAGE DSP (see
+[docs/DSP_IMAGE.md](DSP_IMAGE.md)). All 7 modules now have real DSP.
 See root [CLAUDE.md](../CLAUDE.md) for the living project log and the
 rules this architecture exists to enforce.
 
@@ -22,12 +23,11 @@ Source/
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
   DSP/          PreampProcessor + EqProcessor + SatProcessor + PitchProcessor
-                + PanoramaProcessor + VerbProcessor (real DSP, chained in
-                that order - see docs/DSP_PREAMP.md / docs/DSP_EQ.md /
-                docs/DSP_SAT.md / docs/DSP_PITCH.md / docs/DSP_PAN.md /
-                docs/DSP_VERB.md) plus an architectural placeholder for
-                the remaining processing module (Imager). See "DSP
-                modules" below.
+                + PanoramaProcessor + VerbProcessor + ImagerProcessor (real
+                DSP, chained in that order - see docs/DSP_PREAMP.md /
+                docs/DSP_EQ.md / docs/DSP_SAT.md / docs/DSP_PITCH.md /
+                docs/DSP_PAN.md / docs/DSP_VERB.md / docs/DSP_IMAGE.md).
+                See "DSP modules" below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -209,11 +209,21 @@ soft bandwidth ceiling), and a second, lighter 350Hz safety highpass on
 the wet output. Adds no latency (pre-delay/tank recirculation are
 wet-path effects, not a lookahead on the direct signal).
 
-`Source/DSP/Imager.h` remains a deliberately empty placeholder class -
-no `prepare`/`process` methods, no fake processing - and is not
-referenced from `PluginProcessor`. Wiring it in means giving it real
-behaviour like PREAMP/EQ/SAT/PITCH/PAN/VERB got, not just calling an
-empty stub.
+`Source/DSP/ImagerProcessor.*` implements `07 IMAGE / STEREO IMAGE` - see
+docs/DSP_IMAGE.md for the full topology and measured data. The one
+module with two independent public parameters (a deliberate exception to
+the "one knob per module" rule): `imager` (frequency-dependent stereo
+width - a single low-shelf reshaping Side only, low-frequency asymptote
+shrinking toward centre as the macro rises, high-frequency asymptote
+growing up to 2x) and `imageTilt` (a static L/R stereo balance/tilt - a
+bounded constant-power gain pair applied to Mid only via two independent
+per-channel low-shelf filters, reusing PAN's own proven-safe single-
+shelf construction for frequency-dependent bass safety). Both axes are
+Mid/Side-domain and orthogonal by construction, and both evaluate to
+their own identity value at their own zero point - `imager=0%` and
+`imageTilt=0/CENTER` together give a provable bit-exact identity. Adds
+no latency (pure gain/filter morph, no oversampling, no delay-based
+widening, no time-varying modulation).
 
 ## Web UI / native bridge
 
@@ -305,14 +315,19 @@ continuous behaviour unchanged.
 
 ### Derived (non-parameter) visual indicators
 
-The tri-point scale on Imager (`aux_visuals.js`) is an illustrative
-read-out computed from the *existing* parameter's value - that module is
-still passthrough, so this doesn't imply DSP behaviour that isn't
-implemented. It does not create, read, or write any additional APVTS
-parameter. VERB's own tri-scale (`DRY`/`PLATE`/`DEEP`) is different in
-status (real DSP, see docs/DSP_VERB.md) but not in implementation - it
-uses the same generic `bindTriScale` binding as EQ/SAT/PITCH/PAN's own
-tri-scales below.
+IMAGE's tri-point scale (`ORIGINAL`/`NATURAL`/`WIDE`, `aux_visuals.js`)
+is a read-out derived purely from the `imager` parameter's value - it
+uses the same generic `bindTriScale` binding as EQ/SAT/PITCH/PAN/VERB's
+own tri-scales, does not create, read, or write any additional APVTS
+parameter, and does not represent `imageTilt` at all (see below). IMAGE
+is the one module with a *second*, genuinely interactive control living
+alongside its tri-scale in the same aux zone: a compact horizontal
+bipolar slider (`Resources/Web/tilt.js`) bound directly to its own
+`imageTilt` parameter via the same `getSliderState`/relay bridge every
+main knob uses - not a derived visual, a real second control, wired up
+in `app.js`'s dedicated `initImageTilt()` (kept separate from the generic
+`initModule()`/`MODULES` loop, which is built around exactly one control
+per module). See docs/DSP_IMAGE.md's "UI" section.
 
 EQ's, SAT's, PITCH's and PAN's tri-point scales are different in status
 (all four are now real DSP) but not in implementation: `DARK`/`PHONE`/

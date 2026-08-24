@@ -81,6 +81,95 @@
   color: var(--ink-strong);
 }
 
+/* ---- IMAGE TILT - compact horizontal bipolar control --------------------
+   The one deliberate exception to "one knob per module" (see CLAUDE.md
+   and docs/DSP_IMAGE.md): IMAGE's aux zone carries both the usual
+   read-only tri-scale AND this second, small, genuinely interactive
+   control bound to its own `imageTilt` parameter. Kept compact and
+   industrial (a thin horizontal track with a centre notch and a small
+   thumb, "L ... R" side labels) rather than a second large knob, so the
+   other six modules' panels are completely unaffected - see
+   modules.css's `.module__aux--imager` for the one small height
+   allowance this needs. */
+
+.tilt {
+  display: flex;
+  align-items: center;
+  gap: var(--space-xs);
+  width: 100%;
+  cursor: pointer;
+  touch-action: none;
+  padding-block: 2px; /* comfortable hit target without growing the visual track */
+}
+
+.tilt:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.tilt__side-label {
+  font-size: calc(var(--fs-scale) * 0.9);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--ink-mid);
+}
+
+.tilt__track {
+  position: relative;
+  flex: 1 1 auto;
+  height: 3px;
+  background: var(--ink-hairline-strong);
+  border-radius: 1.5px;
+}
+
+.tilt__notch {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 1.5px;
+  height: 9px;
+  background: var(--ink-mid);
+  transform: translate(-50%, -50%);
+}
+
+/* Fills from centre toward the thumb, so the bias reads at a glance -
+   not a 0-to-value fill the way a normal single-ended slider would. */
+.tilt__fill {
+  position: absolute;
+  top: 50%;
+  height: 3px;
+  background: var(--ink-strong);
+  transform: translateY(-50%);
+  left: min(50%, var(--tilt-pos, 50%));
+  right: min(50%, calc(100% - var(--tilt-pos, 50%)));
+}
+
+.tilt__thumb {
+  position: absolute;
+  top: 50%;
+  left: var(--tilt-pos, 50%);
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--knob-pointer);
+  border: 1px solid var(--ink-strong);
+  transform: translate(-50%, -50%);
+  transition: left 60ms linear;
+}
+
+.tilt--dragging .tilt__thumb {
+  transition: none;
+}
+
+.tilt__value {
+  width: 100%;
+  text-align: center;
+  font-size: calc(var(--fs-scale) * 0.9);
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--ink-mid);
+}
+
 /* ---- Preamp filter indicator lines --------------------------------------- */
 
 .filter-lines {

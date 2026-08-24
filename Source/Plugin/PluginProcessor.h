@@ -9,6 +9,7 @@
 #include "DSP/PitchProcessor.h"
 #include "DSP/PanoramaProcessor.h"
 #include "DSP/VerbProcessor.h"
+#include "DSP/ImagerProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -22,16 +23,18 @@
         timer, running on the message thread, is what actually reads those
         meters and talks to the WebView - the audio thread itself never
         touches the UI.
-      - PREAMP, EQ, SAT, PITCH, PAN and VERB are the only modules with
-        real DSP so far (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
+      - PREAMP, EQ, SAT, PITCH, PAN, VERB and IMAGE all have real DSP
+        (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
         Source/DSP/EqProcessor.h + docs/DSP_EQ.md,
         Source/DSP/SatProcessor.h + docs/DSP_SAT.md,
         Source/DSP/PitchProcessor.h + docs/DSP_PITCH.md,
-        Source/DSP/PanoramaProcessor.h + docs/DSP_PAN.md, and
-        Source/DSP/VerbProcessor.h + docs/DSP_VERB.md). Imager remains a
-        strict passthrough - its parameter exists and is DAW-automation
-        compatible via APVTS, but does not yet influence the audio
-        signal.
+        Source/DSP/PanoramaProcessor.h + docs/DSP_PAN.md,
+        Source/DSP/VerbProcessor.h + docs/DSP_VERB.md, and
+        Source/DSP/ImagerProcessor.h + docs/DSP_IMAGE.md). IMAGE is a
+        deliberate exception to the "one knob per module" rule - it has
+        two independent public parameters, `imager` (width/imaging
+        amount) and `imageTilt` (static L/R balance) - see
+        docs/DSP_IMAGE.md.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -102,6 +105,7 @@ private:
     uni76::dsp::PitchProcessor pitchProcessor;
     uni76::dsp::PanoramaProcessor panoramaProcessor;
     uni76::dsp::VerbProcessor verbProcessor;
+    uni76::dsp::ImagerProcessor imagerProcessor;
 
     // Cached raw parameter pointers (juce::AudioProcessorValueTreeState's
     // documented realtime-safe way to read a parameter's current value
@@ -112,6 +116,8 @@ private:
     std::atomic<float>* pitchParameter = nullptr;
     std::atomic<float>* panoramaParameter = nullptr;
     std::atomic<float>* reverbParameter = nullptr;
+    std::atomic<float>* imagerParameter = nullptr;
+    std::atomic<float>* imageTiltParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };
