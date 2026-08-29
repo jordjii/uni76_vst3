@@ -27,13 +27,25 @@ function formatPitchSemitones(scaled) {
   return semitones === 0 ? "0 ST" : `${semitones > 0 ? "+" : ""}${semitones} ST`;
 }
 
+// EQ's underlying APVTS parameter is still a plain 0..100% float (default
+// 50%, unchanged - see ParameterLayout.cpp) - only the *displayed* value
+// is remapped to a symmetric -50%..+50% scale (see docs/DSP_EQ.md), so the
+// panel reads as a centred control even though nothing about the
+// parameter's own range/type/default changed. `scaled` arrives as the
+// real 0..100 value via the JUCE bridge (same as every other 0..100%
+// module) - this is presentation only, not a second unit conversion.
+function formatEqPercent(scaled) {
+  const displayed = Math.round(scaled - 50);
+  return displayed === 0 ? "0%" : `${displayed > 0 ? "+" : ""}${displayed}%`;
+}
+
 const MODULES = [
   // EQ defaults to its centred/flat "PHONE" position (50%); every other
   // module - including PAN/`panorama` - defaults to fully off (0%) - see
   // ParameterLayout.cpp, which is the source of truth this must stay in
   // sync with.
   { id: "preamp", control: "DRIVE", name: "Preamp", defaultNormalised: 0 },
-  { id: "eq", control: "TONE", name: "EQ", defaultNormalised: 0.5 },
+  { id: "eq", control: "PHONE TONE", name: "EQ", defaultNormalised: 0.5, formatValue: formatEqPercent },
   { id: "saturation", control: "HEAT", name: "Saturation", defaultNormalised: 0 },
   // Discrete: 25 fixed integer semitone positions (-12..+12), default 0 ST
   // (dead centre) - not a percentage like every other module. See

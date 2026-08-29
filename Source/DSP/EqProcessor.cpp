@@ -15,7 +15,7 @@ namespace uni76::dsp
 
         eqSmoother.reset (sampleRate, eqParameterSmoothingSeconds);
         bypassSmoother.reset (sampleRate, eqBypassSmoothingSeconds);
-        eqSmoother.setCurrentAndTargetValue (0.5f); // matches the "eq" parameter's own 50% (PHONE) default
+        eqSmoother.setCurrentAndTargetValue (0.5f); // matches the "eq" parameter's own 50% (CENTER) default
         bypassSmoother.setCurrentAndTargetValue (1.0f);
 
         reset();
@@ -26,34 +26,31 @@ namespace uni76::dsp
     {
         for (int ch = 0; ch < maxChannels; ++ch)
         {
-            hpFilters[(size_t) ch].reset();
-            lowShelfFilters[(size_t) ch].reset();
-            bellFilters[(size_t) ch].reset();
-            highShelfFilters[(size_t) ch].reset();
-            lpFilters[(size_t) ch].reset();
+            for (auto& stage : hpStages[(size_t) ch]) stage.reset();
+            for (auto& stage : lpStages[(size_t) ch]) stage.reset();
         }
     }
 
     void EqProcessor::updateCoefficients (float eqForCoefficients) noexcept
     {
         const auto params = eqParamsAt (eqForCoefficients);
-        outputTrimGainLinear = juce::Decibels::decibelsToGain (params.outputTrimDb);
 
-        // Clamp every stage's frequency to a safe fraction of Nyquist so
-        // the network stays stable and musically meaningful at every
-        // supported sample rate - AIR's nominal ~20kHz LP target, for
-        // instance, would sit uncomfortably close to Nyquist at 44.1kHz
-        // without this.
+        // Clamp to a safe fraction of Nyquist so the cascade stays stable
+        // and musically meaningful at every supported sample rate - the
+        // highest anchor's ~11.9kHz LP target, for instance, would sit
+        // uncomfortably close to Nyquist at 44.1kHz without this.
         const auto nyquist = (float) (sampleRate * 0.5);
         const auto safeMax = nyquist * 0.9f;
+        const auto hpHz = juce::jlimit (5.0f, safeMax, params.hpHz);
+        const auto lpHz = juce::jlimit (20.0f, safeMax, params.lpHz);
 
         for (int ch = 0; ch < numChannels; ++ch)
         {
-            makeHighPassButterworth (hpFilters[(size_t) ch],       sampleRate, juce::jlimit (5.0f, safeMax, params.hpHz));
-            makeLowShelf           (lowShelfFilters[(size_t) ch],  sampleRate, juce::jlimit (20.0f, safeMax, params.lowShelfHz), params.lowShelfDb);
-            makePeakingEq          (bellFilters[(size_t) ch],      sampleRate, juce::jlimit (20.0f, safeMax, params.bellHz), params.bellDb, params.bellQ);
-            makeHighShelf          (highShelfFilters[(size_t) ch], sampleRate, juce::jlimit (20.0f, safeMax, params.highShelfHz), params.highShelfDb);
-            makeLowPassButterworth (lpFilters[(size_t) ch],        sampleRate, juce::jlimit (20.0f, safeMax, params.lpHz));
+            for (auto& stage : hpStages[(size_t) ch])
+                makeHighPassQ (stage, sampleRate, hpHz, params.hpQ);
+
+            for (auto& stage : lpStages[(size_t) ch])
+                makeLowPassQ (stage, sampleRate, lpHz, params.lpQ);
         }
     }
 
@@ -92,25 +89,18 @@ namespace uni76::dsp
         updateCoefficients (eqForCoefficients);
         eqSmoother.skip (numSamples);
 
-        // ---- five-stage filter network + output trim --------------------
+        // ---- two-cut (48dB/oct HP + 48dB/oct LP) filter network ---------
         for (int ch = 0; ch < channels; ++ch)
         {
             auto* data = buffer.getWritePointer (ch);
-            auto& hp = hpFilters[(size_t) ch];
-            auto& lowShelf = lowShelfFilters[(size_t) ch];
-            auto& bell = bellFilters[(size_t) ch];
-            auto& highShelf = highShelfFilters[(size_t) ch];
-            auto& lp = lpFilters[(size_t) ch];
+            auto& hp = hpStages[(size_t) ch];
+            auto& lp = lpStages[(size_t) ch];
 
             for (int i = 0; i < numSamples; ++i)
             {
                 auto y = data[i];
-                y = hp.processSample (y);
-                y = lowShelf.processSample (y);
-                y = bell.processSample (y);
-                y = highShelf.processSample (y);
-                y = lp.processSample (y);
-                y *= outputTrimGainLinear;
+                for (auto& stage : hp) y = stage.processSample (y);
+                for (auto& stage : lp) y = stage.processSample (y);
                 data[i] = y;
             }
         }

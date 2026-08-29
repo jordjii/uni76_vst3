@@ -2281,101 +2281,145 @@ public:
         constexpr int blockSize = 512;
         constexpr float amplitude = 0.25f;
 
+        // ---- Curve values match the specified reference numbers directly ----
+        // (see EqCurves.h/docs/DSP_EQ.md's "Redesign" section) - a precise,
+        // non-audio-domain check that the actual anchor Hz/Q values are
+        // exactly what was specified, before any filter-response measurement
+        // below even comes into it.
+        beginTest ("EqCurves.h anchors match the specified reference (FabFilter Pro-Q3) values exactly");
+        {
+            const auto left = uni76::dsp::eqParamsAt (0.0f);
+            expectWithinAbsoluteError (left.hpHz, 72.0f, 0.01f, "left HP Hz");
+            expectWithinAbsoluteError (left.hpQ, 0.765f, 0.001f, "left HP Q");
+            expectWithinAbsoluteError (left.lpHz, 1132.0f, 0.01f, "left LP Hz");
+            expectWithinAbsoluteError (left.lpQ, 0.676f, 0.001f, "left LP Q");
+
+            const auto centre = uni76::dsp::eqParamsAt (0.5f);
+            expectWithinAbsoluteError (centre.hpHz, 461.0f, 0.01f, "centre HP Hz");
+            expectWithinAbsoluteError (centre.hpQ, 0.765f, 0.001f, "centre HP Q");
+            expectWithinAbsoluteError (centre.lpHz, 7288.0f, 0.01f, "centre LP Hz");
+            expectWithinAbsoluteError (centre.lpQ, 0.676f, 0.001f, "centre LP Q");
+
+            const auto right = uni76::dsp::eqParamsAt (1.0f);
+            expectWithinAbsoluteError (right.hpHz, 748.0f, 0.01f, "right HP Hz");
+            expectWithinAbsoluteError (right.hpQ, 0.765f, 0.001f, "right HP Q");
+            expectWithinAbsoluteError (right.lpHz, 11855.0f, 0.01f, "right LP Hz");
+            expectWithinAbsoluteError (right.lpQ, 0.676f, 0.001f, "right LP Q");
+
+            // Monotonic sweep across the full range, both cuts move together.
+            const float points[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
+            for (size_t i = 1; i < 5; ++i)
+            {
+                expect (uni76::dsp::eqParamsAt (points[i]).hpHz > uni76::dsp::eqParamsAt (points[i - 1]).hpHz,
+                        "HP corner must sweep upward monotonically");
+                expect (uni76::dsp::eqParamsAt (points[i]).lpHz > uni76::dsp::eqParamsAt (points[i - 1]).lpHz,
+                        "LP corner must sweep upward monotonically");
+            }
+        }
+
         beginTest ("eqEnabled=false bypasses the EQ (dry passthrough, no delay needed - zero latency)");
         {
             uni76::dsp::EqProcessor eq;
             eq.prepare (sr, blockSize, 1);
 
-            // DARK is the most aggressive top-cut anchor - if disabled
-            // didn't truly bypass, this would show heavy attenuation.
-            const auto gainDb = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.0f, false);
-            expectWithinAbsoluteError (gainDb, 0.0f, 0.3f, "disabled EQ should leave a 10kHz tone essentially untouched");
+            // 12kHz sits well above even the widest anchor's LP corner
+            // (11855Hz at t=1) - if disabled didn't truly bypass, this
+            // would show real attenuation.
+            const auto gainDb = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 1.0f, false);
+            expectWithinAbsoluteError (gainDb, 0.0f, 0.3f, "disabled EQ should leave a 12kHz tone essentially untouched");
         }
 
-        beginTest ("EQ=0% (DARK): bass retained, top rounded - not an underwater effect");
+        beginTest ("Centre (0%% displayed, t=0.5): passband stays near unity, well outside the band is suppressed");
         {
             uni76::dsp::EqProcessor eq;
             eq.prepare (sr, blockSize, 1);
 
-            const auto bass = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.0f);
-            const auto highs = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 0.0f);
+            // Passband is 461Hz-7288Hz at centre - 1kHz sits comfortably
+            // inside it; 60Hz and 15kHz sit well outside.
+            const auto inBand  = eqGainDb (eq, sr, blockSize, 1000.0f, amplitude, 0.5f);
+            const auto low     = eqGainDb (eq, sr, blockSize, 60.0f, amplitude, 0.5f);
+            const auto high    = eqGainDb (eq, sr, blockSize, 15000.0f, amplitude, 0.5f);
 
-            expect (bass > -1.5f, "DARK should keep bass close to unity, not cut it");
-            expect (highs < -6.0f, "DARK should noticeably round off the top");
-            expect (highs > -60.0f, "DARK should round the top, not remove it entirely (not an underwater effect)");
+            expect (inBand > -1.0f && inBand < 1.0f, "in-band content should pass near unity gain");
+            expect (low < -20.0f, "well below the HP corner should be strongly suppressed (48dB/oct)");
+            expect (high < -20.0f, "well above the LP corner should be strongly suppressed (48dB/oct)");
         }
 
-        beginTest ("EQ=50% (PHONE): voice-band character - both ends attenuated, mid stays present");
+        beginTest ("Left extreme (-50%% displayed, t=0.0): a lower, darker/narrower phone band than centre");
+        {
+            uni76::dsp::EqProcessor eqLeft, eqCentre;
+            eqLeft.prepare (sr, blockSize, 1);
+            eqCentre.prepare (sr, blockSize, 1);
+
+            // 300Hz sits inside the left anchor's passband (72-1132Hz) but
+            // well below the centre anchor's HP corner (461Hz).
+            const auto leftGain   = eqGainDb (eqLeft,   sr, blockSize, 300.0f, amplitude, 0.0f);
+            const auto centreGain = eqGainDb (eqCentre, sr, blockSize, 300.0f, amplitude, 0.5f);
+
+            expect (leftGain > -1.0f && leftGain < 1.0f, "300Hz should pass near-unity at the left extreme");
+            expect (centreGain < leftGain - 15.0f, "300Hz should be clearly suppressed at centre by comparison");
+        }
+
+        beginTest ("Right extreme (+50%% displayed, t=1.0): a higher, brighter/narrower phone band than centre");
+        {
+            uni76::dsp::EqProcessor eqRight, eqCentre;
+            eqRight.prepare (sr, blockSize, 1);
+            eqCentre.prepare (sr, blockSize, 1);
+
+            // 9000Hz sits inside the right anchor's passband (748-11855Hz)
+            // but well above the centre anchor's LP corner (7288Hz). It's
+            // still within ~0.5 octaves of the right anchor's own LP
+            // corner though, where 4 *identically*-tuned cascaded stages
+            // (see EqProcessor.cpp) measurably narrow the effective
+            // passband versus a single stage's own -3dB point - a real,
+            // expected characteristic of this cascade-without-per-stage-
+            // compensation design, not a bug - so "near-unity" here means
+            // "clearly still passing", not "flat to a fraction of a dB".
+            const auto rightGain  = eqGainDb (eqRight,  sr, blockSize, 9000.0f, amplitude, 1.0f);
+            const auto centreGain = eqGainDb (eqCentre, sr, blockSize, 9000.0f, amplitude, 0.5f);
+
+            expect (rightGain > -6.0f && rightGain < 1.0f, "9000Hz should still clearly be passing at the right extreme");
+            expect (centreGain < rightGain - 10.0f, "9000Hz should be clearly suppressed at centre by comparison");
+        }
+
+        beginTest ("Slope is steep (48dB/oct via 4 cascaded stages), not the old design's gentle rounding");
         {
             uni76::dsp::EqProcessor eq;
             eq.prepare (sr, blockSize, 1);
 
-            const auto low = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.5f);
-            const auto mid = eqGainDb (eq, sr, blockSize, 1000.0f, amplitude, 0.5f);
-            const auto high = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.5f);
+            // Below the centre anchor's HP corner (461Hz): one octave down
+            // (230Hz) vs two octaves down (115Hz) should differ by roughly
+            // 48dB (a steep cascade), not the old design's much gentler
+            // rounding - checked as a wide, forgiving range since a real
+            // RBJ Q=0.765 cascade isn't a mathematically perfect Butterworth
+            // slope right at the corner.
+            const auto oneOctaveDown = eqGainDb (eq, sr, blockSize, 230.0f, amplitude, 0.5f);
+            const auto twoOctaveDown = eqGainDb (eq, sr, blockSize, 115.0f, amplitude, 0.5f);
+            const auto slopePerOctave = oneOctaveDown - twoOctaveDown;
 
-            expect (low < -10.0f, "PHONE should clearly attenuate below the voice band");
-            expect (high < -10.0f, "PHONE should clearly attenuate above the voice band");
-            expect (mid > -3.0f && mid < 6.0f, "PHONE's midrange should stay present/readable, not buried or blaring");
+            std::cout << "\n=== EQ slope check: 230Hz=" << oneOctaveDown << "dB 115Hz=" << twoOctaveDown
+                       << "dB slope=" << slopePerOctave << "dB/oct ===" << std::endl << std::endl;
+            expect (slopePerOctave > 20.0f, "slope well below the HP corner should be steep (cascaded stages), not gentle");
         }
 
-        beginTest ("EQ=100% (AIR): open bass, lifted highs, no runaway gain");
+        beginTest ("No gain boost anywhere - this is a cut-only filter (two 48dB/oct HP+LP), never a shelf/peak boost");
         {
-            uni76::dsp::EqProcessor eq;
-            eq.prepare (sr, blockSize, 1);
-
-            const auto bass = eqGainDb (eq, sr, blockSize, 300.0f, amplitude, 1.0f);
-            const auto highs = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 1.0f);
-
-            expect (bass > -3.0f, "AIR should keep the bass/low-mid mostly open");
-            expect (highs > 0.5f, "AIR should measurably lift the highs");
-            expect (highs < 6.0f, "AIR's lift should stay gentle, not a runaway boost");
-        }
-
-        beginTest ("PHONE suppresses 100Hz more than 1kHz, and 10kHz more than 1kHz");
-        {
-            uni76::dsp::EqProcessor eq;
-            eq.prepare (sr, blockSize, 1);
-
-            const auto low  = eqGainDb (eq, sr, blockSize, 100.0f, amplitude, 0.5f);
-            const auto mid  = eqGainDb (eq, sr, blockSize, 1000.0f, amplitude, 0.5f);
-            const auto high = eqGainDb (eq, sr, blockSize, 10000.0f, amplitude, 0.5f);
-
-            expect (low < mid - 10.0f, "PHONE should suppress 100Hz well below 1kHz");
-            expect (high < mid - 10.0f, "PHONE should suppress 10kHz well below 1kHz");
-        }
-
-        beginTest ("DARK preserves bass significantly better than PHONE");
-        {
-            uni76::dsp::EqProcessor eqDark, eqPhone;
-            eqDark.prepare (sr, blockSize, 1);
-            eqPhone.prepare (sr, blockSize, 1);
-
-            const auto darkBass  = eqGainDb (eqDark,  sr, blockSize, 100.0f, amplitude, 0.0f);
-            const auto phoneBass = eqGainDb (eqPhone, sr, blockSize, 100.0f, amplitude, 0.5f);
-
-            expect (darkBass > phoneBass + 10.0f, "DARK should retain 100Hz much better than PHONE");
-        }
-
-        beginTest ("DARK suppresses the high end relative to an unprocessed (bypass) reference");
-        {
-            uni76::dsp::EqProcessor eq;
-            eq.prepare (sr, blockSize, 1);
-
-            const auto highDark   = eqGainDb (eq, sr, blockSize, 12000.0f, amplitude, 0.0f, true);
-            expect (highDark < -6.0f, "DARK's high end should sit clearly below the 0dB bypass reference");
-        }
-
-        beginTest ("AIR has more high-frequency energy than the neutral/unprocessed input, without runaway gain");
-        {
-            uni76::dsp::EqProcessor eq;
-            eq.prepare (sr, blockSize, 1);
-
-            for (float freqHz : { 8000.0f, 12000.0f, 16000.0f })
+            // Unlike the old DARK/PHONE/AIR design (which had a genuine
+            // AIR-anchor high-shelf boost), the new topology has no gain
+            // stage at all - it can only remove energy outside its own
+            // passband, never add energy anywhere. Checked across the
+            // full macro range and a wide frequency sweep.
+            for (auto t : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f })
             {
-                const auto gainDb = eqGainDb (eq, sr, blockSize, freqHz, amplitude, 1.0f);
-                expect (gainDb > 0.0f, juce::String ("AIR should have more energy than input at ") + juce::String (freqHz, 0) + "Hz");
-                expect (gainDb < 8.0f, juce::String ("AIR's gain at ") + juce::String (freqHz, 0) + "Hz should not run away");
+                uni76::dsp::EqProcessor eq;
+                eq.prepare (sr, blockSize, 1);
+
+                for (float freqHz : { 100.0f, 500.0f, 1000.0f, 3000.0f, 8000.0f, 15000.0f })
+                {
+                    const auto gainDb = eqGainDb (eq, sr, blockSize, freqHz, amplitude, t);
+                    expect (gainDb < 1.0f, juce::String ("EQ") + juce::String ((int) (t * 100.0f))
+                                                + "% at " + juce::String (freqHz, 0) + "Hz should never boost above ~unity");
+                }
             }
         }
 
@@ -6859,6 +6903,15 @@ public:
             auto& apvts = processor.getValueTreeState();
             apvts.getParameter (uni76::ParamID::panorama)->setValueNotifyingHost (1.0f);
             apvts.getParameter (uni76::ParamID::reverb)->setValueNotifyingHost (0.5f);
+            // EQ disabled - this test isolates PAN/VERB's own bass-centring
+            // behaviour. EQ's redesigned default (461Hz HP at centre, by
+            // design - see docs/DSP_EQ.md's "Redesign" section) legitimately
+            // removes an 80Hz test tone almost entirely before it would even
+            // reach PAN/VERB, which is correct EQ behaviour, not a PAN/VERB
+            // regression - testing "the full chain including a bass-cutting
+            // EQ still has bass" is a different (and now false) question
+            // than what this test is actually about.
+            processor.getModuleEnableState().setEnabled (1, false);
 
             const int totalSamples = (int) (4.0 * sr);
             juce::AudioBuffer<float> buffer (2, totalSamples);
@@ -6898,7 +6951,7 @@ public:
             expect (std::abs (bassLRDb) < 2.0f, "bass should stay close to centred through the full PAN+VERB chain, L/R=" + juce::String (bassLRDb) + "dB");
         }
 
-        beginTest ("Full chain low-end: PREAMP+EQ+SAT+PITCH+PAN+VERB100 bass stays close to VERB0's bass level");
+        beginTest ("Full chain low-end: PREAMP+SAT+PITCH+PAN+VERB100 bass stays close to VERB0's bass level (EQ disabled - see docs/DSP_EQ.md's redesign, EQ now legitimately removes this content by design at any setting)");
         {
             constexpr double sr = 44100.0;
             const int totalSamples = (int) (3.0 * sr);
@@ -6925,6 +6978,7 @@ public:
                 processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
                 processor.prepareToPlay (sr, 256);
                 processor.getValueTreeState().getParameter (uni76::ParamID::reverb)->setValueNotifyingHost (reverbAmount);
+                processor.getModuleEnableState().setEnabled (1, false); // EQ disabled - see beginTest's comment
 
                 auto buffer = buildInput();
                 juce::MidiBuffer midi;
@@ -8788,6 +8842,15 @@ public:
                         setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
                         setNormalised (apvts, uni76::ParamID::imager, 1.0f);
                         setNormalised (apvts, uni76::ParamID::imageTilt, tilt);
+                        // EQ disabled - this test is about PITCH/PAN/VERB/
+                        // IMAGE's own low-end behaviour at 40-350Hz. EQ's
+                        // redesigned default (461Hz HP at centre, by design
+                        // - see docs/DSP_EQ.md's "Redesign" section)
+                        // legitimately removes all of this test's own
+                        // frequency range, which would make every
+                        // measurement below meaningless noise-floor content
+                        // rather than a real PITCH/PAN/VERB/IMAGE result.
+                        processor.getModuleEnableState().setEnabled (1, false);
 
                         // PAN=100% (MOTION) is a genuinely time-varying,
                         // ~0.3Hz free-running rotation by design (see
@@ -8911,6 +8974,14 @@ public:
                     setNormalised (apvts, uni76::ParamID::reverb, 1.0f);
                     setNormalised (apvts, uni76::ParamID::imager, 1.0f);
                     setNormalised (apvts, uni76::ParamID::imageTilt, 0.75f); // +50
+                    // EQ disabled - this test compares PITCH's bass stability
+                    // alone vs through the full chain at 40-100Hz. EQ's
+                    // redesigned default (461Hz HP at centre, by design -
+                    // see docs/DSP_EQ.md's "Redesign" section) legitimately
+                    // removes this entire frequency range, which would make
+                    // the "chain" measurement meaningless noise-floor
+                    // content rather than a real PITCH-in-context result.
+                    processor.getModuleEnableState().setEnabled (1, false);
 
                     auto chainOut = runFullChain (processor, generateIdenticalStereo (88200, sr, freq, 0.3f), 256);
 

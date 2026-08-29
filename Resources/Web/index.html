@@ -28,7 +28,13 @@
     <div class="bolt bolt--bottom-right" aria-hidden="true"></div>
 
     <header class="header">
-      <div class="header__brand">NOSTALGIA AUDIO</div>
+      <div class="header__brand-group">
+        <div class="header__brand">NOSTALGIA AUDIO</div>
+        <div class="ab-toggle" data-header-control="ab" role="group" aria-label="A/B compare">
+          <button class="ab-toggle__btn is-active" type="button" data-ab-slot="a" aria-pressed="true">A</button>
+          <button class="ab-toggle__btn" type="button" data-ab-slot="b" aria-pressed="false">B</button>
+        </div>
+      </div>
       <div class="header__title">
         <div class="header__product-row">
           <span class="header__deco-line" aria-hidden="true"></span>
@@ -38,10 +44,6 @@
         <span class="header__subtitle">ANALOG PROCESSOR</span>
       </div>
       <div class="header__controls">
-        <div class="ab-toggle" data-header-control="ab" role="group" aria-label="A/B compare">
-          <button class="ab-toggle__btn is-active" type="button" data-ab-slot="a" aria-pressed="true">A</button>
-          <button class="ab-toggle__btn" type="button" data-ab-slot="b" aria-pressed="false">B</button>
-        </div>
         <button class="header__btn header__btn--preset" type="button" data-header-control="preset" aria-haspopup="true" aria-expanded="false">
           <span class="header__btn-preset-label">DEFAULT</span> &#9662;
         </button>
@@ -111,8 +113,8 @@
                 </div>
               </div>
             </div>
-            <div class="knob__value">50%</div>
-            <div class="knob__label">TONE</div>
+            <div class="knob__value">0%</div>
+            <div class="knob__label">PHONE TONE</div>
           </div>
         </div>
 
@@ -120,7 +122,7 @@
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
             <div class="tri-scale__labels">
-              <span>DARK</span><span>PHONE</span><span>AIR</span>
+              <span>LOW</span><span>PHONE</span><span>HIGH</span>
             </div>
           </div>
         </div>
@@ -303,8 +305,19 @@
           </div>
         </div>
 
-        <div class="module__aux module__aux--imager">
-          <!-- IMAGE spatial field pad - a second, independent control that
+        <div class="module__aux module__aux--imager" hidden>
+          <!-- Field pad + tri-scale removed from the visible layout on
+               request (live-testing feedback) - IMAGE's own knob/parameter
+               contract is being revisited (bipolar mono<->stereo), so the
+               old 0..100% tri-scale reading no longer applies and would be
+               actively misleading to leave on screen. NOT deleted from the
+               DOM: `imageTilt` (the FIELD pad's X axis) is a real,
+               separate parameter with no other UI control right now -
+               keeping the markup/JS wiring intact (just hidden) means
+               nothing needs re-plumbing once IMAGE's redesign is decided.
+               See the session's own follow-up note on this.
+
+               IMAGE spatial field pad - a second, independent control that
                drives BOTH existing parameters at once: horizontal drag is
                `imageTilt` (-100..+100), vertical drag is `imager` (0..100%,
                kept in sync with the main IMAGE knob above via the shared

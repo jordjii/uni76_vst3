@@ -8,16 +8,17 @@
 #include "Biquad.h"
 
 /*
-    UNI 76's EQ / TONE module - the second real DSP in the plugin (after
-    PREAMP). SAT/PITCH/PAN/VERB/IMAGE stay passthrough - see CLAUDE.md and
-    docs/DSP_EQ.md.
+    UNI 76's EQ / PHONE TONE module - the second real DSP in the plugin
+    (after PREAMP). SAT/PITCH/PAN/VERB/IMAGE stay passthrough - see
+    CLAUDE.md and docs/DSP_EQ.md.
 
-    A fixed five-stage minimum-phase filter network (HP -> low shelf ->
-    bell/presence -> high shelf -> LP), always present - the EQ/TONE
-    parameter (0..1) only ever morphs each stage's own frequency/gain/Q
-    continuously (see Source/DSP/EqCurves.h), never swaps topology. No
-    oversampling, no nonlinearity - PREAMP (and the future SAT module) own
-    character/harmonics; EQ only shapes frequency response.
+    An always-on, steep two-cut "telephone band" filter (HP + LP, each
+    48dB/oct via 4 cascaded 2nd-order stages) - the EQ/PHONE TONE
+    parameter (0..1, displayed -50%..+50%) sweeps both cuts' corner
+    frequencies together, always keeping the same ratio between them (see
+    Source/DSP/EqCurves.h), never swaps topology. No oversampling, no
+    nonlinearity - PREAMP/SAT own character/harmonics; EQ only shapes
+    frequency response.
 
     Realtime-safety contract matches PreampProcessor: prepare() is the
     only place that allocates; process() never allocates, locks, or
@@ -44,16 +45,13 @@ namespace uni76::dsp
         void updateCoefficients (float eqForCoefficients) noexcept;
 
         static constexpr int maxChannels = 2;
+        static constexpr int stagesPerCut = 4; // 4 x 2nd-order (12dB/oct) = 48dB/oct
 
         double sampleRate = 44100.0;
         int numChannels = 2;
-        float outputTrimGainLinear = 1.0f;
 
-        std::array<Biquad, maxChannels> hpFilters;
-        std::array<Biquad, maxChannels> lowShelfFilters;
-        std::array<Biquad, maxChannels> bellFilters;
-        std::array<Biquad, maxChannels> highShelfFilters;
-        std::array<Biquad, maxChannels> lpFilters;
+        std::array<std::array<Biquad, stagesPerCut>, maxChannels> hpStages;
+        std::array<std::array<Biquad, stagesPerCut>, maxChannels> lpStages;
 
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> eqSmoother;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> bypassSmoother;

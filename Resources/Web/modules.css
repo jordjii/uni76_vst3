@@ -60,6 +60,11 @@
   filter: saturate(0.5) brightness(0.8);
 }
 
+/* Real ON/OFF indicator LED, not a background-matching dot - red when the
+   module is enabled (a genuine "power on" tell, not just a decoration),
+   dark grey/black when disabled - a real bug found via live testing (the
+   original background-matching dot was nearly invisible in either
+   state). */
 .module__power {
   position: absolute;
   top: var(--space-xs);
@@ -67,16 +72,18 @@
   width: clamp(10px, 0.4rem + 0.7vw, 14px);
   height: clamp(10px, 0.4rem + 0.7vw, 14px);
   border-radius: 50%;
-  border: 1px solid var(--ink-hairline-strong);
-  background: var(--module-accent);
+  border: 1px solid rgba(0, 0, 0, 0.55);
+  background: var(--meter-red);
+  box-shadow: 0 0 3px 0.5px rgba(196, 67, 47, 0.55), inset 0 0 1px rgba(0, 0, 0, 0.3);
   padding: 0;
   cursor: pointer;
   z-index: 1;
 }
 
 .module.is-disabled .module__power {
-  background: var(--neutral-950);
-  border-color: var(--line-hairline-strong);
+  background: #2a2a2a;
+  border-color: rgba(0, 0, 0, 0.6);
+  box-shadow: inset 0 0 1.5px rgba(0, 0, 0, 0.5);
 }
 
 .module__power:focus-visible {

@@ -123,7 +123,11 @@ namespace uni76::dsp
             float* outputChannels[1] = { wetScratch.getWritePointer (ch) };
 
             auto& stretcher = engine->stretchers[(size_t) ch];
-            stretcher.setTransposeSemitones (clampedSemitones);
+            // Tonality limit (see PitchCurves.h's pitchTonalityLimitHz) -
+            // the API takes it normalised against sample rate, not a raw
+            // Hz value (see the library's own setTransposeFactor()
+            // comment / UPSTREAM_README.md).
+            stretcher.setTransposeSemitones (clampedSemitones, (float) (pitchTonalityLimitHz / sampleRate));
             stretcher.process (inputChannels, numSamples, outputChannels, numSamples);
         }
 

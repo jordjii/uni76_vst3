@@ -9,20 +9,27 @@
   background: var(--bg-header);
 }
 
-.header__brand {
+/* A/B lives here now, not under the title (see index.html) - a real bug
+   found via live testing: sharing a right-aligned flex row with the
+   preset label meant a long preset name visibly shifted the A/B buttons
+   sideways. This group is its own centred flex column (brand text, then
+   A/B directly under it), so both this group and .header__title below
+   are simple flex columns the grid's own `align-items: center` centres
+   symmetrically - no manual offset hack needed on either side. */
+.header__brand-group {
   justify-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 0.5em;
+}
+
+.header__brand {
   font-size: var(--fs-brand);
   font-weight: 700;
   letter-spacing: var(--tracking-wider);
   color: var(--text-secondary);
   white-space: nowrap;
-  /* .header__title is a two-line block (the UNI 76/deco-line row, then the
-     subtitle) that gets vertically centred as a whole - so its top row
-     (and the deco-lines on it) sits above the header's true centreline.
-     header__brand is single-line, so plain centring would land it lower
-     than the lines. Pushing its own centring margin down by one subtitle
-     line + the title's row gap moves its text up to match. */
-  margin-bottom: calc(var(--fs-subtitle) + 0.2em);
 }
 
 .header__title {
@@ -118,12 +125,18 @@
   overflow: hidden;
 }
 
+/* Lives under the product title now, not beside PRESET (see index.html) -
+   a real bug found via live testing: sharing a right-aligned flex row
+   with the preset label meant a long preset name visibly shifted the A/B
+   buttons sideways every time it changed. Moving A/B here decouples it
+   from that label entirely, and gives room for noticeably larger, more
+   confident letters than the cramped header-button row allowed. */
 .ab-toggle__btn {
-  font-size: var(--fs-header-btn);
+  font-size: calc(var(--fs-header-btn) * 1.35);
   font-weight: 700;
   letter-spacing: var(--tracking-wide);
   color: var(--text-tertiary);
-  padding: 0.55em 0.9em;
+  padding: 0.4em 1em;
   border: none;
   background: transparent;
 }
@@ -151,6 +164,20 @@
    chrome, matching the project's "no 3D" UI rule). Anchored to
    .header__controls (the nearest positioned ancestor), right-aligned
    under the PRESET button. */
+
+/* A real, long-standing bug found via live testing: author CSS always
+   wins over the browser's own `[hidden] { display: none }` UA rule at
+   equal specificity, so the unconditional `display: flex` below was
+   silently keeping this element visually shown no matter what JS did to
+   its `hidden` attribute - header_controls.js's open/close logic (and
+   every "close on X" fix layered on top of it) was correct the whole
+   time; this was the one rule actually keeping the menu on screen. A
+   `[hidden]` variant with higher specificity than the plain class alone
+   is what actually makes toggling `menu.hidden` take visual effect. */
+.preset-menu[hidden] {
+  display: none;
+}
+
 .preset-menu {
   position: absolute;
   top: 100%;

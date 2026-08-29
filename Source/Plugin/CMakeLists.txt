@@ -17,7 +17,14 @@ juce_add_plugin(UNI76
     NEEDS_MIDI_INPUT              FALSE
     NEEDS_MIDI_OUTPUT             FALSE
     IS_MIDI_EFFECT                FALSE
-    EDITOR_WANTS_KEYBOARD_FOCUS   TRUE
+    EDITOR_WANTS_KEYBOARD_FOCUS   FALSE   # an insert-effect editor has no MIDI/typed-input need that
+                                           # justifies asking the host to route keyboard input to it -
+                                           # doing so was blocking standard DAW transport shortcuts
+                                           # (e.g. Space for play/stop) whenever the plugin window had
+                                           # focus, a real bug found via live testing. The knob/FIELD
+                                           # arrow-key nudging still works when a control is directly
+                                           # clicked/focused (WebView2's own DOM focus), independent of
+                                           # this host-level flag.
     COPY_PLUGIN_AFTER_BUILD       FALSE   # production builds never auto-install; see Packaging/*/dev-install scripts
     NEEDS_WEB_BROWSER             TRUE
     NEEDS_WEBVIEW2                TRUE)   # required so the WebView2 SDK headers/lib are available on Windows; see docs/BUILD.md

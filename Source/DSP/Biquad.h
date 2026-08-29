@@ -211,6 +211,47 @@ namespace uni76::dsp
         biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
     }
 
+    /** Same RBJ high-pass shape as makeHighPassButterworth, but with an
+        explicit, caller-chosen Q instead of the fixed Butterworth
+        Q=1/sqrt(2) - used by EqProcessor's steep (cascaded 4x = 48dB/oct)
+        cuts, whose Q was specified directly (0.765/0.676) rather than as
+        a Butterworth alignment. */
+    inline void makeHighPassQ (Biquad& biquad, double sampleRate, float frequencyHz, float q) noexcept
+    {
+        const auto w0    = twoPi * (double) frequencyHz / sampleRate;
+        const auto cosw0 = std::cos (w0);
+        const auto sinw0 = std::sin (w0);
+        const auto alpha = sinw0 / (2.0 * (double) q);
+
+        const auto a0 = 1.0 + alpha;
+        const auto b0 =  (1.0 + cosw0) / 2.0 / a0;
+        const auto b1 = -(1.0 + cosw0)       / a0;
+        const auto b2 =  (1.0 + cosw0) / 2.0 / a0;
+        const auto a1 = -2.0 * cosw0         / a0;
+        const auto a2 =  (1.0 - alpha)       / a0;
+
+        biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
+    }
+
+    /** Same RBJ low-pass shape as makeLowPassButterworth, but with an
+        explicit, caller-chosen Q - see makeHighPassQ's comment. */
+    inline void makeLowPassQ (Biquad& biquad, double sampleRate, float frequencyHz, float q) noexcept
+    {
+        const auto w0    = twoPi * (double) frequencyHz / sampleRate;
+        const auto cosw0 = std::cos (w0);
+        const auto sinw0 = std::sin (w0);
+        const auto alpha = sinw0 / (2.0 * (double) q);
+
+        const auto a0 = 1.0 + alpha;
+        const auto b0 =  (1.0 - cosw0) / 2.0 / a0;
+        const auto b1 =  (1.0 - cosw0)       / a0;
+        const auto b2 =  (1.0 - cosw0) / 2.0 / a0;
+        const auto a1 = -2.0 * cosw0         / a0;
+        const auto a2 =  (1.0 - alpha)       / a0;
+
+        biquad.setCoefficients ((float) b0, (float) b1, (float) b2, (float) a1, (float) a2);
+    }
+
     inline void makeLowShelf (Biquad& biquad, double sampleRate, float frequencyHz, float gainDb, float shelfSlope = 1.0f) noexcept
     {
         const auto A     = std::pow (10.0, (double) gainDb / 40.0);

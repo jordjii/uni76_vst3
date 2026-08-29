@@ -1115,6 +1115,88 @@ MSVC 19.51):
     in this round; all pre-existing tests plus the new resonance-sweep,
     preset-category, and UX-polish regression tests pass.
 
+- **Live-testing follow-up round** (real bugs and DSP requests found
+  after the user installed and used the RC1-plus-UX-polish build in
+  Ableton Live - a direct continuation of the round above, not a
+  separate feature pass):
+  - **Real bug: the preset menu's actual close mechanism.** The prior
+    round's capture-phase-listener fix was correct but never took visual
+    effect - `header.css`'s `.preset-menu { display: flex; ... }` was
+    unconditional, and author CSS always wins over the browser's own
+    `[hidden] { display: none }` UA rule at equal specificity, so JS
+    toggling `menu.hidden` never actually hid the element. Fixed with a
+    `.preset-menu[hidden] { display: none; }` override (higher
+    specificity than the plain class).
+  - **A/B relocated** from beside PRESET (where a long preset name
+    visibly shifted the buttons sideways - a real bug) to its own row
+    directly under "NOSTALGIA AUDIO", larger letters, fully decoupled
+    from the preset label's width.
+  - **Module power indicator** changed from a background-matching
+    (nearly invisible) dot to a real LED: red when enabled, dark grey/
+    black when disabled.
+  - **EQ redesigned** from the DARK/PHONE/AIR five-stage morph to an
+    always-on, steep two-cut "telephone band" filter (HP+LP, each
+    48dB/octave via 4 cascaded 2nd-order stages), modelled directly on a
+    real reference plugin's (FabFilter Pro-Q3) cut-band settings - see
+    docs/DSP_EQ.md's new "Redesign" section for the exact anchor
+    frequencies/Q and full reasoning. Knob relabelled TONE -> PHONE TONE;
+    displayed value remapped to -50%..+50% (frontend-only - the
+    underlying `eq` parameter is unchanged, still 0..100%/default 50%,
+    so no schema migration was needed). **A real, significant, confirmed-
+    intentional consequence**: because the centre/default anchor's own HP
+    corner sits at 461Hz, EQ at its resting default now removes
+    essentially all content below ~461Hz - a major departure from every
+    other module's "transparent by default" contract, explicitly
+    confirmed as wanted (not a bug) before shipping. This broke several
+    pre-existing full-chain low-frequency regression tests (PAN+VERB
+    bass-centring, PITCH bass-stability-in-context, the full-audit
+    low-end integration tests) purely because EQ now legitimately removes
+    the bass those tests fed it before it ever reached PAN/VERB/PITCH -
+    fixed by explicitly disabling EQ in those specific tests (they test
+    PAN/VERB/PITCH's own bass behaviour, not "does EQ preserve bass",
+    which is no longer the right question to ask of this module). A new
+    resonance/anchor-accuracy test suite verifies the three anchors match
+    the specified reference numbers exactly and the slope is genuinely
+    steep (measured 48.1dB/octave).
+  - **PITCH tonality-limit added** (8000Hz, Signalsmith Stretch's own
+    documented example value) to reduce audible "smearing"/wobble at
+    large +/-ST amounts - see docs/DSP_PITCH.md's "Bass stability /
+    wobble analysis" follow-up note. Existing bass-stability benchmark
+    (40-120Hz) re-ran green, unaffected as expected (tonality limit only
+    changes treatment far above that range); the wobble reduction itself
+    was not separately re-measured this round.
+  - **VERB decay left unchanged** - DEEP (100%) already measures ~3.5s
+    RT60, matching what was asked for; pushing it further would risk the
+    same `verbLineFeedbackGainMax` stability ceiling the original VERB
+    round already found and documented, and would need its own
+    measurement cycle to do safely.
+  - **IMAGE's FIELD pad + tri-scale hidden** (not deleted - see
+    index.html's `hidden` attribute and comment) pending a fuller
+    redesign (bipolar -100%..+100% mono<->stereo, requested but not
+    started this round) - `imageTilt` keeps its DSP and parameter intact,
+    just has no visible UI control right now.
+  - **`EDITOR_WANTS_KEYBOARD_FOCUS` changed `TRUE` -> `FALSE`** - a real
+    bug: standard DAW transport shortcuts (e.g. Space for play/stop) were
+    being swallowed whenever the plugin editor had focus. An insert
+    effect with no MIDI input has no legitimate ongoing need for the host
+    to route keyboard input to it.
+  - Footer spacing (SIGNAL PATH caption, bolt clearance around the
+    OUTPUT meter's "+3" label) and header title spacing tuned per direct
+    visual feedback.
+  - **Not started this round** (flagged, waiting on the user): PREAMP and
+    SAT "redo" requests - too vague to act on without a concrete
+    reference to compare against (no access to third-party plugins in
+    this environment to audition them live), user said they'll describe
+    the specific problem in more detail. PAN's requested redesign into a
+    literal tempo-synced auto-panner (nested nested-knob UI, width +
+    speed with musical-division snapping) - the largest of the requested
+    changes, a wholly new feature (host BPM access, new UI widget), not
+    started. IMAGE's bipolar mono<->stereo redesign - not started beyond
+    hiding the now-stale tri-scale/FIELD UI.
+  - All Debug/Release builds clean (0 warnings); full test suite green
+    after each change, including the newly-adapted EQ test suite and the
+    four full-chain low-frequency tests updated to isolate EQ.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

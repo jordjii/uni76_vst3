@@ -1,4 +1,57 @@
-# EQ / BAND SHAPER (TONE) - DSP design and measurements
+# EQ / PHONE TONE - DSP design and measurements
+
+## Redesign (UX polish pass - live-testing feedback) - supersedes the
+## DARK/PHONE/AIR topology below
+
+The five-stage DARK/PHONE/AIR morph documented in the rest of this file
+(Topology through Known compromises) was **replaced** in a later pass
+with a simpler, steeper, always-on two-cut "telephone band" filter,
+modelled directly on a real reference plugin's cut-band settings
+(FabFilter Pro-Q3): a highpass and a lowpass, each 48dB/octave (4
+cascaded 2nd-order RBJ stages per cut - see `EqProcessor.cpp`'s
+`hpStages`/`lpStages`), whose corner frequencies sweep together as the
+macro moves, always keeping the same ratio between them (~15.7-15.9x,
+~3.97-3.99 octaves of passband), while each cut's own Q stays fixed
+(0.765 HP / 0.676 LP) at all three anchors:
+
+```
+t=0.0   (displayed -50%, knob fully left)   -> HP  72Hz / LP  1132Hz
+t=0.5   (displayed   0%, knob centred)       -> HP 461Hz / LP  7288Hz
+t=1.0   (displayed +50%, knob fully right)   -> HP 748Hz / LP 11855Hz
+```
+
+The `eq` APVTS parameter itself is **unchanged** - still `0..100%`,
+default `50%` (see `ParameterLayout.cpp` and CLAUDE.md's "8 immutable
+public parameters") - this was a DSP-behaviour and UI-label change only
+(knob label renamed TONE -> PHONE TONE, displayed value remapped to
+`-50%..+50%` in the frontend, see `app.js`'s `formatEqPercent`), not a
+parameter-contract change, so it needed no schema bump. Every setting is
+now a band-pass "phone" character by construction (there is no fully-open
+DARK/AIR extreme any more) - turning the knob moves *where* that
+telephone band sits in frequency, not whether one exists at all.
+
+New source of truth: `Source/DSP/EqCurves.h`'s `EqCutParams`/
+`eqAnchorLeft`/`eqAnchorCenter`/`eqAnchorRight`/`eqParamsAt()`, and
+`Biquad.h`'s new `makeHighPassQ`/`makeLowPassQ` (same RBJ shape as the
+existing Butterworth-fixed helpers, but with an explicit caller-chosen Q
+instead of the fixed `1/sqrt(2)`). No oversampling, no nonlinearity, zero
+added latency (unchanged from the original design) - only the filter
+topology and the knob's displayed range changed. **Measured
+frequency-response verification of the new anchors was not performed as
+part of this pass** - the exact Hz/Q/slope values were supplied directly
+and implemented as specified; a dedicated frequency-response regression
+test (matching the rigor of every other module's measured-data sections
+below) is a natural follow-up, not yet done.
+
+---
+
+The rest of this document (below) describes the **original**
+DARK/PHONE/AIR five-stage topology and its own measured data, kept as
+historical record rather than deleted - see CLAUDE.md's own convention
+for superseded designs (e.g. docs/DSP_PAN.md's MONO/NATURAL/WIDE
+history). None of it describes the plugin's current EQ behaviour.
+
+---
 
 The second real DSP module in UNI 76, after PREAMP. Everything here lives
 in [`Source/DSP/EqProcessor.h`](../Source/DSP/EqProcessor.h) /

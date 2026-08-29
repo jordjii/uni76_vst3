@@ -260,6 +260,23 @@ under half a cent at every interval tested - not audibly detuned.
 
 ## Bass stability / wobble analysis
 
+**Follow-up (UX polish pass, live-testing feedback)**: manual testing
+reported audible "smearing"/wobble on pitch-shifted material at large
++/-ST amounts. Signalsmith Stretch exposes a "tonality limit" specifically
+for this - a non-linear frequency map that preserves more of the original
+timbre/phase coherence above a given frequency, instead of remapping
+every STFT bin's frequency linearly by the full transpose ratio (see the
+library's own `UPSTREAM_README.md`). Set to 8000Hz (the library's own
+documented example value) via `PitchCurves.h`'s `pitchTonalityLimitHz`,
+passed as `setTransposeSemitones()`'s second argument in
+`PitchProcessor.cpp`. The existing bass-stability benchmark below (40-
+120Hz) re-ran green after this change with no regression - expected,
+since 8000Hz sits far above the range that benchmark measures - but the
+benchmark itself was **not re-run to specifically quantify the wobble
+reduction this was meant to fix** (that would need a new measurement at
+higher/broader-spectrum test material, not the existing low-frequency-
+only table) - a natural follow-up, not done as part of this pass.
+
 **Method**: an ordinary FFT/Goertzel over the whole tone cannot see this
 failure mode - a fundamental that cyclically floats or breathes averages
 out over a long window. Instead, each settled tone is split into

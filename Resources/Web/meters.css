@@ -16,7 +16,14 @@
   align-items: center;
   gap: var(--space-md);
   height: 100%;
-  padding-inline: var(--space-lg);
+  /* Extra beyond --space-lg specifically here (not the header, which
+     doesn't have this problem) - the bottom bolts (shell.css) sit only
+     6-12px from the chassis edge, and the OUTPUT meter's own scale is
+     right-aligned flush against the footer's own edge, so the two were
+     almost touching at the "+3" label - a real bug found via live
+     testing. This pushes the meters in enough to clear the bolts at
+     every supported window size. */
+  padding-inline: calc(var(--space-lg) + clamp(8px, 1.4vw, 16px));
   background: var(--bg-footer);
 }
 
@@ -81,7 +88,7 @@
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 0.35em;
+  gap: 0.7em;
   min-width: 0;
 }
 
