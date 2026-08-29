@@ -127,12 +127,12 @@ namespace
                                     param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
                             }
 
-                            // Every factory preset ships with all modules
-                            // enabled (see Core/FactoryPresets.h's own
-                            // rationale) - a preset is a starting sound,
-                            // not a workflow shortcut for muting modules.
+                            // Each preset enables only the modules that
+                            // genuinely contribute to its own sound - see
+                            // Core/FactoryPresets.h's own rationale (not a
+                            // blanket "all on" any more).
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
-                                processor.getModuleEnableState().setEnabled (i, true);
+                                processor.getModuleEnableState().setEnabled (i, preset.modulesEnabled[(size_t) i]);
 
                             editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::factory,
                                                      juce::String (preset.name));

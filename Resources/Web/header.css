@@ -9,27 +9,22 @@
   background: var(--bg-header);
 }
 
-/* A/B lives here now, not under the title (see index.html) - a real bug
-   found via live testing: sharing a right-aligned flex row with the
-   preset label meant a long preset name visibly shifted the A/B buttons
-   sideways. This group is its own centred flex column (brand text, then
-   A/B directly under it), so both this group and .header__title below
-   are simple flex columns the grid's own `align-items: center` centres
-   symmetrically - no manual offset hack needed on either side. */
-.header__brand-group {
-  justify-self: start;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 0.5em;
-}
-
 .header__brand {
+  justify-self: start;
   font-size: var(--fs-brand);
   font-weight: 700;
   letter-spacing: var(--tracking-wider);
   color: var(--text-secondary);
   white-space: nowrap;
+  /* .header__title is a two-line block (the UNI 76/deco-line row, then the
+     subtitle) that gets vertically centred as a whole - so its top row
+     (and the deco-lines on it) sits above the header's true centreline.
+     header__brand is single-line, so plain centring would land it lower
+     than the lines. Pushing its own centring margin down by one subtitle
+     line + the title's row gap moves its text up to match. A/B moved out
+     to the footer's centre column this round (see index.html/meters.css),
+     so this is back to the original two-element layout. */
+  margin-bottom: calc(var(--fs-subtitle) + 0.2em);
 }
 
 .header__title {

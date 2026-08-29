@@ -28,13 +28,7 @@
     <div class="bolt bolt--bottom-right" aria-hidden="true"></div>
 
     <header class="header">
-      <div class="header__brand-group">
-        <div class="header__brand">NOSTALGIA AUDIO</div>
-        <div class="ab-toggle" data-header-control="ab" role="group" aria-label="A/B compare">
-          <button class="ab-toggle__btn is-active" type="button" data-ab-slot="a" aria-pressed="true">A</button>
-          <button class="ab-toggle__btn" type="button" data-ab-slot="b" aria-pressed="false">B</button>
-        </div>
-      </div>
+      <div class="header__brand">NOSTALGIA AUDIO</div>
       <div class="header__title">
         <div class="header__product-row">
           <span class="header__deco-line" aria-hidden="true"></span>
@@ -77,7 +71,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <div class="filter-lines">
             <div class="filter-line" data-role="low-cut">
               <span class="filter-line__label">LOW CUT</span>
@@ -118,7 +112,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
             <div class="tri-scale__labels">
@@ -154,7 +148,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <!-- Purely a derived, non-interactive read-out of the SAT value -
                no second parameter. -->
           <div class="tri-scale">
@@ -197,7 +191,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
             <div class="tri-scale__labels">
@@ -233,7 +227,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
@@ -269,7 +263,7 @@
           </div>
         </div>
 
-        <div class="module__aux">
+        <div class="module__aux" hidden>
           <div class="tri-scale">
             <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
             <div class="tri-scale__labels">
@@ -362,17 +356,11 @@
         </span>
       </div>
 
-      <div class="signal-path">
-        <ol class="signal-path__list">
-          <li><button type="button" class="signal-path__chip" data-module="preamp" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PREAMP</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="eq" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>EQ</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="saturation" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>SAT</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="pitch" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PITCH</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="panorama" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>PAN</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="reverb" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>VERB</button></li><li class="signal-path__arrow" aria-hidden="true">&rarr;</li>
-          <li><button type="button" class="signal-path__chip" data-module="imager" aria-pressed="true"><span class="signal-path__dot" aria-hidden="true"></span>IMAGE</button></li>
-        </ol>
-        <div class="signal-path__caption">SIGNAL PATH</div>
+      <div class="footer__centre">
+        <div class="ab-toggle" data-header-control="ab" role="group" aria-label="A/B compare">
+          <button class="ab-toggle__btn is-active" type="button" data-ab-slot="a" aria-pressed="true">A</button>
+          <button class="ab-toggle__btn" type="button" data-ab-slot="b" aria-pressed="false">B</button>
+        </div>
       </div>
 
       <div class="meter meter--output">

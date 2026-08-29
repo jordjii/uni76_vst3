@@ -152,20 +152,36 @@
   justify-content: center;
   gap: var(--space-xs);
   min-height: 0;
-  margin-top: var(--knob-area-shift);
+  /* Every module's aux zone (tri-scale/filter-lines/FIELD) is hidden now
+     (see index.html and the class comment below) - with nothing left
+     below it to pin against, the knob is centred vertically in the
+     remaining space under the header zone instead of just shifted down
+     by a fixed amount, which is what actually reads as "just a knob,
+     centred" rather than leaving a large dead gap at the bottom of each
+     panel. */
+  margin-top: auto;
+  margin-bottom: auto;
 }
 
 .module__aux {
   /* Sizes to its own content, then `margin-top: auto` consumes all
      leftover vertical space in the column above it, pinning it flush
      against the module's own bottom padding edge regardless of how much
-     (or little) content it holds - see the class comment above. */
+     (or little) content it holds - see the class comment above. Hidden
+     on every module right now (see index.html) - a `[hidden]` override
+     is required because author CSS always wins over the browser's own
+     `[hidden] { display: none }` UA rule at equal specificity (the same
+     bug class fixed for .preset-menu earlier this round). */
   flex: 0 0 auto;
   margin-top: auto;
   width: 100%;
   display: flex;
   flex-direction: column;
   gap: var(--space-xs);
+}
+
+.module__aux[hidden] {
+  display: none;
 }
 
 /* IMAGE alone grows its aux zone to fill *all* remaining vertical space

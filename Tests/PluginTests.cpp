@@ -9790,7 +9790,7 @@ public:
                 expect (count >= 5, juce::String (uni76::presetCategoryName (presetCat)) + ": too few presets in this category");
         }
 
-        beginTest ("Applying every factory preset sets exactly the declared values and enables all modules");
+        beginTest ("Applying every factory preset sets exactly the declared values and module-enable states");
         {
             for (size_t presetIndex = 0; presetIndex < uni76::factoryPresets.size(); ++presetIndex)
             {
@@ -9801,12 +9801,13 @@ public:
                 processor.prepareToPlay (44100.0, 256);
                 auto& apvts = processor.getValueTreeState();
 
-                // Perturb everything first, and disable every module, so a
-                // no-op application couldn't accidentally look like a pass.
+                // Perturb everything first, and set every module to the
+                // *opposite* of what the preset declares, so a no-op
+                // application couldn't accidentally look like a pass.
                 for (auto& spec : auditParams)
                     setNormalised (apvts, spec.id, 0.1f);
                 for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                    processor.getModuleEnableState().setEnabled (m, false);
+                    processor.getModuleEnableState().setEnabled (m, ! preset.modulesEnabled[(size_t) m]);
 
                 // Verbatim replica of WebUIEditor.cpp's uni76LoadFactoryPreset.
                 const float rawValues[8] {
@@ -9817,11 +9818,11 @@ public:
                     if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
                         param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
                 for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                    processor.getModuleEnableState().setEnabled (m, true);
+                    processor.getModuleEnableState().setEnabled (m, preset.modulesEnabled[(size_t) m]);
 
                 for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                    expect (processor.getModuleEnableState().isEnabled (m),
-                            juce::String (preset.name) + ": module " + juce::String (m) + " should be enabled after preset load");
+                    expect (processor.getModuleEnableState().isEnabled (m) == preset.modulesEnabled[(size_t) m],
+                            juce::String (preset.name) + ": module " + juce::String (m) + " enable state should match the preset's own declaration");
 
                 for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
                 {
@@ -9859,7 +9860,7 @@ public:
                 }
 
                 for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                    expect (reloaded.getModuleEnableState().isEnabled (m),
+                    expect (reloaded.getModuleEnableState().isEnabled (m) == preset.modulesEnabled[(size_t) m],
                             juce::String (preset.name) + ": module " + juce::String (m) + " enable flag did not survive save/restore");
             }
         }
@@ -9953,10 +9954,11 @@ public:
                 if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
                     param->setValueNotifyingHost (param->convertTo0to1 (rawValues[i]));
             for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                processor.getModuleEnableState().setEnabled (m, true);
+                processor.getModuleEnableState().setEnabled (m, preset.modulesEnabled[(size_t) m]);
 
             for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
-                expect (processor.getModuleEnableState().isEnabled (m), "module should be enabled after preset load");
+                expect (processor.getModuleEnableState().isEnabled (m) == preset.modulesEnabled[(size_t) m],
+                        "module enable state should match the preset's own declaration after preset load");
 
             const auto outputWithPresetOn = runThrough (makeTestSignal());
 

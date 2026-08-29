@@ -1,5 +1,4 @@
-// UNI 76 - module enable/disable state: per-strip power buttons AND the
-// footer SIGNAL PATH chips, kept as one synchronised UI surface.
+// UNI 76 - module enable/disable state: per-strip power buttons.
 //
 // The enabled/disabled flag is persistent (survives editor close/reopen
 // and host state save/reload) but is deliberately NOT an APVTS parameter -
@@ -7,11 +6,17 @@
 // CLAUDE.md). The bridge is therefore a small pair of native functions
 // (Source/UI/WebUIEditor.cpp) rather than a WebToggleRelay.
 //
-// Both the strip power button and the footer chip for a given module are
-// just two views of the same backend flag - clicking either one sets the
-// backend state, then BOTH views are redrawn from a single source of
-// truth (never an optimistic DOM-only toggle on just the clicked widget).
-// The same refresh function is also called after a preset load and after
+// The footer's SIGNAL PATH chips (a second view of this same state) were
+// removed on request this round (see index.html) - the `.signal-path__chip`
+// selector below now simply matches nothing, so `chipEntries` is always
+// empty and every chip-related branch here is a harmless no-op. Left in
+// place rather than torn out, in case a future round wants that footer
+// surface back - `refreshModuleEnabledUI()` would just start driving it
+// again with zero other changes needed.
+//
+// refreshModuleEnabledUI() re-reads the real backend state and redraws
+// every registered view from it (never an optimistic DOM-only toggle on
+// just the clicked widget) - also called after a preset load and after
 // an A/B switch (see header_controls.js), which is what fixes the RC1 bug
 // where loading a preset changed the sound but left the power indicators
 // visually stale.
