@@ -10384,6 +10384,97 @@ public:
                 expect (! uni76::userPresetExists (juce::String (preset.name)),
                         juce::String (preset.name) + ": a factory preset name must never exist as a user preset file");
         }
+
+        beginTest ("Presets capture their own chain order, not just parameter values (reordering changes the sound too)");
+        {
+            // Every existing factory preset's chainOrder defaults to the
+            // factory identity permutation (see FactoryPresets.h's own
+            // comment on why none of the 32 rows list it explicitly) -
+            // still a genuine field, not a stale placeholder, so confirm
+            // every row is at least a *valid* permutation (catches a typo
+            // in a future preset that deliberately sets a custom order).
+            for (auto& preset : uni76::factoryPresets)
+                expect (uni76::ChainOrder::isValidPermutation (preset.chainOrder),
+                        juce::String (preset.name) + ": chainOrder must be a valid permutation");
+
+            // User presets: a saved preset must round-trip a genuinely
+            // non-identity order through real disk I/O, the same way it
+            // already round-trips parameter values and module-enable
+            // flags above - not just be present as an unused field.
+            const juce::String testName = "__UNI76ChainOrderPresetTest__";
+            uni76::deleteUserPreset (testName);
+
+            uni76::UserPresetData data;
+            data.values = { 10.0f, 20.0f, 5.0f, 0.0f, 15.0f, 25.0f, 8.0f, 0.0f };
+            data.moduleEnabled = { true, false, true, false, true, true, false };
+            data.chainOrder = { 6, 0, 4, 2, 1, 5, 3 }; // deliberately scrambled, not the identity default
+
+            expect (uni76::saveUserPreset (testName, data), "saveUserPreset should succeed");
+            auto loaded = uni76::loadUserPreset (testName);
+            expect (loaded.has_value(), "loadUserPreset should find the saved preset");
+            if (loaded.has_value())
+            {
+                expect (uni76::ChainOrder::isValidPermutation (loaded->chainOrder), "loaded chainOrder must be a valid permutation");
+                expect (loaded->chainOrder == data.chainOrder, "loaded chainOrder must match exactly what was saved, not fall back to identity");
+            }
+            uni76::deleteUserPreset (testName);
+
+            // A preset file saved before chain reordering existed (or one
+            // written by hand with no ChainOrder node at all) has nothing
+            // to read back - must fall back to the identity order rather
+            // than reading garbage or leaving the field's own {} default
+            // (which would be role 0 repeated 7 times - not a valid
+            // permutation at all).
+            auto dir = uni76::getUserPresetsDirectory();
+            expect (dir.isDirectory() || dir.createDirectory(), "presets directory must exist for the legacy-file test");
+
+            const juce::String legacyName = "UNI76NoChainOrderTest"; // must stay <= userPresetMaxNameLength (24)
+            auto legacyFile = dir.getChildFile (legacyName + ".uni76preset");
+            legacyFile.deleteFile();
+
+            juce::XmlElement legacyRoot ("UNI76UserPreset");
+            legacyRoot.setAttribute ("schemaVersion", uni76::userPresetSchemaVersion);
+            legacyRoot.setAttribute ("name", legacyName);
+            auto* legacyParams = legacyRoot.createNewChildElement ("Parameters");
+            legacyParams->setAttribute ("preamp", 10.0);
+            auto* legacyModules = legacyRoot.createNewChildElement ("ModulesEnabled");
+            legacyModules->setAttribute ("preamp", true);
+            // Deliberately no ChainOrder child element - this is the point.
+            expect (legacyRoot.writeTo (legacyFile), "writing the legacy no-ChainOrder file should succeed");
+
+            auto legacyLoaded = uni76::loadUserPreset (legacyName);
+            expect (legacyLoaded.has_value(), "legacy preset without a ChainOrder node should still load");
+            if (legacyLoaded.has_value())
+                expect (legacyLoaded->chainOrder == std::array<int, 7> { 0, 1, 2, 3, 4, 5, 6 },
+                        "a preset with no ChainOrder node must fall back to the factory identity order");
+
+            legacyFile.deleteFile();
+        }
+
+        beginTest ("Loading a factory preset with a non-identity chain order actually reorders the live processor");
+        {
+            // Replica of WebUIEditor.cpp's uni76LoadFactoryPreset chain-
+            // order application, using a hand-built preset (every shipped
+            // preset today uses the identity order - see FactoryPresets.h -
+            // so this is the only way to exercise the non-identity path).
+            uni76::FactoryPreset scrambled { "TestScrambled", uni76::PresetCategory::general,
+                0.0f, 50.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 35.303f, 0.0f,
+                { false, false, false, false, false, false, false },
+                { 3, 1, 6, 0, 5, 2, 4 } };
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 256);
+
+            expect (processor.getChainOrder().snapshot() == std::array<int, 7> { 0, 1, 2, 3, 4, 5, 6 },
+                    "precondition: a fresh processor starts at the factory identity order");
+
+            if (uni76::ChainOrder::isValidPermutation (scrambled.chainOrder))
+                processor.getChainOrder().setOrder (scrambled.chainOrder);
+
+            expect (processor.getChainOrder().snapshot() == scrambled.chainOrder,
+                    "the processor's live chain order must match the preset's own declared order after loading");
+        }
     }
 };
 

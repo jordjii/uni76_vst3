@@ -105,6 +105,22 @@ namespace uni76
         // Module-enabled flags, in ModuleEnableState.h's own order:
         // preamp, eq, saturation, pitch, panorama, reverb, imager.
         std::array<bool, 7> modulesEnabled;
+
+        // Processing-chain order (drag-and-drop pedalboard round - see
+        // Core/ChainOrder.h): chainOrder[position] is which module *role*
+        // (same role indices as modulesEnabled above) runs at that
+        // position. Reordering genuinely changes the processed audio, not
+        // just the on-screen layout - see PluginProcessor::processBlock()'s
+        // switch dispatch - so a preset that doesn't also capture its own
+        // order isn't fully reproducing "the sound", only the per-module
+        // values. Defaulted here (not listed in every preset row below) to
+        // the factory identity order {0,1,2,3,4,5,6} = PREAMP->EQ->SAT->
+        // PITCH->PAN->VERB->IMAGE, matching every existing preset's actual
+        // (never-reordered) chain - aggregate initialisation falls back to
+        // a member's own default initialiser whenever a brace-init list
+        // doesn't supply that trailing member, so none of the 32 rows
+        // below need editing for this to be correct.
+        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
     };
 
     /*

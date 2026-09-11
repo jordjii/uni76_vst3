@@ -20,12 +20,56 @@ import { getNativeFunction } from "./juce_webview.js";
 // file has no load-order dependency on that one).
 const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager"];
 
-export function initChainOrder() {
-  const getChainOrder = getNativeFunction("uni76GetChainOrder");
-  const setChainOrder = getNativeFunction("uni76SetChainOrder");
+let getChainOrder = null;
+let setChainOrder = null;
+let modules = [];
+let moduleByRole = new Map();
 
-  const modules = Array.from(document.querySelectorAll(".module"));
-  const moduleByRole = new Map();
+// roleOrder[position] = which role runs at that position - applies it as
+// each module's CSS grid `order` (app__main is `display: grid`, so this
+// alone repositions the panel; no DOM node ever moves).
+function applyPositions(roleOrder) {
+  roleOrder.forEach((role, position) => {
+    const module = moduleByRole.get(role);
+    if (module) module.style.order = String(position);
+  });
+}
+
+// Reads the *current on-screen* order back out as an array of roles - the
+// starting point for computing a new order after a drop. Falls back to
+// each module's own written DOM position for any module whose CSS `order`
+// was never explicitly set yet (the very first read, before
+// uni76GetChainOrder()'s reply has applied anything).
+function currentRoleOrder() {
+  return modules
+    .map((module, domIndex) => ({
+      role: MODULE_ORDER.indexOf(module.dataset.param),
+      position: module.style.order !== "" ? parseInt(module.style.order, 10) : domIndex,
+    }))
+    .sort((a, b) => a.position - b.position)
+    .map((entry) => entry.role);
+}
+
+// Re-reads the real backend chain order and redraws the panel layout from
+// it - the same "never assume, always re-read the source of truth" pattern
+// module_power.js's refreshModuleEnabledUI() already established. A preset
+// (factory or user - see Core/FactoryPresets.h / Core/UserPresets.h) can
+// now carry its own saved chain order, and A/B can swap to a slot with a
+// different one too, so both need to re-sync the visual layout after the
+// fact, not just after a drag gesture.
+export function refreshChainOrderUI() {
+  if (!getChainOrder || moduleByRole.size !== MODULE_ORDER.length) return Promise.resolve();
+  return getChainOrder().then((order) => {
+    if (Array.isArray(order) && order.length === MODULE_ORDER.length) applyPositions(order);
+  });
+}
+
+export function initChainOrder() {
+  getChainOrder = getNativeFunction("uni76GetChainOrder");
+  setChainOrder = getNativeFunction("uni76SetChainOrder");
+
+  modules = Array.from(document.querySelectorAll(".module"));
+  moduleByRole = new Map();
   modules.forEach((module) => {
     const role = MODULE_ORDER.indexOf(module.dataset.param);
     if (role >= 0) moduleByRole.set(role, module);
@@ -33,37 +77,10 @@ export function initChainOrder() {
 
   if (moduleByRole.size !== MODULE_ORDER.length) return; // markup mismatch - fail safe, no reordering
 
-  // roleOrder[position] = which role runs at that position - applies it
-  // as each module's CSS grid `order` (app__main is `display: grid`, so
-  // this alone repositions the panel; no DOM node ever moves).
-  function applyPositions(roleOrder) {
-    roleOrder.forEach((role, position) => {
-      const module = moduleByRole.get(role);
-      if (module) module.style.order = String(position);
-    });
-  }
-
-  // Reads the *current on-screen* order back out as an array of roles -
-  // the starting point for computing a new order after a drop. Falls back
-  // to each module's own written DOM position for any module whose CSS
-  // `order` was never explicitly set yet (the very first read, before
-  // uni76GetChainOrder()'s reply has applied anything).
-  function currentRoleOrder() {
-    return modules
-      .map((module, domIndex) => ({
-        role: MODULE_ORDER.indexOf(module.dataset.param),
-        position: module.style.order !== "" ? parseInt(module.style.order, 10) : domIndex,
-      }))
-      .sort((a, b) => a.position - b.position)
-      .map((entry) => entry.role);
-  }
-
   // The persisted DSP order is authoritative - sync the visual layout to
   // it on load rather than trusting the document's own written order,
   // which is only ever the factory-default fallback.
-  getChainOrder().then((order) => {
-    if (Array.isArray(order) && order.length === MODULE_ORDER.length) applyPositions(order);
-  });
+  refreshChainOrderUI();
 
   let draggedModule = null;
 

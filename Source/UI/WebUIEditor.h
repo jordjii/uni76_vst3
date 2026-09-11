@@ -86,6 +86,12 @@ public:
     {
         std::array<float, 10> values {};
         std::array<bool, 7> moduleEnabled {};
+        // Chain order is part of "the sound" too (see Core/ChainOrder.h -
+        // reordering genuinely changes the processed audio), so both A/B
+        // compare and the preset dirty-marker (getActivePresetInfo()) need
+        // it in the snapshot they diff against - not value-initialised
+        // zeros (role 0 repeated 7 times, not a valid permutation).
+        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
     };
 
 private:

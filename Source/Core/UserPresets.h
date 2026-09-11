@@ -3,6 +3,8 @@
 #include <juce_core/juce_core.h>
 #include <juce_audio_processors/juce_audio_processors.h>
 
+#include "ChainOrder.h"
+
 #include <array>
 #include <optional>
 
@@ -25,6 +27,15 @@ namespace uni76
     {
         std::array<float, 10> values {};       // ParamID::all order, real units
         std::array<bool, 7> moduleEnabled {};
+        // Processing-chain order (drag-and-drop pedalboard round - see
+        // Core/ChainOrder.h) - a preset that doesn't also capture its own
+        // module order isn't fully reproducing "the sound" a user saved,
+        // since reordering genuinely changes the processed audio. Defaults
+        // to the factory identity order, NOT value-initialised zeros
+        // (which would be role 0 repeated 7 times - not a valid
+        // permutation) - matters for a preset saved before this field
+        // existed, whose file has no ChainOrder node to read back.
+        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
     };
 
     inline juce::File getUserPresetsDirectory()
@@ -153,6 +164,14 @@ namespace uni76
         for (int i = 0; i < 7; ++i)
             modules->setAttribute (moduleNames[i], data.moduleEnabled[(size_t) i]);
 
+        // Same comma-joined-string convention ChainOrder::stateProperty
+        // already uses for the plugin's own saved state.
+        auto* chain = root.createNewChildElement ("ChainOrder");
+        juce::StringArray orderTokens;
+        for (int i = 0; i < 7; ++i)
+            orderTokens.add (juce::String (data.chainOrder[(size_t) i]));
+        chain->setAttribute ("order", orderTokens.joinIntoString (","));
+
         return root.writeTo (getUserPresetFile (name));
     }
 
@@ -190,6 +209,28 @@ namespace uni76
         static const char* moduleNames[7] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager" };
         for (int i = 0; i < 7; ++i)
             data.moduleEnabled[(size_t) i] = modules->getBoolAttribute (moduleNames[i], true);
+
+        // A preset saved before chain reordering existed has no
+        // ChainOrder node at all - data.chainOrder already defaults to
+        // the factory identity order (see the struct's own comment), so
+        // leave it untouched rather than reading back a missing/invalid
+        // attribute. A hand-edited or corrupt "order" string is rejected
+        // the same way ChainOrder itself rejects a bad saved state -
+        // fall back to identity rather than apply a partial/duplicate
+        // permutation.
+        if (auto* chain = xml->getChildByName ("ChainOrder"))
+        {
+            const auto tokens = juce::StringArray::fromTokens (chain->getStringAttribute ("order"), ",", "");
+            if (tokens.size() == 7)
+            {
+                std::array<int, 7> candidate {};
+                for (int i = 0; i < 7; ++i)
+                    candidate[(size_t) i] = tokens[i].getIntValue();
+
+                if (uni76::ChainOrder::isValidPermutation (candidate))
+                    data.chainOrder = candidate;
+            }
+        }
 
         return data;
     }

@@ -8,6 +8,7 @@
 
 import { getNativeFunction } from "./juce_webview.js";
 import { refreshModuleEnabledUI } from "./module_power.js";
+import { refreshChainOrderUI } from "./chain_order.js";
 
 export function initPresetMenu() {
   const button = document.querySelector('[data-header-control="preset"]');
@@ -45,6 +46,11 @@ export function initPresetMenu() {
   function afterAction() {
     closeMenu();
     refreshModuleEnabledUI();
+    // A preset can carry its own saved chain order now (see
+    // Core/FactoryPresets.h / Core/UserPresets.h) - re-sync the panel
+    // layout the same way refreshModuleEnabledUI() re-syncs the power LEDs,
+    // rather than leaving the on-screen order stale after a load.
+    refreshChainOrderUI();
   }
 
   function buildSection(title) {
@@ -271,6 +277,7 @@ export function initPresetMenu() {
       currentPresetName = item.name;
       currentPresetKind = "factory";
       refreshModuleEnabledUI();
+      refreshChainOrderUI();
     } else {
       loadUserPreset(item.name).then((ok) => {
         if (ok) {
@@ -279,6 +286,7 @@ export function initPresetMenu() {
           currentPresetKind = "user";
         }
         refreshModuleEnabledUI();
+        refreshChainOrderUI();
       });
     }
   }
@@ -329,6 +337,9 @@ export function initABToggle() {
       if (result === "A" || result === "B") {
         setActive(result);
         refreshModuleEnabledUI();
+        // A/B's snapshot now includes chain order too (see WebUIEditor.h's
+        // ABSnapshot) - a slot can genuinely hold a different module order.
+        refreshChainOrderUI();
       }
     });
   }

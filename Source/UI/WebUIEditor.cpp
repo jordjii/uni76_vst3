@@ -188,6 +188,19 @@ namespace
                                 processor.getModuleEnableState().setEnabled (i, preset.modulesEnabled[(size_t) i]);
                             processor.updateReportedLatency();
 
+                            // Reordering genuinely changes the processed
+                            // audio (see Core/ChainOrder.h), so a preset
+                            // that only restored parameter values without
+                            // also restoring its own chain order would be
+                            // reproducing a different sound than the one
+                            // it was saved from. isValidPermutation() is
+                            // defensive only - every factory row's own
+                            // chainOrder is either the identity default or
+                            // a deliberately-authored permutation, never
+                            // expected to fail this check.
+                            if (uni76::ChainOrder::isValidPermutation (preset.chainOrder))
+                                processor.getChainOrder().setOrder (preset.chainOrder);
+
                             editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::factory,
                                                      juce::String (preset.name));
                         }
@@ -235,6 +248,11 @@ namespace
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
                                 data.moduleEnabled[(size_t) i] = processor.getModuleEnableState().isEnabled (i);
 
+                            // Same reasoning as uni76LoadFactoryPreset above -
+                            // a saved preset must capture the chain order it
+                            // was created under, not just parameter values.
+                            data.chainOrder = processor.getChainOrder().snapshot();
+
                             ok = uni76::saveUserPreset (name, data);
                             if (ok)
                                 editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::user, name);
@@ -260,6 +278,18 @@ namespace
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
                                 processor.getModuleEnableState().setEnabled (i, data->moduleEnabled[(size_t) i]);
                             processor.updateReportedLatency();
+
+                            // A file saved before chain reordering existed
+                            // (or a hand-edited/corrupt one) already falls
+                            // back to the identity permutation inside
+                            // loadUserPreset() itself - isValidPermutation()
+                            // here is a second, defensive check specifically
+                            // against applying a bad order to the live
+                            // processor, same as the factory-preset path.
+                            if (uni76::ChainOrder::isValidPermutation (data->chainOrder))
+                                processor.getChainOrder().setOrder (data->chainOrder);
+                            else
+                                processor.getChainOrder().resetToDefault();
 
                             editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::user, name);
                             ok = true;
@@ -383,6 +413,8 @@ UNI76AudioProcessorEditor::ABSnapshot UNI76AudioProcessorEditor::captureSnapshot
     for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
         snapshot.moduleEnabled[(size_t) i] = processor.getModuleEnableState().isEnabled (i);
 
+    snapshot.chainOrder = processor.getChainOrder().snapshot();
+
     return snapshot;
 }
 
@@ -397,6 +429,9 @@ void UNI76AudioProcessorEditor::applySnapshot (const ABSnapshot& snapshot)
     for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
         processor.getModuleEnableState().setEnabled (i, snapshot.moduleEnabled[(size_t) i]);
     processor.updateReportedLatency();
+
+    if (uni76::ChainOrder::isValidPermutation (snapshot.chainOrder))
+        processor.getChainOrder().setOrder (snapshot.chainOrder);
 }
 
 bool UNI76AudioProcessorEditor::snapshotsEqual (const ABSnapshot& a, const ABSnapshot& b) const
@@ -407,6 +442,10 @@ bool UNI76AudioProcessorEditor::snapshotsEqual (const ABSnapshot& a, const ABSna
 
     for (size_t i = 0; i < a.moduleEnabled.size(); ++i)
         if (a.moduleEnabled[i] != b.moduleEnabled[i])
+            return false;
+
+    for (size_t i = 0; i < a.chainOrder.size(); ++i)
+        if (a.chainOrder[i] != b.chainOrder[i])
             return false;
 
     return true;
