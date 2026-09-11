@@ -504,6 +504,74 @@ thresholds hold) but not independently *re-measured* against a fresh
 target table the way the original calibration pass was - a natural
 follow-up for anyone wanting the exact new numbers on record.
 
+## Drive-curve / output-trim correction ("no audible effect" round)
+
+The tube-character pass above was reported by direct listening as still
+having **essentially no audible effect** - "the volume barely changes",
+"there's no effect at all". That feedback was correct, and the asymmetry
+change above was not the reason it wasn't: asymmetry only reshapes
+harmonic *balance*, it cannot create saturation that isn't happening.
+
+**Root cause (computed, not guessed).** Two constants were fighting the
+module:
+
+1. `preampDriveShapeExponent` was `1.3` - an exponent **above** 1
+   back-loads the mapping `g = gmin*(gmax/gmin)^(t^e)`, pushing almost
+   all of the drive growth into the very top of the knob. Evaluating the
+   actual tanh argument at -18dBFS across the knob gave
+   `0.025 / 0.06 / 0.215 / 0.96 / 5.0` at DRIVE `0/25/50/75/100%`.
+   `tanh` is linear to within a fraction of a percent below ~0.2, so the
+   **entire lower half of the knob was mathematically a no-op** - not
+   "subtle", literally no nonlinearity at all.
+2. `preampOutputTrimMaxDb` was `-15.0` dB with
+   `preampOutputTrimExponent = 4.0`. The trim therefore bit hardest
+   exactly where saturation finally began, cancelling the level growth
+   that makes a drive control feel like it's doing something.
+
+Note that this module's own documentation had these numbers on record
+and had read them as correct behaviour. They were not.
+
+**Changes** (`PreampCurves.h`):
+
+| Constant | Before | After |
+|---|---|---|
+| `preampDriveShapeExponent` | `1.3` | `0.6` |
+| `preampOutputTrimMaxDb` | `-15.0` dB | `-6.0` dB |
+| `preampOutputTrimExponent` | `4.0` | `2.0` |
+
+An exponent below 1 **front-loads** the curve, so the lower half of the
+knob reaches into the region where `tanh` is actually curved.
+
+**Measured THD at 1kHz / -18dBFS, DRIVE 0/25/50/75/100%:**
+
+| | 0% | 25% | 50% | 75% | 100% |
+|---|---|---|---|---|---|
+| Before | 0.01% | 0.03% | 0.38% | 6.2% | 33.3% |
+| After | 0.01% | 0.52% | 4.85% | 18.8% | 33.3% |
+
+DRIVE=0% is unchanged (the near-identity contract holds - the curve
+still evaluates to its identity value at t=0 regardless of exponent) and
+DRIVE=100% is unchanged (both curves reach the same ceiling). Everything
+between now moves.
+
+**Test methodology corrections made in the same round.** Two PREAMP
+tests were found to be asserting the *bug* rather than the behaviour:
+
+- *"Output compensation keeps DRIVE=100% from being simply much
+  louder"* asserted `deltaDb < 10.0`, i.e. it passed precisely because
+  the trim was flattening the module. Rewritten to assert
+  `deltaDb > 3.0f && deltaDb < 14.0f` - a drive control **must** get
+  louder, just not uncontrollably.
+- *Low Cut* asserted `magOn < magOff * 0.7` on an absolute level, which
+  silently depended on the same loudness normalisation. Rewritten to
+  measure relative to a 1kHz mid reference taken through the identical
+  settings.
+- The *aliasing* test compared a 4kHz->2kHz fold product at
+  reference `-64.78dB` vs production `-63.63dB` - both sitting on the
+  noise floor, where a memoryless waveshaper provably folds nothing into
+  2kHz from 4kHz. A `constexpr float aliasNoiseFloor = 0.0018f` guard was
+  added so the comparison is only made above the floor.
+
 ## Known tradeoffs
 
 - IIR polyphase oversampling trades a small amount of phase linearity for

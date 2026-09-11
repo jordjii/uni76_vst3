@@ -34,7 +34,14 @@ namespace uni76::dsp
     // result musical rather than harsh.
     inline constexpr float satDriveGainMin = 0.08f;
     inline constexpr float satDriveGainMax = 12.0f;
-    inline constexpr float satDriveShapeExponent = 1.2f;
+    // Same fix, same reason, as PreampCurves.h's own exponent (see the
+    // long comment there): 1.2 back-loaded the curve so the whole lower
+    // half of HEAT sat below tanh()'s linear region and did nothing
+    // audible. 0.6 front-loads it into a continuous progression. Note
+    // satCompressionStrength() below deliberately shares this exponent,
+    // so the dynamic-gain stage still grows in step with the waveshaper
+    // - the crest-factor regression documented there stays fixed.
+    inline constexpr float satDriveShapeExponent = 0.6f;
 
     inline float satDriveGainLinear (float heatNormalised01) noexcept
     {
@@ -120,8 +127,15 @@ namespace uni76::dsp
     }
 
     // ---- Output compensation ---------------------------------------------
-    inline constexpr float satOutputTrimMaxDb = -18.0f;
-    inline constexpr float satOutputTrimExponent = 3.0f;
+    // Retuned alongside the drive curve above (same reasoning as
+    // PreampCurves.h's own trim): -18dB was flattening nearly all of
+    // HEAT's level growth, which - combined with the back-loaded drive
+    // curve - is why the control measured and sounded like it did
+    // nothing. SAT's own dynamic-gain stage already provides real,
+    // program-dependent level control, so the static trim only needs to
+    // keep the top of the range usable, not normalise the whole sweep.
+    inline constexpr float satOutputTrimMaxDb = -8.0f;
+    inline constexpr float satOutputTrimExponent = 2.0f;
 
     inline float satOutputCompensationDb (float heatNormalised01) noexcept
     {

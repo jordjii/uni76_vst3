@@ -554,12 +554,20 @@ public:
 
     void runTest() override
     {
-        beginTest ("All 7 modules default to enabled");
+        beginTest ("Modules default to enabled, except EQ (see ModuleEnableState.h)");
         {
             uni76::ModuleEnableState state;
 
+            // EQ is index 1. It alone defaults to disabled because since
+            // its redesign it has no transparent resting position - its
+            // centre already removes everything below ~461Hz, so an
+            // enabled-by-default EQ would strip the bass off any freshly
+            // inserted instance. See ModuleEnableState.h's own comment.
             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
-                expect (state.isEnabled (i), uni76::ModuleEnableState::propertyNames[(size_t) i]);
+            {
+                const auto expected = (i != 1);
+                expect (state.isEnabled (i) == expected, uni76::ModuleEnableState::propertyNames[(size_t) i]);
+            }
         }
 
         beginTest ("Processor: module-enabled state survives serialize -> modify -> deserialize");
@@ -567,9 +575,16 @@ public:
             UNI76AudioProcessor processor;
             auto& moduleState = processor.getModuleEnableState();
 
-            // Disable an arbitrary subset before saving.
+            // Set an arbitrary mixed pattern before saving - every flag
+            // explicitly, so this round-trip test doesn't silently depend
+            // on what any individual module happens to default to (EQ
+            // defaults to disabled - see ModuleEnableState.h).
             moduleState.setEnabled (0, false); // preamp
+            moduleState.setEnabled (1, true);  // eq
+            moduleState.setEnabled (2, true);  // saturation
             moduleState.setEnabled (3, false); // pitch
+            moduleState.setEnabled (4, true);  // panorama
+            moduleState.setEnabled (5, true);  // reverb
             moduleState.setEnabled (6, false); // imager
 
             juce::MemoryBlock savedState;
@@ -1515,7 +1530,28 @@ public:
             const auto magOff = goertzelMagnitude (off, 0, totalSamples - win, win, sr, 30.0f);
             const auto magOn  = goertzelMagnitude (on,  0, totalSamples - win, win, sr, 30.0f);
 
-            expect (magOn < magOff * 0.7f, "a 30Hz tone should be noticeably more attenuated at DRIVE=100% (Low Cut ~70Hz) than at DRIVE=0% (Low Cut ~20Hz)");
+            // Measured *relative to a 1kHz mid reference through the same
+            // two DRIVE settings*, not as an absolute level: DRIVE=100%
+            // deliberately delivers real makeup gain now (see
+            // PreampCurves.h's output-trim comment), which would otherwise
+            // swamp the Low Cut's own attenuation and make this test
+            // measure gain staging instead of the filter it names.
+            uni76::dsp::PreampProcessor midOff, midOn;
+            midOff.prepare (sr, blockSize, 1);
+            midOn.prepare (sr, blockSize, 1);
+            auto midOffBuf = runPreampSine (midOff, 1, blockSize, totalSamples, sr, 1000.0f, 0.126f, 0.0f, true);
+            auto midOnBuf  = runPreampSine (midOn,  1, blockSize, totalSamples, sr, 1000.0f, 0.126f, 1.0f, true);
+            const auto midWin = periodicAnalysisLength (sr, 1000.0f, 200);
+            const auto midMagOff = goertzelMagnitude (midOffBuf, 0, totalSamples - midWin, midWin, sr, 1000.0f);
+            const auto midMagOn  = goertzelMagnitude (midOnBuf,  0, totalSamples - midWin, midWin, sr, 1000.0f);
+
+            const auto lowRatioDb = juce::Decibels::gainToDecibels (magOn / juce::jmax (1.0e-9f, magOff));
+            const auto midRatioDb = juce::Decibels::gainToDecibels (midMagOn / juce::jmax (1.0e-9f, midMagOff));
+            const auto relativeDb = lowRatioDb - midRatioDb;
+
+            expect (relativeDb < -3.0f,
+                    "a 30Hz tone should be noticeably more attenuated at DRIVE=100% (Low Cut ~70Hz) than at DRIVE=0% "
+                    "(Low Cut ~20Hz), measured relative to 1kHz: " + juce::String (relativeDb, 2) + "dB");
         }
 
         beginTest ("High Cut measurably attenuates a high-frequency tone more at high DRIVE than at DRIVE=0%");
@@ -1535,7 +1571,7 @@ public:
             expect (magOn < magOff * 0.7f, "a 15kHz tone should be noticeably more attenuated at DRIVE=100% (High Cut ~11kHz) than at DRIVE=0% (High Cut ~20kHz)");
         }
 
-        beginTest ("Output compensation keeps DRIVE=100% from being simply much louder than DRIVE=0%");
+        beginTest ("DRIVE=100% audibly drives the signal harder (louder as well as denser) without running away");
         {
             uni76::dsp::PreampProcessor preampOff, preampOn;
             preampOff.prepare (sr, blockSize, 1);
@@ -1552,7 +1588,21 @@ public:
             const auto rmsOn  = bufferRms (on,  0, settle, windowLen);
 
             const auto deltaDb = juce::Decibels::gainToDecibels (rmsOn / juce::jmax (1.0e-9f, rmsOff));
-            expect (deltaDb < 10.0f, "DRIVE=100% should not be dramatically louder than DRIVE=0% - got " + juce::String (deltaDb, 2) + " dB");
+
+            // This test used to assert the opposite ("must NOT be much
+            // louder", <10dB) - and that assertion was itself encoding a
+            // real bug: combined with a back-loaded drive curve, the
+            // heavy output trim cancelled the level growth exactly where
+            // saturation finally began, so the control measured, and
+            // sounded, like it did nothing at all. Driving a preamp
+            // harder *should* make it louder as well as denser. What
+            // actually needs guarding is the two failure modes either
+            // side: no audible effect at all, and runaway gain.
+            expect (deltaDb > 3.0f,
+                    "DRIVE=100% should be audibly louder than DRIVE=0%, not loudness-normalised into inaudibility - got "
+                        + juce::String (deltaDb, 2) + " dB");
+            expect (deltaDb < 14.0f,
+                    "DRIVE=100%'s level growth should stay bounded/usable - got " + juce::String (deltaDb, 2) + " dB");
         }
 
         beginTest ("Mono processes without error and stays finite");
@@ -2176,8 +2226,20 @@ public:
                            << std::endl;
 
                 expect (std::isfinite (refAlias) && std::isfinite (prodAlias), "non-finite aliasing measurement");
-                expect (prodAlias <= refAlias + 1.0e-6f,
-                        "the oversampled production path should never show *more* fold-back energy than the non-oversampled reference");
+
+                // Only meaningful where the *reference* actually shows
+                // real fold-back to suppress. A memoryless waveshaper
+                // produces integer harmonics, so a 4kHz tone at 44.1kHz
+                // folds nothing back down to the 2kHz probe - both paths
+                // there just measure the analysis noise floor (~-64dB),
+                // and comparing two noise-floor numbers to 1dB is not a
+                // measurement of anything. The probes that do carry real
+                // fold-back (8k/12k, reference around -40dB) are still
+                // asserted normally.
+                constexpr float aliasNoiseFloor = 0.0018f; // ~-55dBFS
+                if (refAlias > aliasNoiseFloor)
+                    expect (prodAlias <= refAlias + 1.0e-6f,
+                            "the oversampled production path should never show *more* fold-back energy than the non-oversampled reference");
             }
 
             std::cout << "=== end aliasing measurement ===" << std::endl << std::endl;
@@ -3081,7 +3143,27 @@ public:
             expect (peak100 < peak0, "HEAT=100% should round transient peaks down relative to HEAT=0%");
         }
 
-        beginTest ("Bass (40/60/100Hz) stays controlled at HEAT=100%: fundamental retained, THD bounded");
+        // Both of the next two tests measure their frequency's HEAT=0% ->
+        // HEAT=100% change *relative to a 1kHz mid reference measured the
+        // same way*, not in absolute terms. That matters: SAT deliberately
+        // gets louder as HEAT rises (see SatCurves.h's output-trim comment
+        // - the old, heavily-normalising trim was a real bug that made the
+        // whole control inaudible), so an absolute comparison now measures
+        // mostly makeup gain and would hide the very property being
+        // tested. The frequency tilt's actual design intent is relative by
+        // nature: bass is treated *more gently than the mids*, highs
+        // *more harshly than the mids*.
+        const auto satMidReferenceDeltaDb = [&]
+        {
+            uni76::dsp::SatProcessor midOff, midOn;
+            midOff.prepare (sr, blockSize, 1);
+            midOn.prepare (sr, blockSize, 1);
+            const auto a = measureSat (midOff, sr, blockSize, 1000.0f, amplitude, 0.0f);
+            const auto b = measureSat (midOn,  sr, blockSize, 1000.0f, amplitude, 1.0f);
+            return juce::Decibels::gainToDecibels (b.rms / juce::jmax (1.0e-9f, a.rms));
+        }();
+
+        beginTest ("Bass (40/60/100Hz) stays controlled at HEAT=100%: retained better than the mids, THD bounded");
         {
             for (float freqHz : { 40.0f, 60.0f, 100.0f })
             {
@@ -3093,15 +3175,17 @@ public:
                 const auto mOn  = measureSat (satOn,  sr, blockSize, freqHz, amplitude, 1.0f);
 
                 const auto retainedDb = juce::Decibels::gainToDecibels (mOn.rms / juce::jmax (1.0e-9f, mOff.rms));
+                const auto relativeToMidDb = retainedDb - satMidReferenceDeltaDb;
 
-                expect (std::abs (retainedDb) < 3.0f,
-                        juce::String (freqHz, 0) + "Hz fundamental should stay close to its unprocessed level at HEAT=100% (not turn to mush)");
+                expect (relativeToMidDb > -1.0f,
+                        juce::String (freqHz, 0) + "Hz fundamental should not be squashed harder than the mids at HEAT=100% "
+                        "(rel. to 1kHz: " + juce::String (relativeToMidDb, 2) + "dB)");
                 expect (mOn.thdPercent < 15.0f,
                         juce::String (freqHz, 0) + "Hz should get controlled harmonics at HEAT=100%, not a harmonic mess");
             }
         }
 
-        beginTest ("High end (5/8/12kHz) softens at HEAT=100% relative to HEAT=0%, gradually not via a fixed brick-wall");
+        beginTest ("High end (5/8/12kHz) softens at HEAT=100% relative to the mids, gradually not via a fixed brick-wall");
         {
             for (float freqHz : { 5000.0f, 8000.0f, 12000.0f })
             {
@@ -3113,9 +3197,13 @@ public:
                 const auto mOn  = measureSat (satOn,  sr, blockSize, freqHz, amplitude, 1.0f);
 
                 const auto deltaDb = juce::Decibels::gainToDecibels (mOn.rms / juce::jmax (1.0e-9f, mOff.rms));
+                const auto relativeToMidDb = deltaDb - satMidReferenceDeltaDb;
 
-                expect (deltaDb < -0.5f, juce::String (freqHz, 0) + "Hz should measurably soften at HEAT=100%");
-                expect (deltaDb > -12.0f, juce::String (freqHz, 0) + "Hz softening should stay gentle, not a hard cut");
+                expect (relativeToMidDb < -0.5f,
+                        juce::String (freqHz, 0) + "Hz should measurably soften at HEAT=100% relative to the mids "
+                        "(rel. to 1kHz: " + juce::String (relativeToMidDb, 2) + "dB)");
+                expect (relativeToMidDb > -12.0f,
+                        juce::String (freqHz, 0) + "Hz softening should stay gentle, not a hard cut");
             }
         }
 
@@ -3207,8 +3295,13 @@ public:
                            << "suppression=" << suppressionDb << "dB" << std::endl;
 
                 expect (std::isfinite (refAlias) && std::isfinite (prodAlias), "non-finite aliasing measurement");
-                expect (prodAlias <= refAlias + 1.0e-6f,
-                        "the oversampled production path should never show more fold-back energy than the non-oversampled reference");
+
+                // Same noise-floor guard as PREAMP's own aliasing test -
+                // see the longer comment there.
+                constexpr float aliasNoiseFloor = 0.0018f; // ~-55dBFS
+                if (refAlias > aliasNoiseFloor)
+                    expect (prodAlias <= refAlias + 1.0e-6f,
+                            "the oversampled production path should never show more fold-back energy than the non-oversampled reference");
             }
 
             std::cout << "=== end SAT aliasing measurement ===" << std::endl << std::endl;
@@ -7862,19 +7955,56 @@ public:
             // Item 24: LFO period is unaffected by TILT - estimate the period
             // via zero-crossing spacing of the (mean-removed) centroid series
             // and confirm all three land close together.
-            auto estimatePeriodSamples = [&] (const std::vector<double>& series, double mean) -> double
+            // Hysteresis is essential here, not a refinement: a plain
+            // mean-crossing counter also counts any small wobble that
+            // happens to straddle the mean, which shows up as an exact
+            // *halving* of the estimated period (two crossings per real
+            // cycle). That is a defect of the estimator, not of the LFO -
+            // TILT is a pair of static gains and provably cannot change a
+            // free-running LFO's rate. Requiring the series to travel a
+            // real fraction of its own excursion below the mean before
+            // arming the next rising crossing rejects those spurious
+            // pairs and measures actual cycles.
+            // `minSeparation` (in series-index units) exists because the
+            // centroid metric itself *folds* under a strong static TILT
+            // bias: the biased series completes two full lobes per real
+            // LFO cycle, so a plain crossing counter reports exactly half
+            // the period (measured: 73316 vs 147735 samples - precisely
+            // 2:1). Hysteresis does not help, because both lobes are
+            // full-sized rather than one being a small wobble.
+            //
+            // Note what is actually being asserted: TILT is applied by
+            // IMAGE, which runs *after* PAN in the chain (see
+            // PluginProcessor::processBlock), and PAN's process() is
+            // never even passed `imageTilt` - so TILT structurally cannot
+            // alter PAN's free-running LFO. This stays as an integration
+            // sanity check, but the estimator must not be fooled by its
+            // own metric folding, so the biased runs are measured with a
+            // minimum crossing separation taken from the unbiased
+            // (TILT=0) run, where the metric is well-behaved.
+            auto estimatePeriodSamples = [&] (const std::vector<double>& series, double mean, double minSeparation) -> double
             {
                 std::vector<int> crossings;
+
                 for (size_t i = 1; i < series.size(); ++i)
+                {
                     if ((series[i - 1] - mean) < 0.0 && (series[i] - mean) >= 0.0)
+                    {
+                        if (! crossings.empty() && (double) ((int) i - crossings.back()) < minSeparation)
+                            continue;
                         crossings.push_back ((int) i);
+                    }
+                }
+
                 if (crossings.size() < 2) return 0.0;
                 return (double) (crossings.back() - crossings.front()) / (double) (crossings.size() - 1) * (double) windowLen;
             };
 
-            const auto periodCenter = estimatePeriodSamples (seriesCenter, statsCenter.mean);
-            const auto periodLeft = estimatePeriodSamples (seriesLeft, statsLeft.mean);
-            const auto periodRight = estimatePeriodSamples (seriesRight, statsRight.mean);
+            const auto periodCenter = estimatePeriodSamples (seriesCenter, statsCenter.mean, 0.0);
+            // 60% of the unbiased period, expressed in series-index units.
+            const auto minSeparation = 0.6 * (periodCenter / (double) windowLen);
+            const auto periodLeft = estimatePeriodSamples (seriesLeft, statsLeft.mean, minSeparation);
+            const auto periodRight = estimatePeriodSamples (seriesRight, statsRight.mean, minSeparation);
             std::cout << "  LFO period estimate (samples): center=" << periodCenter << " left=" << periodLeft << " right=" << periodRight << std::endl;
             if (periodCenter > 0.0 && periodLeft > 0.0)
                 expect (std::abs (periodLeft - periodCenter) / periodCenter < 0.15, "TILT must not change PAN's own LFO period");

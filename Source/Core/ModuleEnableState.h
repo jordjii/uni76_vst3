@@ -56,6 +56,18 @@ namespace uni76
         };
 
     private:
-        std::array<std::atomic<bool>, numModules> flags { { true, true, true, true, true, true, true } };
+        /** Order matches propertyNames above. Everything defaults to
+            enabled except EQ: since its redesign (see docs/DSP_EQ.md's
+            "Redesign" section) EQ is an always-on, steep band-pass
+            "telephone" filter whose *centre* position already removes
+            everything below ~461Hz, so leaving it on by default would
+            mean a freshly-inserted plugin instantly strips the bass off
+            whatever it's on. Every other module's own default value is
+            its identity/no-op position, so they can safely default to
+            enabled; EQ no longer has such a position, which is exactly
+            why it gets the opposite default. (The "Default" factory
+            preset - see Core/FactoryPresets.h - disables everything for
+            the same family of reasons.) */
+        std::array<std::atomic<bool>, numModules> flags { { true, false, true, true, true, true, true } };
     };
 }

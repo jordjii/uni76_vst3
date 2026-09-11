@@ -1249,6 +1249,86 @@ MSVC 19.51):
   - PAN's tempo-synced auto-panner redesign and IMAGE's bipolar
     mono<->stereo redesign remain not started.
 
+- **Drive-curve correction round ("no audible effect")** - direct
+  listening feedback on the round above was that PREAMP and SAT still
+  barely changed anything ("the volume hardly moves", "there's no effect
+  at all"). That feedback was right, and the asymmetry changes above
+  were never going to fix it: asymmetry reshapes harmonic *balance*, it
+  cannot create saturation that isn't occurring.
+  - **Root cause, computed rather than guessed**: both modules'
+    drive-shape exponents were **above 1** (`preampDriveShapeExponent`
+    1.3, `satDriveShapeExponent` 1.2), which *back-loads*
+    `g = gmin*(gmax/gmin)^(t^e)` - all the growth crammed into the top of
+    the knob. The actual tanh argument at -18dBFS across PREAMP's knob
+    was `0.025 / 0.06 / 0.215 / 0.96 / 5.0` at 0/25/50/75/100%, and
+    `tanh` is linear to within a fraction of a percent below ~0.2 - so
+    the **entire lower half of the knob was mathematically a no-op**.
+    Compounding it, the output trims (`-15dB` exponent 4 on PREAMP,
+    `-18dB` exponent 3 on SAT) bit hardest exactly where saturation
+    finally began, cancelling the level growth. Both modules' own docs
+    had these numbers on record and had read them as correct.
+  - **Fixed**: exponents 1.3/1.2 -> **0.6** (front-loading the curve),
+    trims -15/-18dB -> **-6/-8dB** with exponents 4.0/3.0 -> **2.0**.
+    Measured PREAMP THD at 1kHz/-18dBFS went from
+    `0.01/0.03/0.38/6.2/33.3%` to `0.01/0.52/4.85/18.8/33.3%` across
+    0/25/50/75/100% - 0% and 100% unchanged by construction, everything
+    between now moves. Full tables in docs/DSP_PREAMP.md and
+    docs/DSP_SAT.md's new "Drive-curve / output-trim correction"
+    sections.
+  - **A real DSP bug this exposed**: `SatProcessor` had a single
+    `DcBlocker` on its **input**, which is structurally incapable of
+    removing the DC its own asymmetric waveshaper creates downstream.
+    Invisible while the shaper barely ran; a real offset once it did.
+    PREAMP escapes this only incidentally (its post-shaper Low Cut
+    removes DC as a side effect). Fixed with an explicit
+    `outputDcBlockers` array after downsampling.
+  - **Four tests were asserting the bug, not the behaviour** - SAT's
+    low-end (`|retainedDb| < 3.0`) and high-end (`deltaDb < -0.5`) tests
+    and PREAMP's Low Cut test all measured *absolute* level and so
+    silently depended on the over-aggressive trim; each rewritten to
+    measure relative to a 1kHz mid reference through identical settings,
+    which is what those frequency-balance claims actually mean. PREAMP's
+    "output compensation keeps DRIVE=100% from being much louder" test
+    asserted `deltaDb < 10.0`, i.e. it passed *because* the module was
+    flat - inverted to `> 3.0 && < 14.0` (a drive control must get
+    louder, just not uncontrollably).
+  - **Two fragile measurement methodologies fixed** (test-only, no DSP
+    change): the aliasing tests compared a 4kHz->2kHz fold product at
+    `-64.78dB` vs `-63.63dB`, both on the noise floor, where a
+    memoryless waveshaper provably folds nothing into 2kHz - guarded
+    with `aliasNoiseFloor`. And the PAN+TILT LFO-period test reported
+    `right = 73316` against `center = 147735` - exactly half. TILT is
+    applied by IMAGE, which runs *after* PAN, and PAN's `process()` is
+    never even passed `imageTilt`, so it structurally cannot alter the
+    LFO; the *centroid metric itself* folds under a strong static bias,
+    completing two full lobes per real cycle. Hysteresis doesn't help
+    (both lobes are full-sized). Fixed by giving the biased runs a
+    minimum crossing separation derived from the unbiased TILT=0 run -
+    now measures `146632`, matching `left` and within 0.75% of `center`.
+  - **EQ no longer defaults to enabled** (`ModuleEnableState.h`) - since
+    its redesign EQ's *centre* position already removes everything below
+    ~461Hz, so a freshly-inserted instance was instantly stripping the
+    bass off whatever it was on. Every other module's default value is
+    its own identity position and can safely default on; EQ no longer
+    has such a position, which is exactly why it gets the opposite
+    default.
+  - **Editor no longer steals the DAW's keyboard** (`app.js`'s
+    `preventButtonFocusStealing`) - a real bug found in Ableton: after
+    clicking any button (a module power LED, PRESET, A/B) that button
+    kept DOM focus, and Space is the HTML default "activate the focused
+    button", so pressing Space for the transport silently toggled
+    whichever module had been clicked last. Preventing `mousedown`'s
+    default action stops the browser focusing a button on a *mouse*
+    click while leaving Tab-based keyboard navigation (where
+    Space-to-activate is correct) untouched. Complements the prior
+    round's `EDITOR_WANTS_KEYBOARD_FOCUS TRUE -> FALSE`, which stopped
+    the host routing keys to the editor but could not stop the editor's
+    own already-focused element consuming them.
+  - Debug and Release both clean (0 warnings); full suite green in both
+    configurations (exit 0, 0 failures).
+  - Still not started: PAN's tempo-synced auto-panner redesign, IMAGE's
+    bipolar mono<->stereo redesign, real cold/warm startup numbers.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

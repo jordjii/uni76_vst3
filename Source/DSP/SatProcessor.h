@@ -79,6 +79,17 @@ namespace uni76::dsp
         std::unique_ptr<juce::dsp::Oversampling<float>> oversampler;
 
         std::array<DcBlocker, maxChannels> dcBlockers;
+        /** A second DC blocker *after* the nonlinearity. The one above
+            only protects the waveshaper from DC arriving at the input;
+            it cannot remove the DC the asymmetric waveshaper itself
+            generates, which is a real offset that eats headroom and was
+            found by the HEAT=100% DC test once the drive curve was
+            front-loaded (see SatCurves.h). PREAMP doesn't need an
+            equivalent only because its own post-waveshaper Low Cut
+            (a 20-70Hz highpass) already removes DC as a side effect -
+            SAT has no highpass after its shaper, just the de-emphasis
+            shelves, so it needs this explicitly. */
+        std::array<DcBlocker, maxChannels> outputDcBlockers;
 
         std::array<Biquad, maxChannels> lowShelfPre, highShelfPre;
         std::array<Biquad, maxChannels> highShelfDe, lowShelfDe;

@@ -38,7 +38,22 @@ namespace uni76::dsp
     // saturated to ~1, giving a firm but soft ceiling at DRIVE=100.
     inline constexpr float preampDriveGainMin = 0.05f;
     inline constexpr float preampDriveGainMax = 10.0f;
-    inline constexpr float preampDriveShapeExponent = 1.3f;
+    // Exponent < 1 front-loads the curve. It used to be 1.3, which
+    // *back*-loaded it, and that was a real, measurable bug found by live
+    // testing ("turning the knob does nothing"): tanh() is linear to
+    // within a fraction of a percent for arguments below ~0.2, and the
+    // old curve only reached driveGain=0.43 at DRIVE=50%, i.e. an
+    // argument of 0.215 on a -6dBFS peak. Measured THD across the knob
+    // was 0.01 / 0.03 / 0.38 / 6.2 / 33.3 % at 0/25/50/75/100% - the
+    // entire lower half of the control was an audible no-op, and all the
+    // character was crammed into the last quarter. (docs/DSP_PREAMP.md's
+    // own "close to flat through DRIVE=50% (0, -0.2, 0.1 dB)" line had
+    // recorded exactly this and read it as correct behaviour.) At 0.6
+    // the same endpoints now measure 0.01 / 0.52 / 4.85 / 18.8 / 33.3 %
+    // - a continuous, musical progression where every part of the knob
+    // does something. Endpoints are unchanged, so DRIVE=0% is still the
+    // same near-identity and DRIVE=100% the same ceiling.
+    inline constexpr float preampDriveShapeExponent = 0.6f;
 
     inline float preampDriveGainLinear (float driveNormalised01) noexcept
     {
@@ -87,8 +102,20 @@ namespace uni76::dsp
     // roughly +/-2dB through DRIVE=75% and about +2dB at DRIVE=100%,
     // deliberately leaving a little natural growth rather than acting as
     // a hard loudness normaliser.
-    inline constexpr float preampOutputTrimMaxDb = -15.0f;
-    inline constexpr float preampOutputTrimExponent = 4.0f;
+    // Retuned alongside the drive curve above (same live-testing round).
+    // The old -15dB/exponent-4 pair was cancelling almost all of the
+    // level growth exactly where the saturation finally started, so the
+    // module both distorted late *and* got quieter for it - the two
+    // effects compounded into "nothing happens". A real preamp driven
+    // harder gets louder as well as denser; that is the effect, not a
+    // defect to normalise away. Now a much gentler curve that leaves the
+    // growth clearly audible: measured net gain (raw growth + this trim)
+    // is about +0.3/+3.4/+8.7/+11.4 dB at 25/50/75/100% on a -18dBFS
+    // sine, and +0.2/+2.2/+3.8/+2.0 dB on a -6dBFS one (louder input
+    // saturates sooner, so it grows less - correct, level-dependent
+    // behaviour, not something the trim should flatten).
+    inline constexpr float preampOutputTrimMaxDb = -6.0f;
+    inline constexpr float preampOutputTrimExponent = 2.0f;
 
     inline float preampOutputCompensationDb (float driveNormalised01) noexcept
     {

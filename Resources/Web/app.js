@@ -127,12 +127,34 @@ function initImageField() {
   });
 }
 
+// A real bug found by live testing in Ableton: after clicking any button
+// in the UI (a module's power LED, PRESET, A/B), that button keeps DOM
+// focus - and Space is the HTML default "activate the focused button".
+// So pressing Space for the DAW's transport instead silently toggled
+// whichever module had been clicked last. Preventing the default action
+// of `mousedown` stops the browser giving focus to a button on a *mouse*
+// click, without touching Tab-based keyboard navigation (which still
+// focuses buttons normally, and where Space-to-activate is correct and
+// expected). Delegated from the document in the capture phase so it also
+// covers the preset menu's own dynamically-created rows.
+function preventButtonFocusStealing() {
+  document.addEventListener(
+    "mousedown",
+    (event) => {
+      const target = event.target instanceof Element ? event.target.closest("button") : null;
+      if (target) event.preventDefault();
+    },
+    true
+  );
+}
+
 MODULES.forEach(initModule);
 initImageField();
 initMeters();
 initModulePower();
 initPresetMenu();
 initABToggle();
+preventButtonFocusStealing();
 
 // Startup profiling only - see docs/FULL_DSP_AUDIT.md's GUI-startup
 // measurements. Cheap (one native call, a handful of numbers) and left

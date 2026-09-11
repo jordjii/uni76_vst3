@@ -61,6 +61,7 @@ namespace uni76::dsp
         for (int ch = 0; ch < numChannels; ++ch)
         {
             dcBlockers[(size_t) ch].setCutoffHz (sampleRate, satDcBlockerHz);
+            outputDcBlockers[(size_t) ch].setCutoffHz (sampleRate, satDcBlockerHz);
             dryDelays[(size_t) ch].prepare (latencySamples);
             envelopeFollowers[(size_t) ch].setReleaseMs (oversampledRate, satEnvelopeReleaseMs);
         }
@@ -74,6 +75,7 @@ namespace uni76::dsp
         for (int ch = 0; ch < maxChannels; ++ch)
         {
             dcBlockers[(size_t) ch].reset();
+            outputDcBlockers[(size_t) ch].reset();
             lowShelfPre[(size_t) ch].reset();
             highShelfPre[(size_t) ch].reset();
             highShelfDe[(size_t) ch].reset();
@@ -207,6 +209,17 @@ namespace uni76::dsp
         // ---- downsample -----------------------------------------------
         if (oversampler != nullptr)
             oversampler->processSamplesDown (block);
+
+        // ---- remove the DC the asymmetric waveshaper itself generated --
+        // (see SatProcessor.h's outputDcBlockers comment - the input-side
+        // blocker above cannot do this). At base rate: DC is DC, there's
+        // nothing to gain from running it oversampled.
+        for (int ch = 0; ch < channels; ++ch)
+        {
+            auto* data = buffer.getWritePointer (ch);
+            for (int i = 0; i < numSamples; ++i)
+                data[i] = outputDcBlockers[(size_t) ch].processSample (data[i]);
+        }
 
         // ---- output compensation (drive-dependent trim) ----------------
         const auto factor = oversamplingStages > 0 ? (1 << oversamplingStages) : 1;

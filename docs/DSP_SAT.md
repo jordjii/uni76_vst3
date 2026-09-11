@@ -451,6 +451,59 @@ thresholds hold) but the harmonic table above was not independently
 re-measured against a fresh target for the new asymmetry value - a
 natural follow-up.
 
+## Drive-curve / output-trim correction ("no audible effect" round)
+
+SAT had the **same two constants mis-set as PREAMP**, for the same
+reason and with the same audible consequence - see
+`docs/DSP_PREAMP.md`'s "Drive-curve / output-trim correction" section
+for the full derivation, which applies here verbatim with SAT's own
+constant names.
+
+| Constant | Before | After |
+|---|---|---|
+| `satDriveShapeExponent` | `1.2` | `0.6` |
+| `satOutputTrimMaxDb` | `-18.0` dB | `-8.0` dB |
+| `satOutputTrimExponent` | `3.0` | `2.0` |
+
+SAT's trim was even more aggressive than PREAMP's (-18dB vs -15dB),
+which is why the module read as the more inert of the two despite
+carrying more machinery.
+
+### A real DSP bug this exposed: DC offset at HEAT=100%
+
+Front-loading the drive curve made the HEAT=100% DC test fail - and the
+failure was genuine, not a threshold artifact. `SatProcessor` had
+**one** `DcBlocker`, placed on the **input**, before the nonlinearity.
+An input-side blocker protects the waveshaper from DC arriving with the
+signal; it is structurally incapable of removing DC that the
+**asymmetric waveshaper itself creates** downstream of it. With the old
+back-loaded curve the shaper barely ran, so the offset stayed under the
+test's threshold and the bug was invisible.
+
+PREAMP does not have this bug, but not by design - it escapes it
+incidentally, because its own post-waveshaper Low Cut (a 20-70Hz
+highpass) removes the offset as a side effect. SAT has no highpass after
+its shaper, only the de-emphasis shelves, so it needs the blocker
+explicitly.
+
+**Fix**: a second `std::array<DcBlocker, maxChannels> outputDcBlockers`
+applied after downsampling (`SatProcessor.cpp`) - at base rate, since DC
+is DC and running it oversampled buys nothing.
+
+### Test methodology corrections made in the same round
+
+Two SAT tests were asserting absolute output level and therefore
+silently depended on the over-aggressive trim:
+
+- *Low-end behaviour* asserted `|retainedDb| < 3.0`;
+- *High-end behaviour* asserted `deltaDb < -0.5`.
+
+Both were rewritten to measure **relative to a 1kHz mid-band reference
+taken through the identical settings**, which is what "bass is retained"
+and "highs soften" actually mean - a frequency-balance claim, not a
+level claim. The aliasing test received the same `aliasNoiseFloor`
+guard described in PREAMP's section.
+
 ## Known compromises
 
 - The frequency tilt's shelf frequencies/gains are fixed constants tuned
