@@ -453,11 +453,11 @@ natural follow-up.
 
 ## Drive-curve / output-trim correction ("no audible effect" round)
 
-SAT had the **same two constants mis-set as PREAMP**, for the same
+SAT had the **same three constants mis-set as PREAMP**, for the same
 reason and with the same audible consequence - see
-`docs/DSP_PREAMP.md`'s "Drive-curve / output-trim correction" section
-for the full derivation, which applies here verbatim with SAT's own
-constant names.
+`docs/DSP_PREAMP.md`'s "Drive-curve / output-trim correction" section,
+including its correction notice about an earlier, unmeasured version of
+these tables.
 
 | Constant | Before | After |
 |---|---|---|
@@ -468,6 +468,25 @@ constant names.
 SAT's trim was even more aggressive than PREAMP's (-18dB vs -15dB),
 which is why the module read as the more inert of the two despite
 carrying more machinery.
+
+**Measured, 1kHz @ -18dBFS** (`UNI76SatAnalysisTests`):
+
+| HEAT | 0% | 25% | 50% | 75% | 100% |
+|---|---|---|---|---|---|
+| THD before | 0.0025% | 1.55% | 3.17% | 4.64% | 6.67% |
+| THD after | 0.0025% | 1.55% | 3.07% | 4.33% | 6.66% |
+| peak before | 0.126 | 0.118 | 0.102 | 0.123 | **0.110** |
+| peak after | 0.126 | 0.120 | 0.178 | 0.283 | **0.312** |
+| peak level before | 0 dB | -0.60 | -1.88 | -0.23 | **-1.22** |
+| peak level after | 0 dB | -0.41 | +3.00 | +7.02 | **+7.85** |
+
+As with PREAMP, THD (a ratio to the fundamental) is essentially
+unchanged - the harmonics were always being made. The defect was
+level, and here it was worse than PREAMP's: **at HEAT=100% the
+saturator's output peak was 1.22dB lower than at HEAT=0%**. The module
+got quieter the harder it was driven, at every setting, which is the
+measured form of the reported "the volume barely changes / there's no
+effect".
 
 ### A real DSP bug this exposed: DC offset at HEAT=100%
 

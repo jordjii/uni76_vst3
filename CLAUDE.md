@@ -1255,26 +1255,33 @@ MSVC 19.51):
   at all"). That feedback was right, and the asymmetry changes above
   were never going to fix it: asymmetry reshapes harmonic *balance*, it
   cannot create saturation that isn't occurring.
-  - **Root cause, computed rather than guessed**: both modules'
-    drive-shape exponents were **above 1** (`preampDriveShapeExponent`
-    1.3, `satDriveShapeExponent` 1.2), which *back-loads*
-    `g = gmin*(gmax/gmin)^(t^e)` - all the growth crammed into the top of
-    the knob. The actual tanh argument at -18dBFS across PREAMP's knob
-    was `0.025 / 0.06 / 0.215 / 0.96 / 5.0` at 0/25/50/75/100%, and
-    `tanh` is linear to within a fraction of a percent below ~0.2 - so
-    the **entire lower half of the knob was mathematically a no-op**.
-    Compounding it, the output trims (`-15dB` exponent 4 on PREAMP,
-    `-18dB` exponent 3 on SAT) bit hardest exactly where saturation
-    finally began, cancelling the level growth. Both modules' own docs
-    had these numbers on record and had read them as correct.
-  - **Fixed**: exponents 1.3/1.2 -> **0.6** (front-loading the curve),
-    trims -15/-18dB -> **-6/-8dB** with exponents 4.0/3.0 -> **2.0**.
-    Measured PREAMP THD at 1kHz/-18dBFS went from
-    `0.01/0.03/0.38/6.2/33.3%` to `0.01/0.52/4.85/18.8/33.3%` across
-    0/25/50/75/100% - 0% and 100% unchanged by construction, everything
-    between now moves. Full tables in docs/DSP_PREAMP.md and
-    docs/DSP_SAT.md's new "Drive-curve / output-trim correction"
-    sections.
+  - **Fixed**: both modules' drive-shape exponents 1.3/1.2 -> **0.6**
+    (below 1 front-loads `g = gmin*(gmax/gmin)^(t^e)` instead of
+    back-loading it), and the output trims -15/-18dB -> **-6/-8dB** with
+    their exponents 4.0/3.0 -> **2.0**.
+  - **What the measurements actually show** (full tables in
+    docs/DSP_PREAMP.md and docs/DSP_SAT.md's new "Drive-curve /
+    output-trim correction" sections): **THD barely moved** - it is a
+    ratio to the fundamental, and the harmonic content per unit of
+    signal was already being generated across the whole knob
+    (PREAMP 1kHz/-18dBFS: `0.015/1.70/3.54/5.37/7.89%` before vs
+    `0.015/1.70/3.45/4.97/7.89%` after). The defect was **level**.
+    PREAMP's output relative to DRIVE=0% went from
+    `0/-0.48/-1.36/-0.24/+1.11dB` to `0/-0.15/+2.48/+7.45/+10.11dB` -
+    i.e. turning DRIVE up to 50% previously made the module 1.36dB
+    *quieter*. SAT was worse: its output peak at HEAT=100% measured
+    **1.22dB below** its own HEAT=0% peak (0.110 vs 0.126), now
+    +7.85dB (0.312). A drive control that gets quieter as it is turned
+    up is the measured form of "there's no effect".
+  - **Honesty note**: an earlier draft of this entry and of both DSP
+    docs reported a PREAMP THD table of `0.01/0.03/0.38/6.2/33.3%` ->
+    `0.01/0.52/4.85/18.8/33.3%` and claimed the knob's lower half was
+    "mathematically a no-op". Those figures were a hand calculation off
+    the curve presented as if measured; the real test-suite output
+    contradicts them (THD at DRIVE=25% was already 1.70% *before* the
+    change). Corrected here and in both docs. Three constants changed
+    per module in one step, so these runs establish the combined
+    before/after, not any single constant's contribution.
   - **A real DSP bug this exposed**: `SatProcessor` had a single
     `DcBlocker` on its **input**, which is structurally incapable of
     removing the DC its own asymmetric waveshaper creates downstream.

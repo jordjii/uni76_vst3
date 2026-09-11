@@ -512,25 +512,6 @@ having **essentially no audible effect** - "the volume barely changes",
 change above was not the reason it wasn't: asymmetry only reshapes
 harmonic *balance*, it cannot create saturation that isn't happening.
 
-**Root cause (computed, not guessed).** Two constants were fighting the
-module:
-
-1. `preampDriveShapeExponent` was `1.3` - an exponent **above** 1
-   back-loads the mapping `g = gmin*(gmax/gmin)^(t^e)`, pushing almost
-   all of the drive growth into the very top of the knob. Evaluating the
-   actual tanh argument at -18dBFS across the knob gave
-   `0.025 / 0.06 / 0.215 / 0.96 / 5.0` at DRIVE `0/25/50/75/100%`.
-   `tanh` is linear to within a fraction of a percent below ~0.2, so the
-   **entire lower half of the knob was mathematically a no-op** - not
-   "subtle", literally no nonlinearity at all.
-2. `preampOutputTrimMaxDb` was `-15.0` dB with
-   `preampOutputTrimExponent = 4.0`. The trim therefore bit hardest
-   exactly where saturation finally began, cancelling the level growth
-   that makes a drive control feel like it's doing something.
-
-Note that this module's own documentation had these numbers on record
-and had read them as correct behaviour. They were not.
-
 **Changes** (`PreampCurves.h`):
 
 | Constant | Before | After |
@@ -539,20 +520,45 @@ and had read them as correct behaviour. They were not.
 | `preampOutputTrimMaxDb` | `-15.0` dB | `-6.0` dB |
 | `preampOutputTrimExponent` | `4.0` | `2.0` |
 
-An exponent below 1 **front-loads** the curve, so the lower half of the
-knob reaches into the region where `tanh` is actually curved.
+The exponent governs `g = gmin*(gmax/gmin)^(t^e)`: above 1 it
+*back-loads* the mapping (growth crammed into the top of the knob),
+below 1 it *front-loads* it. The trim is the drive-dependent output
+attenuation applied after the waveshaper.
 
-**Measured THD at 1kHz / -18dBFS, DRIVE 0/25/50/75/100%:**
+**Measured, 1kHz @ -18dBFS** - `fund` is the measured fundamental level,
+`level` its change relative to DRIVE=0%:
 
-| | 0% | 25% | 50% | 75% | 100% |
+| DRIVE | 0% | 25% | 50% | 75% | 100% |
 |---|---|---|---|---|---|
-| Before | 0.01% | 0.03% | 0.38% | 6.2% | 33.3% |
-| After | 0.01% | 0.52% | 4.85% | 18.8% | 33.3% |
+| THD before | 0.015% | 1.70% | 3.54% | 5.37% | 7.89% |
+| THD after | 0.015% | 1.70% | 3.45% | 4.97% | 7.89% |
+| level before | 0 dB | -0.48 | **-1.36** | -0.24 | +1.11 |
+| level after | 0 dB | -0.15 | **+2.48** | +7.45 | +10.11 |
 
-DRIVE=0% is unchanged (the near-identity contract holds - the curve
-still evaluates to its identity value at t=0 regardless of exponent) and
-DRIVE=100% is unchanged (both curves reach the same ceiling). Everything
-between now moves.
+**Read this table carefully, because it does not say what the change was
+first written up as saying.** THD is a *ratio* to the fundamental, and it
+barely moved - the harmonic content per unit of signal was already being
+generated across the whole knob before this round. What was broken was
+the **level**: the output trim was cancelling the drive's own gain growth
+so completely that turning DRIVE from 0% to 50% made the module 1.36dB
+**quieter**. A drive control that gets quieter as you turn it up does not
+read as "subtle", it reads as broken - which is exactly the reported
+symptom.
+
+Three constants were changed per module in one step, so these two runs
+cannot attribute the result to any single one of them; what is
+established is the combined before/after.
+
+**Correction notice.** An earlier draft of this section reported a THD
+table of `0.01/0.03/0.38/6.2/33.3%` -> `0.01/0.52/4.85/18.8/33.3%` and
+claimed the lower half of the knob was "mathematically a no-op" because
+the tanh argument stayed under ~0.2. Those figures were a hand
+calculation from the curve, not a measurement, and they were written up
+as if measured. The measured data above contradicts them directly: THD
+at DRIVE=25% was already 1.70% before the change. The numbers in this
+section now come from the real test-suite output
+(`UNI76PreampHarmonicAnalysisTests`), and the mechanism is level, not
+absence of nonlinearity.
 
 **Test methodology corrections made in the same round.** Two PREAMP
 tests were found to be asserting the *bug* rather than the behaviour:
