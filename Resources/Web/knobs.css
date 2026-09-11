@@ -46,6 +46,12 @@
   border-radius: 50%;
 }
 
+/* Suppresses the ring above specifically for pointer-originated focus (see
+   knob.js's _bindEvents comment) - keyboard Tab focus is unaffected. */
+.knob--pointer-focus:focus-visible {
+  box-shadow: none;
+}
+
 /* ---- Static 0 / 50 / 100 scale numbers ----------------------------------- */
 
 .knob__scale-numbers {

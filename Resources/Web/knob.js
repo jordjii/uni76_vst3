@@ -136,6 +136,15 @@ export class ParameterKnob {
     this.element.addEventListener("dblclick", this._onDoubleClick);
     this.element.addEventListener("keydown", this._onKeyDown);
     this.element.addEventListener("keyup", this._onKeyUp);
+    // A real visual bug found via live testing: calling element.focus()
+    // from inside a preventDefault()-ed pointerdown handler (below) makes
+    // Chromium's own :focus-visible heuristic misfire and show the
+    // keyboard-style focus ring (knobs.css's .knob:focus-visible) on a
+    // plain mouse click/drag, not just real Tab navigation - reads as the
+    // knob being oddly "selected". knob--pointer-focus (set below, cleared
+    // on blur) suppresses the ring for exactly that pointer-originated
+    // focus while leaving genuine keyboard focus untouched.
+    this.element.addEventListener("blur", () => this.element.classList.remove("knob--pointer-focus"));
   }
 
   _onPointerDown(event) {
@@ -149,6 +158,7 @@ export class ParameterKnob {
     // propagation here is what makes the inner knob a genuinely independent
     // control rather than a decoration on top of the outer one.
     event.stopPropagation();
+    this.element.classList.add("knob--pointer-focus");
     this.element.focus();
     this.element.setPointerCapture(event.pointerId);
 

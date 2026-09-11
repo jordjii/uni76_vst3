@@ -5113,12 +5113,15 @@ public:
             std::cout << "\n=== PAN curve mapping (PanoramaCurves.h, direct) ===" << std::endl;
 
             struct Case { float t; float widthTarget; };
-            // Targets reduced from an earlier {1.2,1.45,1.675,1.9} during
-            // this round's correlation-balancing pass - see
-            // panWidthMaxHigh's comment in PanoramaCurves.h and
-            // docs/DSP_PAN.md's "Correlation" section.
+            // Targets raised again to match panWidthMaxHigh's 2.6 ceiling
+            // (was 1.6, itself down from an earlier 1.9/1.2/1.45/1.675) -
+            // direct listening feedback against a real reference
+            // (SoundToys PanMan) found 100% width read as "basically
+            // nothing"; see panWidthMaxHigh's comment in PanoramaCurves.h
+            // and docs/DSP_PAN.md's "Correlation" section for the
+            // deliberate trade-off this reopened.
             const Case widthCases[] {
-                { 0.0f, 1.0f }, { 0.25f, 1.1f }, { 0.5f, 1.3f }, { 0.75f, 1.5f }, { 1.0f, 1.6f },
+                { 0.0f, 1.0f }, { 0.25f, 1.25f }, { 0.5f, 1.8f }, { 0.75f, 2.35f }, { 1.0f, 2.6f },
             };
             for (const auto& c : widthCases)
             {
@@ -9336,10 +9339,21 @@ public:
 
                     // TILT should shift the trajectory's average bias in its
                     // own direction without needing to change PAN itself.
+                    // Threshold widened 0.05->0.15 (PAN intensity round -
+                    // panWidthMaxHigh/panMotionThetaRange raised for a much
+                    // more pronounced ear-to-ear swing, see
+                    // PanoramaCurves.h) - this window (~2.4 LFO cycles, not
+                    // a whole number) always left some residual mean bias
+                    // from the incomplete trailing cycle even before that
+                    // change; a bigger swing amplitude scales that same
+                    // windowing artefact up proportionally, not a change in
+                    // TILT's own (still clearly monotonic, still correctly
+                    // signed - see the measured table this test prints)
+                    // direction.
                     if (tilt > 0.5f)
-                        expect (seriesStats.mean > -0.05, "TILT>CENTER should not leave the mean biased hard left");
+                        expect (seriesStats.mean > -0.15, "TILT>CENTER should not leave the mean biased hard left");
                     if (tilt < 0.5f)
-                        expect (seriesStats.mean < 0.05, "TILT<CENTER should not leave the mean biased hard right");
+                        expect (seriesStats.mean < 0.15, "TILT<CENTER should not leave the mean biased hard right");
                 }
             }
         }
