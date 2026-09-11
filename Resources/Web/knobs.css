@@ -16,6 +16,7 @@
 */
 
 .knob-module {
+  position: relative; /* containing block for .knob-module__inner-readout below */
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -214,10 +215,27 @@
   z-index: 1;
 }
 
+/* Taken out of .knob-module's own flex flow (position: absolute, anchored
+   below its shrink-wrapped box) so PAN/VERB's extra RATE/DRIVE readout line
+   never adds height to .knob-module itself - a real bug found via live
+   testing: .module__knob-area centres its content vertically (margin-top/
+   margin-bottom: auto, see modules.css), so a *taller* box for these two
+   modules alone shifted their knob higher than the other 5, whose
+   .knob-module has no such extra row and so centres shorter. With the
+   readout out of flow, every module's .knob-module measures the same
+   height (knob + value + label), so all 7 knobs land on the identical
+   vertical line regardless of which modules also happen to show an extra
+   line underneath. */
 .knob-module__inner-readout {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: var(--space-xs);
   display: flex;
   align-items: baseline;
   gap: 0.4em;
+  white-space: nowrap;
 }
 
 .knob__value--inner {

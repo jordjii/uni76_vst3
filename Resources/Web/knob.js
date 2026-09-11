@@ -140,6 +140,15 @@ export class ParameterKnob {
 
   _onPointerDown(event) {
     event.preventDefault();
+    // Nested knobs (PAN's RATE, VERB's DRIVE - see knobs.css's .knob--inner)
+    // sit physically inside their outer knob's own DOM subtree, so a
+    // pointerdown on the inner knob bubbles up and would otherwise also
+    // reach the outer knob's own listener - which then re-captures the
+    // pointer for itself (setPointerCapture can be reassigned mid-gesture),
+    // silently hijacking the drag onto the wrong parameter. Stopping
+    // propagation here is what makes the inner knob a genuinely independent
+    // control rather than a decoration on top of the outer one.
+    event.stopPropagation();
     this.element.focus();
     this.element.setPointerCapture(event.pointerId);
 
@@ -186,6 +195,7 @@ export class ParameterKnob {
 
   _onWheel(event) {
     event.preventDefault();
+    event.stopPropagation(); // see _onPointerDown's comment - same nested-knob bubbling risk
 
     const direction = event.deltaY < 0 ? 1 : -1;
 
@@ -206,7 +216,8 @@ export class ParameterKnob {
     }, WHEEL_GESTURE_IDLE_MS);
   }
 
-  _onDoubleClick() {
+  _onDoubleClick(event) {
+    event.stopPropagation(); // see _onPointerDown's comment - same nested-knob bubbling risk
     this.state.sliderDragStarted();
     this.state.setNormalisedValue(this.defaultNormalised);
     this.state.sliderDragEnded();
@@ -229,6 +240,7 @@ export class ParameterKnob {
     }
 
     event.preventDefault();
+    event.stopPropagation(); // see _onPointerDown's comment - same nested-knob bubbling risk
 
     if (!this.keyGestureActive) {
       this.keyGestureActive = true;
