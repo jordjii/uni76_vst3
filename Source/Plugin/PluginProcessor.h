@@ -95,6 +95,20 @@ public:
     /** Persistent (state-saved) but non-automatable per-module on/off flags - see Core/ModuleEnableState.h. */
     uni76::ModuleEnableState& getModuleEnableState() noexcept { return moduleEnableState; }
 
+    /** Recomputes and reports the plugin's total latency from every
+        module's own getLatencySamples() plus the *current* module-enable
+        state - must be called (from the message thread, never
+        processBlock()) any time `moduleEnableState`'s pitch flag could
+        have changed: after prepareToPlay(), after setStateInformation(),
+        and after every moduleEnableState.setEnabled() call the UI/preset/
+        A-B code makes (see WebUIEditor.cpp's call sites). PITCH is the
+        one module whose reported contribution depends on its own enabled
+        flag - see docs/DSP_PITCH.md's "Zero-latency bypass" section for
+        why (every other latency-owning module's own latency is
+        architecturally always-on, so summing it unconditionally is still
+        correct for them). Public because WebUIEditor.cpp must call it. */
+    void updateReportedLatency() noexcept;
+
 private:
     juce::AudioProcessorValueTreeState apvts;
 

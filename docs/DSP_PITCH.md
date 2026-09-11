@@ -197,17 +197,70 @@ three show the rest of the UI (all 6 other modules, header, footer)
 pixel-identical to the fresh-instance baseline, confirming PITCH's
 discrete-knob work didn't disturb the shared design.
 
-## Fixed latency
+## Fixed latency (the engine's own figure) and the zero-latency bypass
 
 `getLatencySamples()` returns `stretch.inputLatency() +
 stretch.outputLatency()` (both channels share one configuration, so this
-is a single scalar), set once in `prepare()` - **it never depends on the
-semitone value or the enabled state**, verified by a dedicated test that
-sweeps `-12/-7/0/7/12` ST and enabled/disabled and asserts the reported
-value never moves. The disabled/bypass path is delayed by exactly this
-many samples (`IntegerDelayLine`, the same pattern PREAMP/SAT already
-use), so `enabled=false` is a bit-exact delayed passthrough, not a
-different-latency shortcut.
+is a single scalar), set once in `prepare()` - it never depends on the
+semitone value, verified by a dedicated test that sweeps `-12/-7/0/7/12`
+ST and enabled/disabled and asserts the reported value never moves. This
+is the STFT engine's own algorithmic latency **while it is actually
+running** - not necessarily the module's current real output delay (see
+below).
+
+### Zero-latency bypass (live-testing follow-up round)
+
+Through UNI 76's own early rounds, `enabled=false` was a bit-exact
+*delayed* passthrough (`IntegerDelayLine`, the same pattern PREAMP/SAT
+use) - `getLatencySamples()`'s value never moved regardless of enabled
+state, and `PluginProcessor::prepareToPlay()` summed it into the total
+unconditionally. This was a real, reported bug: PITCH's own latency is
+~140ms - two to three orders of magnitude larger than PREAMP/SAT's own
+always-on oversampling latency (a few samples, well under a millisecond)
+- and it was held open even while disabled, which is PITCH's resting
+state in **every factory preset**, "Default" included (see
+`Core/FactoryPresets.h`'s own documented rule that PITCH stays off
+everywhere). A user who never touched PITCH still felt a persistent,
+genuinely noticeable monitoring/live-MIDI delay through the plugin.
+
+`PitchProcessor::process()` now takes a fast early-return path once
+settled disabled: no delay line, no engine call, the buffer passes
+through completely untouched. `PluginProcessor::updateReportedLatency()`
+(called after `prepareToPlay()`, after `setStateInformation()`, and after
+every `ModuleEnableState::setEnabled()` call the UI/preset/A-B code makes
+- see `WebUIEditor.cpp`'s call sites) reports PITCH's contribution to the
+host's total latency as `0` while disabled and the full engine figure
+while enabled - genuinely zero added delay, not just a hidden one.
+
+The tradeoff, and why it's the right one: enabling PITCH mid-playback is
+no longer a click-free, delay-aligned crossfade - that mechanism requires
+the dry and wet paths to share one timeline, which a variable total
+latency makes structurally impossible. The short
+(`pitchBypassSmoothingSeconds`, 20ms) transition instead blends the STFT
+engine's output against the *live* (undelayed) input, and the engine
+itself needs its own ~140ms warm-up from a cold start (it was never fed
+input while disabled) before its output is representative - the same
+settle-in any time-based effect incurs when engaged from bypass; not
+something this plugin can hide, and not attempted. A persistent 140ms lag
+on every note for however long PITCH merely exists in the chain -
+regardless of whether it's ever actually used - was the worse tradeoff.
+
+Two dedicated tests cover this: `PitchProcessor` alone settles to a
+bit-exact, *zero-delay* passthrough (not `input[i - latency]` any more)
+once disabled; and the full `UNI76AudioProcessor`'s reported
+`getLatencySamples()` genuinely drops PITCH's contribution while disabled
+and picks it straight back up on re-enabling, confirming
+`updateReportedLatency()` reacts to a live toggle rather than only the
+value baked in at `prepareToPlay()` time. The compiled-in default enabled
+state (`ModuleEnableState.h`) was deliberately left unchanged (PITCH
+still defaults to enabled, same as every module except EQ) - a bare,
+no-preset instance still holds the full latency until a preset is
+selected or the module is explicitly turned off; only the *held-open-
+while-disabled* behaviour was the bug, not the default itself. Widening
+this fix to the compiled default is a natural, larger follow-up (it
+touches every test that currently relies on PITCH's default-enabled
+state to exercise its own pitch-shift behaviour without an explicit
+enable call) - not done this round.
 
 Measured (140ms/35ms configuration, `presetDefault`-free manual config).
 Re-verified with an exact three-way breakdown - PITCH alone, PREAMP+EQ+SAT

@@ -49,11 +49,32 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     // independent processing with their own real latency - the plugin's
     // total declared latency is their sum, since all seven run in series
     // in the signal chain and a host's plugin-delay-compensation needs
-    // the combined delay, not just one stage's.
+    // the combined delay, not just one stage's. See
+    // updateReportedLatency() for why PITCH's own contribution is
+    // conditional on its enabled flag while the others are not.
+    updateReportedLatency();
+}
+
+void UNI76AudioProcessor::updateReportedLatency() noexcept
+{
+    // PITCH is a deliberate, documented exception - see
+    // docs/DSP_PITCH.md's "Zero-latency bypass" section and
+    // PitchProcessor.h's class comment. Its own algorithmic latency
+    // (~140ms) is large enough that holding it open even while disabled -
+    // which is PITCH's resting state in every factory preset, including
+    // "Default" - was a real, reported bug: live MIDI/audio monitoring
+    // through the plugin felt laggy with PITCH never actually engaged.
+    // PREAMP/SAT's own always-on oversampling latency stays unconditional
+    // here because it is architecturally always-on (a few samples,
+    // independent of `enabled` by design - see their own
+    // getLatencySamples() doc comments) and genuinely inaudible as
+    // monitoring lag, unlike PITCH's.
+    const auto pitchEnabled = moduleEnableState.isEnabled (3); // index 3 = pitch, see ModuleEnableState::propertyNames
+
     setLatencySamples (preampProcessor.getLatencySamples()
                         + eqProcessor.getLatencySamples()
                         + satProcessor.getLatencySamples()
-                        + pitchProcessor.getLatencySamples()
+                        + (pitchEnabled ? pitchProcessor.getLatencySamples() : 0)
                         + panoramaProcessor.getLatencySamples()
                         + verbProcessor.getLatencySamples()
                         + imagerProcessor.getLatencySamples());
@@ -269,6 +290,12 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
                 (bool) newState.getProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true));
 
         apvts.replaceState (newState);
+
+        // A restored state may set pitchEnabled differently than whatever
+        // prepareToPlay() last computed the reported latency from (a host
+        // can call setStateInformation() before or after prepareToPlay -
+        // either order must end up correct) - see updateReportedLatency().
+        updateReportedLatency();
     }
 }
 

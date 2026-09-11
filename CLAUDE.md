@@ -128,14 +128,26 @@ IMAGE -> Output` - `PluginProcessor::processBlock()` calls
 `panoramaProcessor.process()`, then `verbProcessor.process()`, then
 `imagerProcessor.process()` (reading both `imager` and `imageTilt`), in
 that order. Total plugin latency is the **sum** of every stage's own
-latency (`preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples()
-+ satProcessor.getLatencySamples() + pitchProcessor.getLatencySamples()
+latency, recomputed by `PluginProcessor::updateReportedLatency()`
+(`preampProcessor.getLatencySamples() + eqProcessor.getLatencySamples()
++ satProcessor.getLatencySamples() + (pitchEnabled ? pitchProcessor.getLatencySamples() : 0)
 + panoramaProcessor.getLatencySamples() + verbProcessor.getLatencySamples()
-+ imagerProcessor.getLatencySamples()`, computed in `prepareToPlay`) -
-EQ, PAN, VERB and IMAGE all always contribute 0; PITCH always contributes
-a nonzero, sample-rate-proportional amount (unlike PREAMP/SAT, it does
-not drop to 0 at high sample rates - see docs/DSP_PITCH.md's "Fixed
-latency" section).
++ imagerProcessor.getLatencySamples()`, called from `prepareToPlay()`,
+`setStateInformation()`, and every `ModuleEnableState::setEnabled()` call
+site in `WebUIEditor.cpp`) - EQ, PAN, VERB and IMAGE all always contribute
+0; PREAMP/SAT's own oversampling latency is architecturally always-on
+(summed unconditionally, same as before) and drops to 0 only at very high
+sample rates. **PITCH is the one deliberate exception**: its own
+algorithmic latency is large enough (140ms, unlike PREAMP/SAT's
+sub-millisecond figure) that summing it unconditionally - even while
+disabled, PITCH's resting state in every factory preset - was a real,
+reported bug (persistent live-monitoring lag with PITCH never engaged).
+PITCH now contributes 0 while `pitchEnabled` is false (a true bypass, no
+delay line held open) and its full, still sample-rate-proportional,
+still-nonzero-at-192kHz figure while enabled - see docs/DSP_PITCH.md's
+"Fixed latency (the engine's own figure) and the zero-latency bypass"
+section for the full reasoning, including why this doesn't extend to
+PITCH's *compiled-in default* enabled state this round.
 
 `Source/DSP/PreampProcessor.*` implements the `01 PREAMP / TRANSFORMER`
 module's full signal chain - see

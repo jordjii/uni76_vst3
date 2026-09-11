@@ -57,8 +57,9 @@ namespace uni76::dsp
 
         // Both channels share the same configuration, so their latency is
         // identical - a single scalar is correct here, and stays fixed
-        // regardless of the semitone value or enabled state (see
-        // getLatencySamples()'s doc comment).
+        // regardless of the semitone value. This is the engine's own
+        // latency *while running*, not the module's current real output
+        // delay (see getLatencySamples()'s doc comment).
         latencySamples = engine->stretchers[0].inputLatency() + engine->stretchers[0].outputLatency();
 
         dryScratch.setSize (numChannels, maximumBlockSize, false, false, true);
@@ -68,9 +69,6 @@ namespace uni76::dsp
         bypassSmoother.reset (sampleRate, pitchBypassSmoothingSeconds);
         bypassSmoother.setCurrentAndTargetValue (1.0f);
 
-        for (int ch = 0; ch < maxChannels; ++ch)
-            dryDelays[(size_t) ch].prepare (latencySamples);
-
         reset();
     }
 
@@ -78,9 +76,6 @@ namespace uni76::dsp
     {
         for (auto& stretcher : engine->stretchers)
             stretcher.reset();
-
-        for (auto& delay : dryDelays)
-            delay.reset();
     }
 
     void PitchProcessor::process (juce::AudioBuffer<float>& buffer, int semitones, bool enabled) noexcept
@@ -100,17 +95,28 @@ namespace uni76::dsp
                     data[i] = 0.0f;
         }
 
-        // ---- latency-aligned dry copy for the enable/disable crossfade -
+        // ---- true bypass fast path -------------------------------------
+        // Settled disabled (target already reached, and staying disabled
+        // this block too) - skip the engine entirely: no delay, no CPU
+        // cost, genuinely zero added latency. This is the common resting
+        // state (every factory preset leaves PITCH disabled) and the
+        // whole point of this design - see the class comment's
+        // "Enable/disable behaviour" section.
+        const auto targetMix = enabled ? 1.0f : 0.0f;
+        const auto settled = std::abs (bypassSmoother.getCurrentValue() - targetMix) < 1.0e-4f;
+
+        if (! enabled && settled)
+            return;
+
+        bypassSmoother.setTargetValue (targetMix);
+
+        // ---- live (undelayed) dry copy for the enable/disable blend ----
+        // Not a delay-aligned crossfade any more - see the class comment
+        // for why that is no longer possible once the disabled path has
+        // zero latency of its own. Captured before the engine call below,
+        // same ordering the previous delay-line version used.
         for (int ch = 0; ch < channels; ++ch)
-        {
-            auto* dry = dryScratch.getWritePointer (ch);
-            const auto* in = buffer.getReadPointer (ch);
-
-            for (int i = 0; i < numSamples; ++i)
-                dry[i] = dryDelays[(size_t) ch].processSample (in[i]);
-        }
-
-        bypassSmoother.setTargetValue (enabled ? 1.0f : 0.0f);
+            dryScratch.copyFrom (ch, 0, buffer, ch, 0, numSamples);
 
         const auto clampedSemitones = (float) juce::jlimit (-12, 12, semitones);
 

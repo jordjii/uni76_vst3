@@ -3867,26 +3867,72 @@ public:
                 }
         }
 
-        beginTest ("Bypass (enabled=false) converges to an exact latency-aligned dry passthrough");
+        beginTest ("Bypass (enabled=false) settles to a true, zero-latency passthrough (no held delay)");
         {
+            // A real, reported bug fixed here: PITCH used to hold its full
+            // ~140ms algorithmic delay even while disabled (a latency-
+            // aligned dry passthrough), which meant live MIDI/audio
+            // monitoring through the plugin felt laggy with PITCH never
+            // actually engaged - every factory preset leaves PITCH
+            // disabled, so this hit every preset. Settled disabled output
+            // must now equal input[i] exactly - not input[i - latency] -
+            // see PitchProcessor.h's "Enable/disable behaviour" section.
             constexpr double sr = 44100.0;
             constexpr int blockSize = 256;
 
             uni76::dsp::PitchProcessor pitch;
             pitch.prepare (sr, blockSize, 1);
-            const auto latency = pitch.getLatencySamples();
 
-            const auto totalSamples = latency + (int) sr; // 1s past full settle
+            constexpr int totalSamples = (int) sr; // 1s - comfortably past the short bypass ramp
             auto input = generateSine (1, totalSamples, sr, 220.0f, 0.4f);
             auto output = runPitchProcessor (pitch, input, blockSize, 3, false);
 
-            // Settled dry output at sample i should equal input[i - latency]
-            // exactly (IntegerDelayLine is a pure copy, no processing).
+            // pitchBypassSmoothingSeconds is 20ms (~882 samples at
+            // 44.1kHz) - settle comfortably past that before comparing.
+            constexpr int settleSamples = 4000;
             double maxAbsDiff = 0.0;
-            for (int i = latency + 1000; i < totalSamples; ++i)
-                maxAbsDiff = juce::jmax (maxAbsDiff, (double) std::abs (output.getSample (0, i) - input.getSample (0, i - latency)));
+            for (int i = settleSamples; i < totalSamples; ++i)
+                maxAbsDiff = juce::jmax (maxAbsDiff, (double) std::abs (output.getSample (0, i) - input.getSample (0, i)));
 
-            expect (maxAbsDiff < 1.0e-5, "disabled PITCH should be a bit-exact (delayed) passthrough, maxAbsDiff=" + juce::String (maxAbsDiff));
+            expect (maxAbsDiff < 1.0e-5, "settled disabled PITCH should be a bit-exact, zero-delay passthrough, maxAbsDiff=" + juce::String (maxAbsDiff));
+        }
+
+        beginTest ("Disabled PITCH reports and delivers genuinely zero added latency through the full processor");
+        {
+            // The other half of the fix: PluginProcessor's *reported*
+            // total latency must actually drop when pitchEnabled is
+            // false, not just PitchProcessor's own output timing - see
+            // PluginProcessor::updateReportedLatency().
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (44100.0, 256);
+            processor.getModuleEnableState().setEnabled (1, false); // EQ off too, so it isn't the only nonzero source
+            processor.getModuleEnableState().setEnabled (3, false); // pitch off - the point of this test
+            processor.updateReportedLatency();
+
+            uni76::dsp::PreampProcessor referencePreamp;
+            referencePreamp.prepare (44100.0, 256, 2);
+            uni76::dsp::SatProcessor referenceSat;
+            referenceSat.prepare (44100.0, 256, 2);
+
+            // Total should now be PREAMP+SAT's own (small, always-on)
+            // oversampling latency only - PITCH's ~140ms is gone entirely,
+            // not just hidden.
+            expectEquals (processor.getLatencySamples(),
+                           referencePreamp.getLatencySamples() + referenceSat.getLatencySamples());
+
+            // Re-enabling PITCH must bring its full latency straight back -
+            // confirms updateReportedLatency() reacts to a live toggle,
+            // not just the value baked in at prepareToPlay().
+            uni76::dsp::PitchProcessor referencePitch;
+            referencePitch.prepare (44100.0, 256, 2);
+
+            processor.getModuleEnableState().setEnabled (3, true);
+            processor.updateReportedLatency();
+
+            expectEquals (processor.getLatencySamples(),
+                           referencePreamp.getLatencySamples() + referenceSat.getLatencySamples()
+                               + referencePitch.getLatencySamples());
         }
 
         beginTest ("0 ST is maximally transparent across 40Hz/60Hz/100Hz/440Hz/1kHz/10kHz");
@@ -8719,12 +8765,12 @@ public:
             // which module(s) actually produce the deviation by enabling
             // PREAMP -> SAT -> PITCH -> PAN -> VERB -> IMAGE/TILT one at a
             // time (EQ stays disabled throughout - no flat macro value
-            // exists for it). Latency is constant regardless of which
-            // modules are enabled (PluginProcessor::prepareToPlay sums
-            // every module's own getLatencySamples() unconditionally, not
-            // gated by ModuleEnableState - confirmed by direct source
-            // reading), so one `getLatencySamples()` value is valid for
-            // every stage below.
+            // exists for it). Latency is now stage-dependent (PITCH
+            // reports/delivers 0 added latency while disabled - see
+            // PluginProcessor::updateReportedLatency()), so - unlike the
+            // "one getLatencySamples() value for every stage" this test
+            // once relied on - `latency` is recaptured fresh after every
+            // stage's flags are set, inside the loop below.
             struct Signal { const char* label; juce::AudioBuffer<float> buffer; };
             const auto totalSamples = 88200; // 2s - comfortably past latency+settle with real signal left over
             std::vector<Signal> signals;
@@ -8758,12 +8804,20 @@ public:
                 setNormalised (apvts, uni76::ParamID::imageTilt, 0.5f);
                 processor.getModuleEnableState().setEnabled (1, false); // EQ always off
 
-                const auto latency = processor.getLatencySamples();
-                const auto usableLen = totalSamples - latency - settleSamples - 512;
+                // Worst-case (PITCH engaged) latency, used only to size
+                // the analysis window conservatively - the *actual*
+                // per-stage latency used for dry/wet alignment below is
+                // now stage-dependent (see this test's own updated
+                // header comment) and always <= this value, so sizing
+                // against the worst case never reads out of bounds.
+                processor.getModuleEnableState().setEnabled (3, true);
+                processor.updateReportedLatency();
+                const auto worstCaseLatency = processor.getLatencySamples();
+                const auto usableLen = totalSamples - worstCaseLatency - settleSamples - 512;
                 expect (usableLen > 1000, "test buffer too short relative to latency for signal " + juce::String (signal.label));
                 if (usableLen <= 1000) continue;
 
-                std::cout << "--- " << signal.label << " (latency=" << latency << " samples) ---" << std::endl;
+                std::cout << "--- " << signal.label << " (worst-case latency=" << worstCaseLatency << " samples) ---" << std::endl;
 
                 for (auto& stage : stages)
                 {
@@ -8773,6 +8827,9 @@ public:
                     processor.getModuleEnableState().setEnabled (4, stage.pan);
                     processor.getModuleEnableState().setEnabled (5, stage.verb);
                     processor.getModuleEnableState().setEnabled (6, stage.imager);
+                    processor.updateReportedLatency();
+
+                    const auto latency = processor.getLatencySamples();
 
                     auto output = runFullChain (processor, signal.buffer, 256);
                     expect (bufferIsFinite (output), juce::String (signal.label) + " " + stage.label + ": non-finite output");

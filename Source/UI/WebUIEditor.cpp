@@ -72,7 +72,15 @@ namespace
                 [&processor] (const juce::Array<juce::var>& args, Completion complete)
                 {
                     if (args.size() >= 2)
+                    {
                         processor.getModuleEnableState().setEnabled ((int) args[0], (bool) args[1]);
+                        // Only PITCH's own flag actually changes the
+                        // reported total (see
+                        // PluginProcessor::updateReportedLatency()), but
+                        // this call is cheap and a single toggle path is
+                        // less fragile than special-casing index 3 here.
+                        processor.updateReportedLatency();
+                    }
 
                     complete (juce::var());
                 })
@@ -133,6 +141,7 @@ namespace
                             // blanket "all on" any more).
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
                                 processor.getModuleEnableState().setEnabled (i, preset.modulesEnabled[(size_t) i]);
+                            processor.updateReportedLatency();
 
                             editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::factory,
                                                      juce::String (preset.name));
@@ -205,6 +214,7 @@ namespace
 
                             for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
                                 processor.getModuleEnableState().setEnabled (i, data->moduleEnabled[(size_t) i]);
+                            processor.updateReportedLatency();
 
                             editor.setActivePreset (UNI76AudioProcessorEditor::PresetKind::user, name);
                             ok = true;
@@ -337,6 +347,7 @@ void UNI76AudioProcessorEditor::applySnapshot (const ABSnapshot& snapshot)
 
     for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
         processor.getModuleEnableState().setEnabled (i, snapshot.moduleEnabled[(size_t) i]);
+    processor.updateReportedLatency();
 }
 
 bool UNI76AudioProcessorEditor::snapshotsEqual (const ABSnapshot& a, const ABSnapshot& b) const
