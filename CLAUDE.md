@@ -1336,6 +1336,45 @@ MSVC 19.51):
   - Still not started: PAN's tempo-synced auto-panner redesign, IMAGE's
     bipolar mono<->stereo redesign, real cold/warm startup numbers.
 
+- **Preset browsing arrows + full preset rebalance**:
+  - **Prev/next preset arrows** either side of the PRESET dropdown button
+    (`index.html`, `header.css`'s `.header__btn--preset-nav`,
+    `header_controls.js`'s `stepPreset()`) - step through one flat list
+    (every factory preset in `FactoryPresets.h`'s own table order, then
+    every user preset in `uni76GetUserPresetNames()`'s own order),
+    wrapping at either end, rebuilt fresh on every click so a preset
+    saved/deleted elsewhere is always reflected. No new native function -
+    reuses the same `uni76GetFactoryPresetNames`/`uni76LoadFactoryPreset`/
+    `uni76GetUserPresetNames`/`uni76LoadUserPreset` calls the dropdown
+    itself already made.
+  - **Factory preset rebalance** (`FactoryPresets.h`) - direct feedback
+    that too many of the 32 presets read as doing almost nothing. PREAMP/
+    SAT only needed a moderate lift (already made audible by the same
+    round's drive-curve fix). PAN/VERB/IMAGE were the real offenders -
+    none of their curves were touched this session, and each has a
+    "quiet" region by design (PAN's width mapping is near-1.0x under
+    ~25%, VERB's send is a light dusting under ~20%, IMAGE's shelf
+    asymptotes barely move under ~15%) - several presets sat inside that
+    dead zone on exactly the axis their own name promised. Every "wide"/
+    "motion"/"backing" preset now reaches PAN's WIDE(50%) region or
+    beyond; every "plate"/"deep" preset reaches a send strong enough to
+    read unmistakably as a plate; every other preset's PAN/VERB/IMAGE
+    floor moved out of the sub-20% range. "Telephone Plate"'s `eq` also
+    moved 55%->35% (toward DARK, not AIR) since the redesigned EQ's DARK
+    direction is what actually narrows the passband into a genuinely
+    boxier "telephone" character - PHONE/50% is the midpoint, not an
+    extreme. Still no preset at 100% on any control, still PITCH=0/
+    TILT=0 in every preset. Full reasoning and every changed number is
+    in `FactoryPresets.h`'s own new header comment.
+  - No test hardcodes preset numeric values (they read the array
+    dynamically), so no test changes were needed; full suite re-ran green
+    (0 failures) in Release.
+  - Debug/Release both clean (0 warnings); RC1 installer
+    (`Packaging/Windows/Output/UNI76-Windows-x64-RC1-Setup.exe`) rebuilt
+    against this round's binary via Inno Setup 6 (installed under this
+    machine's user profile, not Program Files - `ISCC.exe` found via the
+    registry uninstall key, not a fixed path assumption).
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

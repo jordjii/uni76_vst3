@@ -108,6 +108,17 @@
   white-space: nowrap;
 }
 
+/* Prev/next preset arrows - flank the PRESET dropdown button, same
+   cream-outline language, compact square footprint so they read as a
+   pair of steppers rather than a third independent button. Walk a flat
+   list (every factory preset in table order, then every user preset -
+   see header_controls.js's stepPreset()), wrapping at either end. */
+.header__btn--preset-nav {
+  padding: 0.55em 0.7em;
+  font-size: calc(var(--fs-header-btn) * 0.85);
+  line-height: 1;
+}
+
 /* A/B compare - two compact letters, not a dropdown (see CLAUDE.md's UX
    polish-pass rationale). A calm, desaturated green (the same token the
    meters' own "safe level" zone uses - not a neon accent) marks the

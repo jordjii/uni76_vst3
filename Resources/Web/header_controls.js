@@ -31,6 +31,9 @@ export function initPresetMenu() {
   let open = false;
   let factoryPresetsCache = null; // [{name, category}] - static for the session, safe to cache
   let currentPresetName = null;   // updated by the meterLevels-piggybacked status, see below
+  let currentPresetKind = "none"; // "factory" | "user" | "none" - tracked alongside the name so
+                                   // stepPreset() below can tell two same-named factory/user
+                                   // presets apart and knows where it is in the flat list
 
   function closeMenu() {
     if (!open) return;
@@ -93,6 +96,7 @@ export function initPresetMenu() {
           if (ok) {
             label.textContent = name;
             currentPresetName = name;
+            currentPresetKind = "user";
             afterAction();
           }
         });
@@ -134,6 +138,7 @@ export function initPresetMenu() {
             loadFactoryPreset(index);
             label.textContent = name;
             currentPresetName = name;
+            currentPresetKind = "factory";
             afterAction();
           });
         });
@@ -153,6 +158,7 @@ export function initPresetMenu() {
             if (ok) {
               if (currentPresetName === name) {
                 currentPresetName = null;
+                currentPresetKind = "none";
                 label.textContent = "CUSTOM";
               }
               closeMenu();
@@ -165,6 +171,7 @@ export function initPresetMenu() {
             if (ok) {
               label.textContent = name;
               currentPresetName = name;
+              currentPresetKind = "user";
             }
           });
           afterAction();
@@ -217,14 +224,76 @@ export function initPresetMenu() {
     if (!payload || payload.presetKind === "none" || !payload.presetName) {
       if (currentPresetName !== null) {
         currentPresetName = null;
+        currentPresetKind = "none";
         label.textContent = "CUSTOM";
       }
       return;
     }
 
     currentPresetName = payload.presetName;
+    currentPresetKind = payload.presetKind;
     label.textContent = payload.presetDirty ? `${payload.presetName} *` : payload.presetName;
   });
+
+  // ---- Prev/next arrows (item: preset browsing without opening the
+  // dropdown) - walk one flat list built fresh each step from the same
+  // two native calls the dropdown itself uses: every factory preset in
+  // FactoryPresets.h's own table order, then every user preset in
+  // uni76GetUserPresetNames()'s own order. Rebuilt on every step (not
+  // cached) so a preset saved/deleted in another editor instance, or a
+  // moment ago in this one, is always reflected - the list is small and
+  // this is a deliberate user click, not a hot path.
+  const prevButton = document.querySelector('[data-header-control="preset-prev"]');
+  const nextButton = document.querySelector('[data-header-control="preset-next"]');
+
+  function buildFlatList() {
+    const factoryReady = factoryPresetsCache ? Promise.resolve(factoryPresetsCache) : getFactoryNames();
+    return Promise.all([factoryReady, getUserNames()]).then(([factoryEntries, userNames]) => {
+      factoryPresetsCache = Array.isArray(factoryEntries) ? factoryEntries : [];
+      const list = factoryPresetsCache.map((entry, index) => ({ kind: "factory", name: entry.name, index }));
+      (Array.isArray(userNames) ? userNames : []).forEach((name) => list.push({ kind: "user", name }));
+      return list;
+    });
+  }
+
+  function applyFlatItem(item) {
+    if (item.kind === "factory") {
+      loadFactoryPreset(item.index);
+      label.textContent = item.name;
+      currentPresetName = item.name;
+      currentPresetKind = "factory";
+      refreshModuleEnabledUI();
+    } else {
+      loadUserPreset(item.name).then((ok) => {
+        if (ok) {
+          label.textContent = item.name;
+          currentPresetName = item.name;
+          currentPresetKind = "user";
+        }
+        refreshModuleEnabledUI();
+      });
+    }
+  }
+
+  function stepPreset(direction) {
+    closeMenu();
+    buildFlatList().then((list) => {
+      if (list.length === 0) return;
+
+      let index = list.findIndex((item) => item.kind === currentPresetKind && item.name === currentPresetName);
+      // Not currently on a known preset (CUSTOM, or a preset that no
+      // longer exists) - Next starts at the first entry, Prev at the
+      // last, rather than requiring two clicks to "catch up".
+      if (index === -1)
+        index = direction > 0 ? -1 : 0;
+
+      const next = (index + direction + list.length) % list.length;
+      applyFlatItem(list[next]);
+    });
+  }
+
+  if (prevButton) prevButton.addEventListener("click", () => stepPreset(-1));
+  if (nextButton) nextButton.addEventListener("click", () => stepPreset(1));
 }
 
 export function initABToggle() {

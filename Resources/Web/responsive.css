@@ -25,6 +25,14 @@
     max-width: 4.5rem;
   }
 
+  /* The prev/next arrows added alongside PRESET need their own shrink at
+     this width - same reasoning as the label cap above, just applied to
+     their padding instead of a max-width (they hold a single glyph, not
+     text). */
+  .header__btn--preset-nav {
+    padding-inline: 0.4em;
+  }
+
   .module__tag {
     display: none;
   }
