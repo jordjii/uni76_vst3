@@ -53,7 +53,19 @@ namespace uni76::dsp
     // (H2) content from a per-half-bounded tanh(). Scaled by drive so H2
     // is negligible near DRIVE=0 and a clear part of the character by
     // DRIVE=100, without ever dominating the (dominant) odd-order content.
-    inline constexpr float preampAsymmetryMax = 0.20f;
+    //
+    // Raised from 0.20 to 0.32 (live-testing follow-up, a deliberate
+    // exception to this module's "frozen, don't change without a
+    // discovered objective regression" status - see CLAUDE.md and
+    // docs/DSP_PREAMP.md's "Tube-character follow-up" section) - real
+    // single-ended-triode tube preamps typically show a more pronounced
+    // even-harmonic (H2) dominance than the original, more conservative
+    // figure gave; still well inside the safety margin the original
+    // calibration pass proved (that pass found >400% THD/"fuzz" only
+    // from a fundamentally different *additive* asymmetry model, not
+    // from this per-half-bounded tanh() approach at any asymmetry up to
+    // 1.0 - see the comment in PreampProcessor.cpp).
+    inline constexpr float preampAsymmetryMax = 0.32f;
 
     inline float preampAsymmetryAmount (float driveNormalised01) noexcept
     {
@@ -82,6 +94,31 @@ namespace uni76::dsp
     {
         const auto t = clamp01 (driveNormalised01);
         return preampOutputTrimMaxDb * std::pow (t, preampOutputTrimExponent);
+    }
+
+    // ---- "Sag" - subtle program-dependent gain reduction (tube power-
+    // supply sag) ---------------------------------------------------------
+    //
+    // New (live-testing follow-up, same deliberate frozen-module
+    // exception as the asymmetry change above) - a real tube preamp's
+    // plate voltage measurably sags under sustained/loud transient
+    // content, which acts as a soft, musical, program-dependent gain
+    // reduction distinct from - and much gentler/slower than - SAT's own
+    // dedicated "glue" compression (SatCurves.h's satCompressionStrength,
+    // 90ms release). Deliberately background-level here: max strength is
+    // roughly 1/6 of SAT's own ceiling, and the release is over 2x
+    // slower (a "breathing" quality, not a pumping compressor). Applied
+    // ahead of the waveshaper (see PreampProcessor.cpp) via the exact
+    // same bounded `1/(1+strength*envelope)` form SAT already uses (see
+    // SatCurves.h) - proven safe/bounded for any non-negative envelope.
+    // Scaled by drive so it's inert at DRIVE=0% (matching the module's
+    // "structurally near-identity at 0" contract).
+    inline constexpr float preampSagStrengthMax = 0.35f;
+    inline constexpr float preampSagReleaseMs = 220.0f;
+
+    inline float preampSagStrength (float driveNormalised01) noexcept
+    {
+        return preampSagStrengthMax * clamp01 (driveNormalised01);
     }
 
     // ---- Transformer coloration (pre-nonlinearity) -----------------------

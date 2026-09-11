@@ -444,6 +444,66 @@ These numbers come directly from running the actual shipped
 `preampOutputTrimExponent`) were tuned against this measurement and the
 level x DRIVE matrix above, not the other way around.
 
+## Tube-character follow-up (live-testing round - a deliberate exception
+## to this module's "frozen" status)
+
+Real, direct listening feedback after the RC1/UX-polish rounds reported
+the module didn't yet read as "real tube preamp" character. CLAUDE.md
+marks PREAMP frozen ("do not change without a discovered objective
+regression") - this pass is a deliberate, explicit, user-authorised
+exception to that rule for this specific purpose, not a casual retune.
+
+**Research**: rather than guess, real technical/review material on
+Universal Audio's UA 610-B (the closest well-documented reference for a
+transformer-coupled tube mic preamp) was looked up directly. Two points
+from that research directly informed the changes below: (1) the 610-B is
+described as delivering "creamy harmonic distortion and gritty clipping"
+specifically as Input Gain increases - i.e. progressively more overt
+even-harmonic-flavoured saturation with drive, not a fixed light dusting
+of colour; (2) its input and output stages *each* have their own
+tube-driven gain stage, each imparting its own colour - a two-stage
+character this module's own single waveshaper stage does not fully
+replicate (noted as a real architectural difference, not something this
+pass attempted to close - see "Known tradeoffs" below).
+
+**Changes made**:
+
+1. **`preampAsymmetryMax` raised 0.20 -> 0.32** (`PreampCurves.h`) - a
+   stronger per-half-gain asymmetry on the waveshaper, producing more
+   pronounced even-harmonic (H2) content, matching real single-ended
+   triode stages' typically more dominant H2 character than the original,
+   more conservative figure gave. Still the exact same *bounded*
+   per-half-tanh() structure the original calibration pass proved safe up
+   to full (1.0) asymmetry - the original design's real failure mode
+   (>400% THD/"fuzz") came from a fundamentally different *additive*
+   asymmetry model that was replaced during that pass, not from this
+   approach at any asymmetry short of 1.0.
+2. **New "sag" stage** (`preampSagStrength`/`preampSagReleaseMs`,
+   `PreampProcessor`'s new `sagEnvelopes`) - a subtle, slow
+   (220ms release, over 2x slower than SAT's own 90ms "glue" compression),
+   program-dependent gain reduction ahead of the waveshaper, modelling a
+   real tube stage's power-supply sag under sustained/loud content. Uses
+   the exact same bounded `1/(1+strength*envelope)` form SAT's own
+   dynamic gain already uses (`EnvelopeFollower`, `Biquad.h`) - proven
+   safe/bounded for any non-negative envelope. Deliberately kept in the
+   background: max strength (`preampSagStrengthMax=0.35`) is roughly 1/6
+   of SAT's own ceiling (2.2), and scales with DRIVE so it's exactly
+   inert (gain=1.0) at DRIVE=0%, preserving the module's "structurally
+   near-identity at 0" contract.
+
+**Verification**: the full pre-existing PREAMP test suite
+(`UNI76PreampProcessorTests`, `UNI76PreampIntegrationTests`,
+`UNI76PreampHarmonicAnalysisTests`) re-ran green against both changes
+with no threshold adjustments needed - the existing tolerances (written
+for the original, more conservative asymmetry) already accommodated the
+stronger H2 character and the new sag stage's own bounded gain
+reduction. **A dedicated before/after re-measurement of the harmonic
+table specifically quantifying the new H2/H3 balance was not run this
+pass** - the change is verified as *safe* (all existing pass/fail
+thresholds hold) but not independently *re-measured* against a fresh
+target table the way the original calibration pass was - a natural
+follow-up for anyone wanting the exact new numbers on record.
+
 ## Known tradeoffs
 
 - IIR polyphase oversampling trades a small amount of phase linearity for

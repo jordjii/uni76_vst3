@@ -23,6 +23,8 @@
                -> transformer coloration (one-pole "core" rounding filter
                   + fixed-frequency low-shelf density boost, both
                   drive-dependent)
+               -> "sag" (subtle envelope-driven gain reduction - tube
+                  power-supply sag, see PreampCurves.h)
                -> nonlinear analog stage (asymmetric tanh waveshaper,
                   normalised so DRIVE=0 is structurally near-identity)
           -> soft Low Cut (drive-dependent, ~20-70 Hz)
@@ -76,6 +78,7 @@ namespace uni76::dsp
 
         std::array<OnePoleLowPass, maxChannels> roundingFilters;
         std::array<Biquad, maxChannels> colorShelf;
+        std::array<EnvelopeFollower, maxChannels> sagEnvelopes;
 
         std::array<Biquad, maxChannels> lowCutFilters;
         std::array<Biquad, maxChannels> highCutFilters;

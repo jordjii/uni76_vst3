@@ -60,6 +60,10 @@ namespace uni76::dsp
         {
             dcBlockers[(size_t) ch].setCutoffHz (sampleRate, preampDcBlockerHz);
             dryDelays[(size_t) ch].prepare (latencySamples);
+            // Runs in the oversampled loop (see process()), so its release
+            // coefficient must be computed against the oversampled rate,
+            // same as driveSmoother.
+            sagEnvelopes[(size_t) ch].setReleaseMs (oversampledRate, preampSagReleaseMs);
         }
 
         reset();
@@ -73,6 +77,7 @@ namespace uni76::dsp
             dcBlockers[(size_t) ch].reset();
             roundingFilters[(size_t) ch].reset();
             colorShelf[(size_t) ch].reset();
+            sagEnvelopes[(size_t) ch].reset();
             lowCutFilters[(size_t) ch].reset();
             highCutFilters[(size_t) ch].reset();
             dryDelays[(size_t) ch].reset();
@@ -166,6 +171,7 @@ namespace uni76::dsp
             auto* data = processingBlock.getChannelPointer ((size_t) ch);
             auto& rounding = roundingFilters[(size_t) ch];
             auto& shelf    = colorShelf[(size_t) ch];
+            auto& sagEnv   = sagEnvelopes[(size_t) ch];
 
             for (int i = 0; i < oversampledNumSamples; ++i)
             {
@@ -174,6 +180,16 @@ namespace uni76::dsp
                 auto x = data[i];
                 x = rounding.processSample (x);
                 x = shelf.processSample (x);
+
+                // "Sag" - subtle program-dependent gain reduction ahead of
+                // the waveshaper, tracking the post-coloration signal
+                // itself (see PreampCurves.h's preampSagStrength comment).
+                // Same bounded 1/(1+strength*envelope) form SAT's own
+                // dynamic gain already uses - never divides by zero or
+                // goes negative for any non-negative envelope/strength.
+                const auto sagEnvelope = sagEnv.processSample (x);
+                const auto sagGain = 1.0f / (1.0f + preampSagStrength (t) * sagEnvelope);
+                x *= sagGain;
 
                 const auto driveGain = preampDriveGainLinear (t);
                 const auto xd = x * driveGain;

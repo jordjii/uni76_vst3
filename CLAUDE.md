@@ -1197,6 +1197,58 @@ MSVC 19.51):
     after each change, including the newly-adapted EQ test suite and the
     four full-chain low-frequency tests updated to isolate EQ.
 
+- **Preset selective module-enable + PREAMP/SAT tube-character follow-up**
+  (continuation of the live-testing round above, same session):
+  - **Factory presets no longer enable every module blanket-style** - each
+    of the 32 presets now declares its own per-module enable flags
+    (`FactoryPreset::modulesEnabled`, `Source/Core/FactoryPresets.h`):
+    PREAMP/SAT/PAN/VERB/IMAGE enabled only where that preset's own value
+    for it is genuinely non-zero; EQ enabled *only* on "Telephone Plate"
+    and "Lo-Fi Vocal" (the two presets whose whole point is the
+    always-on band-limited character EQ's redesign gave it); PITCH
+    disabled everywhere (every preset keeps it at 0 ST, so it never does
+    anything). "Default" ends up with all 7 modules disabled - a genuine
+    pass-through starting point, not just near-identity values.
+  - **SIGNAL PATH footer removed entirely** (the interactive per-module
+    chips added in the prior round) - the per-strip power buttons already
+    cover this, and direct feedback found the footer surface redundant.
+    A/B moved into the vacated centre footer column (between INPUT/
+    OUTPUT), out of the header where it previously lived under the brand
+    wordmark.
+  - **Every module's aux tri-scale/filter-lines hidden** (not deleted -
+    `[hidden]` attribute, same pattern IMAGE's FIELD pad already used) -
+    same real CSS bug as the preset-menu fix: `.module__aux { display:
+    flex }` was unconditional, so `[hidden]` alone did nothing until a
+    `.module__aux[hidden] { display: none }` override was added. Knobs
+    now centre vertically (auto margins) in the resulting empty column,
+    not just horizontally.
+  - **PREAMP tube-character pass** - a deliberate, explicit exception to
+    this module's "frozen, don't change without a discovered objective
+    regression" status (see the PREAMP section above), following direct
+    UAD 610-B research (Universal Audio's own documented "creamy harmonic
+    distortion and gritty clipping" character as Input Gain increases):
+    `preampAsymmetryMax` raised 0.20->0.32 for more pronounced even-
+    harmonic (H2) content, and a new subtle "sag" stage added (slow,
+    220ms-release, program-dependent gain reduction ahead of the
+    waveshaper - modelling real tube power-supply sag, using the exact
+    same bounded gain-reduction form SAT's own dynamic gain already
+    uses, deliberately kept to roughly 1/6 of SAT's own strength so it
+    stays a background character rather than an audible compressor).
+  - **SAT asymmetry raised 0.20->0.28** (`SatCurves.h`) - a smaller,
+    consistent version of the same change, since SAT already carries
+    more character from its own dedicated dynamic-gain stage. Frequency
+    tilt and compression left unchanged (their documented intent already
+    matches real tape/analog saturation's *result*, even via a different
+    mechanism).
+  - Full pre-existing PREAMP/SAT test suites re-ran green with **no
+    threshold changes needed** for either module - see docs/DSP_PREAMP.md
+    and docs/DSP_SAT.md's new "Tube-character follow-up" sections for the
+    full reasoning; a dedicated re-measurement of the harmonic tables
+    against fresh targets was not done this pass (flagged as a natural
+    follow-up).
+  - PAN's tempo-synced auto-panner redesign and IMAGE's bipolar
+    mono<->stereo redesign remain not started.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

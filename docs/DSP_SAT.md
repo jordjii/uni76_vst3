@@ -421,6 +421,36 @@ specifically per the brief's concern that PHONE's midrange concentration
 plus SAT's saturation might unexpectedly turn into fuzz - measured peak
 stays under 1.2x with fully finite output, i.e. it does not.
 
+## Tube-character follow-up (live-testing round)
+
+Same round and same real-world research as `docs/DSP_PREAMP.md`'s
+"Tube-character follow-up" section (see that section for the UAD 610-B
+research this drew on) - applied here more conservatively than to
+PREAMP, since SAT already carries substantial character from its own
+dedicated dynamic-gain ("glue") compression stage on top of the
+waveshaper.
+
+**Change made**: `satAsymmetryMax` raised 0.20 -> 0.28 (`SatCurves.h`) -
+a modest increase in even-harmonic content, consistent with (but smaller
+than) PREAMP's own 0.20->0.32 change, for a more authentic
+tube/analog-saturator even-harmonic balance. SAT's frequency tilt
+(low-shelf cut ahead of the nonlinearity / high-shelf boost, protecting
+bass and pushing highs harder into saturation) and its dynamic
+compression stage were both left unchanged this pass - their documented
+design intent (bass stays controlled, highs come out softer/more
+compressed at high HEAT) already matches the *result* real tape/analog
+saturation produces, even though the specific pre/de-emphasis mechanism
+differs from literal tape-head physics; restructuring that was judged
+out of scope without a more specific complaint to act on.
+
+**Verification**: the full pre-existing SAT test suite
+(`UNI76SatProcessorTests`, `UNI76SatIntegrationTests`,
+`UNI76SatAnalysisTests`) re-ran green with no threshold adjustments
+needed. As with PREAMP, this change is verified *safe* (existing
+thresholds hold) but the harmonic table above was not independently
+re-measured against a fresh target for the new asymmetry value - a
+natural follow-up.
+
 ## Known compromises
 
 - The frequency tilt's shelf frequencies/gains are fixed constants tuned

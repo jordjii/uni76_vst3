@@ -46,7 +46,15 @@ namespace uni76::dsp
     // Fractional gain reduction on the waveshaper's negative half only -
     // bounded by construction, never the unbounded additive term the
     // original PREAMP model got wrong.
-    inline constexpr float satAsymmetryMax = 0.20f;
+    //
+    // Raised from 0.20 to 0.28 (live-testing follow-up, consistent with
+    // the same real-analog-saturator/tube-preamp research that raised
+    // PreampCurves.h's own asymmetry - see that file's comment and
+    // docs/DSP_SAT.md's "Tube-character follow-up" section) - kept a
+    // little more conservative than PREAMP's own 0.32, since SAT already
+    // carries more total character from its own dynamic compression
+    // stage on top of this waveshaper.
+    inline constexpr float satAsymmetryMax = 0.28f;
 
     inline float satAsymmetryAmount (float heatNormalised01) noexcept
     {
