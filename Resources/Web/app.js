@@ -40,6 +40,17 @@ function formatEqPercent(scaled) {
   return displayed === 0 ? "0%" : `${displayed > 0 ? "+" : ""}${displayed}%`;
 }
 
+// IMAGE's `imager` parameter is bipolar (-100%..+100%, live-testing
+// follow-up round - see docs/DSP_IMAGE.md's "Bipolar redesign" section),
+// so unlike every plain 0..100% module `scaled` already arrives as the
+// real signed value via the JUCE bridge - this only adds the explicit
+// "+" sign for positive values, same convention imageTilt's own display
+// (when it had one) and formatEqPercent above both use.
+function formatImagerPercent(scaled) {
+  const displayed = Math.round(scaled);
+  return displayed === 0 ? "0%" : `${displayed > 0 ? "+" : ""}${displayed}%`;
+}
+
 const MODULES = [
   // EQ defaults to its centred/flat "PHONE" position (50%); every other
   // module - including PAN/`panorama` - defaults to fully off (0%) - see
@@ -64,10 +75,21 @@ const MODULES = [
   // the source of truth this must stay in sync with, and docs/DSP_PAN.md.
   { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0 },
   { id: "reverb", control: "SPACE", name: "Reverb", defaultNormalised: 0 },
-  { id: "imager", control: "IMAGE", name: "Imager", defaultNormalised: 0 },
+  // Bipolar (live-testing follow-up round: MONO<->STEREO redesign, see
+  // docs/DSP_IMAGE.md's "Bipolar redesign" section) - -100%..+100%, not
+  // the old plain 0..100%, so CENTER (real 0, the module's own identity
+  // point) is the range's normalised *midpoint* (0.5), same shape as
+  // EQ's PHONE / PITCH's 0 ST defaults, not the range's minimum the way
+  // every other non-EQ module's own 0% default is. See
+  // Source/Parameters/ParameterLayout.cpp's makeImagerParameter(), the
+  // source of truth this must stay in sync with.
+  {
+    id: "imager", control: "IMAGE", name: "Imager", defaultNormalised: 0.5,
+    formatValue: formatImagerPercent, ariaMin: -100, ariaMax: 100,
+  },
 ];
 
-function initModule({ id, control, name, defaultNormalised, formatValue, discrete }) {
+function initModule({ id, control, name, defaultNormalised, formatValue, discrete, ariaMin, ariaMax }) {
   const section = document.querySelector(`.module[data-param="${id}"]`);
   if (!section) return;
 
@@ -91,8 +113,8 @@ function initModule({ id, control, name, defaultNormalised, formatValue, discret
     defaultNormalised,
     formatValue,
     steps: discrete ? discrete.steps : null,
-    ariaMin: discrete ? discrete.ariaMin : 0,
-    ariaMax: discrete ? discrete.ariaMax : 100,
+    ariaMin: discrete ? discrete.ariaMin : (ariaMin ?? 0),
+    ariaMax: discrete ? discrete.ariaMax : (ariaMax ?? 100),
     ariaStep: discrete ? discrete.ariaStep : null,
     onChange: (normalised, _scaled) => {
       // Always feed derived (purely visual) indicators a 0..100 percent
@@ -188,6 +210,14 @@ function initVerbDriveKnob() {
   });
 }
 
+// Currently hidden (see index.html's own comment on .module__aux--imager)
+// - `imager` went bipolar this round (live-testing follow-up, see
+// docs/DSP_IMAGE.md's "Bipolar redesign" section) but the pad's own Y-axis
+// mapping/inversion has NOT been re-interpreted for that yet (a separate,
+// deliberate decision not made this round); yDefaultNormalised is still
+// updated to 0.5 here purely for correctness (imager's real default 0 is
+// now the range's normalised *midpoint*, not 0.0) so this stays accurate
+// if the pad is ever re-enabled before its own redesign happens.
 function initImageField() {
   const element = document.querySelector(".field__pad");
   if (!element) return;
@@ -198,7 +228,7 @@ function initImageField() {
     yState: getSliderState("imager"),
     ariaLabel: "Image field",
     xDefaultNormalised: 0.5, // imageTilt: -100..100, so 0.5 == 0 (CENTER)
-    yDefaultNormalised: 0,   // imager: 0..100%, so 0 == 0%
+    yDefaultNormalised: 0.5, // imager: now -100..100, so 0.5 == 0 (CENTER)
   });
 }
 

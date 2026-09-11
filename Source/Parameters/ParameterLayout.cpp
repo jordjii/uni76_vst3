@@ -44,6 +44,32 @@ namespace uni76
                 juce::NormalisableRange<float> { -100.0f, 100.0f, 0.01f },
                 0.0f);
         }
+
+        // IMAGE AMOUNT (live-testing follow-up round: bipolar redesign) -
+        // -100 (MONO) .. 0 (CENTER, identity) .. +100 (STEREO), default 0.
+        // Was a plain 0..100% parameter (ORIGINAL(0%)/WIDE(100%)) before
+        // this round - see docs/DSP_IMAGE.md's "Bipolar redesign" section
+        // for the full reasoning. Deliberately NOT given a schema-version
+        // bump the way PITCH's v3 or PAN's v5 range changes were: those
+        // forced a reset because the *old* value's meaning no longer
+        // existed anywhere in the new contract (a v4 PAN "50%" meant
+        // NATURAL/identity, which isn't 50% under the new contract
+        // either). Here the old [0,100] domain is a strict *subset* of
+        // the new [-100,100] domain, and the positive half's curve is
+        // byte-for-byte unchanged (see ImagerCurves.h) - so an old saved
+        // value loads at the exact same real number under the new range
+        // and produces the exact same sound it always did; there is
+        // nothing to migrate. Verified by a dedicated test loading a
+        // hand-built legacy state with `imager` values across its full
+        // old 0..100 range.
+        std::unique_ptr<juce::AudioParameterFloat> makeImagerParameter()
+        {
+            return std::make_unique<juce::AudioParameterFloat> (
+                juce::ParameterID { ParamID::imager, ParamID::parameterVersionHint },
+                "Imager",
+                juce::NormalisableRange<float> { -100.0f, 100.0f, 0.01f },
+                0.0f);
+        }
     }
 
     juce::AudioProcessorValueTreeState::ParameterLayout createParameterLayout()
@@ -65,7 +91,7 @@ namespace uni76
         params.push_back (makePitchParameter());
         params.push_back (makePercentParameter (ParamID::panorama,   "Panorama",   0.0f));
         params.push_back (makePercentParameter (ParamID::reverb,     "Reverb",     0.0f));
-        params.push_back (makePercentParameter (ParamID::imager,     "Imager",     0.0f));
+        params.push_back (makeImagerParameter());
         params.push_back (makeImageTiltParameter());
 
         // PAN's nested RATE knob (see docs/DSP_PAN.md's "Motion rate"

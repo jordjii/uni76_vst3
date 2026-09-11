@@ -9,8 +9,11 @@ per module" rule (see CLAUDE.md): it carries two independent public
 APVTS parameters, not one.
 
 ```
-imager (0%..100%):      ORIGINAL -> FOCUS -> WIDE
-                         Frequency-dependent stereo width/imaging amount.
+imager (-100%..+100%):  MONO <- CENTER -> STEREO
+                         Bipolar frequency-dependent stereo width/imaging
+                         amount (live-testing follow-up round - see
+                         "Bipolar redesign" below; was 0%..100%
+                         ORIGINAL->WIDE before this round).
 
 imageTilt (-100..+100):  LEFT <- CENTER -> RIGHT
                          A static (time-invariant) stereo image balance/
@@ -91,6 +94,76 @@ alone at any macro value (`Tests/PluginTests.cpp`'s "IMAGE amount alone
 does not stereoize a mono source" test) - IMAGE only ever *reshapes*
 existing Side content, it never *synthesises* new stereo information the
 way PAN's induced-signal mechanism deliberately does.
+
+## Bipolar redesign (live-testing follow-up round)
+
+`imager` was a plain `0..100%` parameter (`ORIGINAL(0%) -> WIDE(100%)`)
+through every previous round of this module's development - the same
+"one axis, one direction" shape every other module's own 0..100% macro
+uses. Direct feedback asked for a genuinely bipolar control instead:
+centred rest position, turning left collapses toward mono, turning right
+widens toward stereo - `imager` is now `-100%(MONO) .. 0%(CENTER) ..
++100%(STEREO)`.
+
+**Curve** (`ImagerCurves.h`): `imagerWidthLow`/`imagerWidthHigh` now
+branch on the sign of the bipolar input `t` (-1..1):
+
+- `t >= 0` (STEREO half) - **byte-for-byte unchanged** from the module's
+  original 0..100% contract: the exact same `imagerWidthMinLow = 0.25` /
+  `imagerWidthMaxHigh = 2.0` ceilings, the exact same
+  `imagerLerp(1.0, ceiling, imagerSmoothstep(t))` shape. An old saved
+  `imager` value (always non-negative under the pre-bipolar contract)
+  produces the exact same sound it always did.
+- `t < 0` (MONO half, new this round) - both asymptotes converge on
+  `imagerWidthMonoGain = 0.0` as `t` approaches -1: a **true** mono
+  collapse (Side removed entirely, at every frequency, via
+  `imagerLerp(1.0, 0.0, imagerSmoothstep(-t))`), not a mirror image of
+  the STEREO ceiling and not merely a narrowing. Measured: at
+  `imager=-100%`, wet-path `rmsSide` on a genuinely decorrelated stereo
+  source measured **0** (to floating-point precision), and L/R samples
+  matched to within float rounding (`maxDiff < 1e-4`) -
+  `Tests/PluginTests.cpp`'s "Full MONO (-100%) produces a genuinely mono
+  signal" test.
+- `t == 0` (CENTER) is unaffected by the branch either way - both halves
+  evaluate to their shared identity value (`imagerLerp(1.0, x, 0) == 1.0`
+  for any `x`), so CENTER remains a provable, not just measured, identity
+  regardless of which side of it the knob is approached from - the same
+  "every curve hits its identity value at its own zero point" guarantee
+  every other bipolar axis in this plugin (`imageTilt`, PAN's motion
+  rotation) already provides.
+
+**Parameter range** (`ParameterLayout.cpp`'s `makeImagerParameter()`):
+`AudioParameterFloat`, `-100..+100`, default `0` (CENTER) - the same
+shape `imageTilt` already uses, replacing the old
+`NormalisableRange<float>{0,100}`.
+
+**No schema-version bump was needed** - a genuinely novel case for this
+project (PITCH's v3 and PAN's v5 range changes both forced a reset,
+because the *old* value's meaning no longer existed anywhere in the new
+contract). Here the old `[0,100]` domain is a strict *subset* of the new
+`[-100,100]` domain, and the positive half's curve is unchanged, so an
+old saved `imager` value loads at the exact same real number under the
+new range and produces the exact same sound - there is nothing to
+migrate. Verified by a dedicated test loading a hand-built state with
+`imager` set across its full old `0/25/50/75/100` range and confirming
+every one loads completely unmigrated.
+
+**A real regression this exact redesign caught in its own test suite,
+not shipped and found later**: `imager`'s real default (0/CENTER) moved
+from the range's normalised *minimum* (0.0, under the old 0..100%
+contract) to the new range's normalised *midpoint* (0.5) - the same
+shape `imageTilt`/`pitch`/`eq` already have. Several existing tests and
+the shared `auditParams`/`isMidpointDefault` test-infrastructure arrays
+still listed `imager` at normalised `0.0`, which - now that `0.0`
+resolves to real `-100` (full MONO), not `0` (CENTER) - silently drove
+every test using them into full MONO instead of leaving IMAGE at rest,
+which measurably collapsed PAN's own motion-excursion tests that run
+IMAGE alongside PAN at its own "just leave this module untouched"
+default. Not a DSP bug (PAN's motion genuinely doesn't interact with
+IMAGE) - a test-infrastructure oversight caught immediately by the full
+suite (6 test failures, all traced to the same root cause) rather than
+shipped silently, fixed by updating `auditParams`'s and the affected
+tests' own `imager` defaults to `0.5`.
 
 ## IMAGE TILT: static L/R balance
 
@@ -339,9 +412,18 @@ and IMAGE all contribute 0).
 
 ## Parameter and state migration
 
-`imager` keeps its pre-existing APVTS string ID, type, range and default
-(`0..100%`, `AudioParameterFloat`, default `0%`) - unchanged by this
-round. `imageTilt` is a **brand-new** parameter
+`imager` kept its pre-existing APVTS string ID, type, range and default
+(`0..100%`, `AudioParameterFloat`, default `0%`) at the time `imageTilt`
+was introduced below - unchanged by that round. Its *range* changed in a
+later, live-testing follow-up round (bipolar `-100..100`, default still
+`0` but now CENTER rather than ORIGINAL) - see this document's own
+"Bipolar redesign" section above for why that specific change needed no
+schema-version bump either, via a different mechanism than the one
+described for `imageTilt` just below (a strict-superset range change with
+an unchanged positive-half curve, rather than a brand-new parameter with
+nothing to migrate).
+
+`imageTilt` is a **brand-new** parameter
 (`-100..100`, `AudioParameterFloat`, default `0`/CENTER) added **without**
 bumping `stateSchemaVersion` - see `Source/Core/PluginIdentity.h`'s
 documented reasoning: unlike PITCH's v3 and PAN's v5 migrations (which

@@ -321,16 +321,23 @@ direct signal), same `reverbEnabled`-driven bypass pattern as PAN
 module - see [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md) for the full
 topology and measured data. The one module with **two** independent
 public parameters (a deliberate, explicit exception to the "one knob per
-module" rule - see "HTML/CSS/JS UI rule" above): `imager` (0-100%,
-frequency-dependent stereo width/imaging amount - `ORIGINAL(0%) ->
-FOCUS -> WIDE(100%)`) and `imageTilt` (-100..+100, a static L/R stereo
-image balance/tilt, default 0/CENTER - explicitly not a hard pan). Both
+module" rule - see "HTML/CSS/JS UI rule" above): `imager` (bipolar
+-100%..+100%, live-testing follow-up round - `MONO(-100%) <-
+CENTER(0%) -> STEREO(+100%)`, was a plain 0-100% `ORIGINAL->WIDE`
+control before that round, see docs/DSP_IMAGE.md's "Bipolar redesign"
+section) and `imageTilt` (-100..+100, a static L/R stereo image
+balance/tilt, default 0/CENTER - explicitly not a hard pan). Both
 axes are Mid/Side-domain and orthogonal by construction: `imager` only
-ever reshapes Side (a single low-shelf filter, low-frequency asymptote
-shrinking toward centre as the macro rises for low-end centering/mono
-compatibility, high-frequency asymptote growing up to 2x for a real
-mastering-imager-style widen - Mid is never touched, so a mono source is
-never stereoized by this axis alone); `imageTilt` only ever reshapes Mid
+ever reshapes Side (a single low-shelf filter - on the STEREO half,
+low-frequency asymptote shrinking toward centre as the macro rises for
+low-end centering/mono compatibility, high-frequency asymptote growing
+up to 2x for a real mastering-imager-style widen, byte-for-byte
+unchanged from the module's original 0..100% contract; on the new MONO
+half, both asymptotes converge on exactly 0.0 - a true, complete Side
+collapse, not a mirror image of the STEREO ceiling - Mid is never
+touched, so a mono source is never stereoized by this axis alone, and
+CENTER stays a provable identity regardless of which side of it the
+knob is approached from); `imageTilt` only ever reshapes Mid
 (a bounded, constant-power gain pair - `gL^2+gR^2==2` exactly, for any
 tilt value, the same algebraic proof PAN's own motion rotation uses -
 applied via two independent per-channel low-shelf filters whose
@@ -1595,6 +1602,60 @@ MSVC 19.51):
     default); installer rebuilt.
   - **IMAGE's bipolar mono<->stereo redesign remains not started** - the
     last of the three modules originally flagged.
+
+- **IMAGE bipolar redesign (`imager`)** - the third and last of the three
+  modules flagged above. `imager` was a plain `0..100%` parameter
+  (`ORIGINAL(0%) -> WIDE(100%)`) through every previous round; it is now
+  bipolar - `-100%(MONO) .. 0%(CENTER) .. +100%(STEREO)` - centred rest
+  position, left collapses toward true mono, right widens toward stereo.
+  See docs/DSP_IMAGE.md's "Bipolar redesign" section for the full
+  derivation.
+  - **Curve**: the STEREO half (t>=0) is byte-for-byte unchanged from the
+    module's original contract - same `imagerWidthMinLow=0.25`/
+    `imagerWidthMaxHigh=2.0` ceilings, same shape - so an old saved
+    `imager` value (always non-negative) sounds identical to before. The
+    MONO half (t<0, new) converges both asymptotes on exactly 0.0 - a
+    *true* Side collapse at every frequency, not a mirror image of the
+    STEREO ceiling. Measured: full MONO gave `rmsSide=0` and L/R matched
+    to float-rounding precision on a genuinely decorrelated source.
+  - **No schema-version bump needed - a genuinely new case for this
+    project.** PITCH's v3 and PAN's v5 range changes both forced a reset
+    because the *old* value's meaning no longer existed under the new
+    contract. Here the old `[0,100]` domain is a strict *subset* of the
+    new `[-100,100]` one and the positive half's curve is unchanged, so
+    an old value loads at the same real number and produces the same
+    sound - verified by a test sweeping a hand-built legacy state's
+    `imager` across its full old range and confirming every value loads
+    completely unmigrated.
+  - **A real regression caught by this round's own test suite, not
+    shipped and found later**: `imager`'s default moved from the range's
+    normalised *minimum* (old contract) to the new range's normalised
+    *midpoint* (0.5, CENTER - same shape `imageTilt`/`pitch`/`eq` already
+    use). The shared `auditParams`/`isMidpointDefault` test-
+    infrastructure arrays still listed it at normalised `0.0`, which -
+    now meaning real `-100`/full MONO instead of `0`/CENTER - silently
+    drove numerous tests into full MONO and measurably collapsed PAN's
+    own motion-excursion assertions that run alongside an "untouched"
+    IMAGE. Not a DSP bug; caught immediately as 6 related test failures,
+    all traced to the same root cause, fixed by updating the shared
+    default to 0.5 rather than papering over each symptom individually.
+  - **UI**: main knob starts centred (`--knob-angle: 0deg`, matching
+    PITCH's own centred-default convention) instead of the old leftmost
+    position; `defaultNormalised: 0.5` in `app.js`'s `MODULES` array; new
+    `formatImagerPercent()` shows the signed real value. The hidden
+    FIELD pad's own Y-axis mapping was deliberately **not** re-
+    interpreted for the new bipolar range this round (a separate,
+    further decision) - only its stale default/comments were corrected
+    for accuracy while it stays hidden.
+  - Debug/Release clean (0 warnings); full suite green, including 5 new
+    dedicated bipolar tests (curve anchors, the true-MONO-collapse test,
+    the CENTER-identity test, the unmigrated-legacy-range test, and the
+    PAN-excursion-not-collapsed-by-default test that mirrors the
+    regression this round's own infrastructure fix caught) plus the 6
+    pre-existing tests updated for the new normalised-default
+    convention; installer rebuilt.
+  - **All three modules originally flagged (PAN RATE, VERB DRIVE, IMAGE
+    bipolar) are now complete.**
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

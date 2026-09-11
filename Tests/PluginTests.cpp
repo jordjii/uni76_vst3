@@ -134,14 +134,19 @@ public:
                 // Every other parameter was never touched before the save,
                 // so it should restore to its own construction-time default
                 // (EQ 50%, everything else 0%) - not a single shared value.
-                // PITCH and imageTilt are special-cased to 0.5f too: PITCH's
-                // default (0 ST) sits at the *normalised* midpoint of its
-                // -12..+12 range, same as EQ's PHONE default sits at the
-                // midpoint of 0..100; imageTilt's default (0/CENTER) is
-                // likewise the normalised midpoint of its -100..100 range.
+                // PITCH, imageTilt and imager are special-cased to 0.5f
+                // too: PITCH's default (0 ST) sits at the *normalised*
+                // midpoint of its -12..+12 range, same as EQ's PHONE
+                // default sits at the midpoint of 0..100; imageTilt's and
+                // imager's defaults (both 0/CENTER - imager's own bipolar
+                // range is a live-testing follow-up round redesign, see
+                // docs/DSP_IMAGE.md's "Bipolar redesign" section) are
+                // likewise the normalised midpoint of their own -100..100
+                // ranges.
                 const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
                                              || std::strcmp (id, uni76::ParamID::pitch) == 0
-                                             || std::strcmp (id, uni76::ParamID::imageTilt) == 0;
+                                             || std::strcmp (id, uni76::ParamID::imageTilt) == 0
+                                             || std::strcmp (id, uni76::ParamID::imager) == 0;
                 // panRate's own normalised default (0.35303) is neither
                 // 0 nor the 0.5 midpoint every other special-cased
                 // parameter uses - see ParameterLayout.cpp's own comment.
@@ -266,12 +271,16 @@ public:
                 param->setValueNotifyingHost (0.5f);
                 expectWithinAbsoluteError (param->getValue(), 0.5f, 0.0001f, id);
 
-                // imageTilt is -100..100 (normalised 0.5 == 0/CENTER), not
-                // the plain 0..100% linear range every other float
-                // parameter here uses - see ParameterLayout.cpp's
-                // makeImageTiltParameter(). Its own normalised<->real-
-                // value linearity is checked separately below.
-                if (std::strcmp (id, uni76::ParamID::imageTilt) == 0)
+                // imageTilt and imager are both -100..100 (normalised 0.5
+                // == 0/CENTER), not the plain 0..100% linear range every
+                // other float parameter here uses - see
+                // ParameterLayout.cpp's makeImageTiltParameter() and
+                // makeImagerParameter() (imager's own bipolar range is a
+                // live-testing follow-up round redesign - see
+                // docs/DSP_IMAGE.md's "Bipolar redesign" section). Their
+                // own normalised<->real-value linearity is checked
+                // separately below.
+                if (std::strcmp (id, uni76::ParamID::imageTilt) == 0 || std::strcmp (id, uni76::ParamID::imager) == 0)
                 {
                     if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
                         expectWithinAbsoluteError (floatParam->get(), 0.0f, 0.01f, id);
@@ -7900,17 +7909,33 @@ public:
 
     void runTest() override
     {
-        beginTest ("Fresh instance: imager defaults to 0%, imageTilt defaults to 0 (CENTER)");
+        beginTest ("Fresh instance: imager defaults to 0 (CENTER), imageTilt defaults to 0 (CENTER)");
         {
+            // imager's own default changed from "0%" (the normalised
+            // *minimum* of its old 0..100% range) to "0/CENTER" (the
+            // normalised *midpoint* of its new bipolar -100..+100% range -
+            // live-testing follow-up round, see docs/DSP_IMAGE.md's
+            // "Bipolar redesign" section) - both defaults are the exact
+            // same real number (0) and the exact same DSP identity point,
+            // only the normalised position moved, the same way imageTilt
+            // already sat at 0.5 rather than 0.0 for its own -100..+100
+            // range.
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
             auto* imagerParam = apvts.getParameter (uni76::ParamID::imager);
             auto* tiltParam = apvts.getParameter (uni76::ParamID::imageTilt);
             expect (imagerParam != nullptr && tiltParam != nullptr);
             if (imagerParam != nullptr)
-                expectWithinAbsoluteError (imagerParam->getValue(), 0.0f, 0.001f, "imager should default to 0%");
+                expectWithinAbsoluteError (imagerParam->getValue(), 0.5f, 0.001f, "imager should default to its normalised midpoint (0/CENTER)");
             if (tiltParam != nullptr)
                 expectWithinAbsoluteError (tiltParam->getValue(), 0.5f, 0.001f, "imageTilt should default to its normalised midpoint (0/CENTER)");
+
+            if (auto* imagerFloat = dynamic_cast<juce::AudioParameterFloat*> (imagerParam))
+            {
+                expectWithinAbsoluteError (imagerFloat->get(), 0.0f, 0.001f, "imager real value should default to exactly 0 (CENTER)");
+                expectWithinAbsoluteError (imagerFloat->range.start, -100.0f, 0.001f);
+                expectWithinAbsoluteError (imagerFloat->range.end, 100.0f, 0.001f);
+            }
 
             if (auto* tiltFloat = dynamic_cast<juce::AudioParameterFloat*> (tiltParam))
             {
@@ -8362,14 +8387,21 @@ namespace
 
     // Every one of the 10 parameters expressed uniformly in normalised
     // 0..1 space: 1.0 is always that parameter's "loud" extreme (100%,
-    // +12 ST, +100 TILT, fastest RATE/DRIVE); 0.0 is a second, distinct
-    // extreme only for pitch (-12 ST) and imageTilt (-100/LEFT) - for the
-    // other eight, 0.0 is simply their own resting default. panRate's own
-    // resting default (0.35303) is neither 0 nor 1 - see
-    // ParameterLayout.cpp's own comment - so it is listed at that value,
-    // not folded into the "0.0 = rest" convention the seven plain percent
-    // modules (verbDrive included - its own 0% default *is* the original
-    // fixed coloration) share.
+    // +12 ST, +100 TILT, +100/full STEREO, fastest RATE/DRIVE); 0.0 is a
+    // second, distinct extreme only for pitch (-12 ST) and imageTilt
+    // (-100/LEFT) - for the other seven, 0.0 is simply their own resting
+    // default. panRate's own resting default (0.35303) is neither 0 nor 1
+    // - see ParameterLayout.cpp's own comment - so it is listed at that
+    // value, not folded into the "0.0 = rest" convention the six plain
+    // percent modules (verbDrive included - its own 0% default *is* the
+    // original fixed coloration) share. `imager` is bipolar
+    // (-100/MONO..+100/STEREO, live-testing follow-up round) with its own
+    // resting default (0/CENTER) at the range's normalised *midpoint*
+    // (0.5), the same reason imageTilt/pitch are listed at 0.5 rather
+    // than 0.0 - listing it at 0.0 here would drive a fresh instance to
+    // full MONO by default instead of CENTER, a real behavioural bug this
+    // exact array construction caught (see docs/DSP_IMAGE.md's "Bipolar
+    // redesign" section).
     const std::array<ParamSpec, 10> auditParams {{
         { uni76::ParamID::preamp,     0.0f },
         { uni76::ParamID::eq,         0.5f },
@@ -8377,7 +8409,7 @@ namespace
         { uni76::ParamID::pitch,      0.5f },
         { uni76::ParamID::panorama,   0.0f },
         { uni76::ParamID::reverb,     0.0f },
-        { uni76::ParamID::imager,     0.0f },
+        { uni76::ParamID::imager,     0.5f },
         { uni76::ParamID::imageTilt,  0.5f },
         { uni76::ParamID::panRate,    0.35303f },
         { uni76::ParamID::verbDrive,  0.0f },
@@ -9252,8 +9284,22 @@ public:
 
             double baselinePeriod = 0.0;
 
-            for (float imagerNorm : { 0.0f, 0.5f, 1.0f })
+            // Real IMAGE values (0/50/100 = CENTER/half-STEREO/full-STEREO)
+            // - the exact same three settings this test always exercised,
+            // now expressed against `imager`'s bipolar -100..+100 range
+            // (live-testing follow-up round) instead of its old 0..100
+            // one. Converted to normalised just below setNormalised()'s
+            // own call, rather than listing normalised literals directly,
+            // specifically so this test cannot silently repeat the real
+            // bug this exact conversion caught during that round: passing
+            // the *old* range's normalised values (0/0.5/1.0) under the
+            // *new* range means CENTER/half-STEREO/full-STEREO becomes
+            // full-MONO/CENTER/full-STEREO instead - which collapsed
+            // PAN's own measured motion excursion in the MONO case, not a
+            // real PAN/IMAGE interaction bug.
+            for (float imagerReal : { 0.0f, 50.0f, 100.0f })
             {
+                const auto imagerNorm = (imagerReal + 100.0f) / 200.0f;
                 for (float tilt : { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f }) // -100,-50,0,+50,+100
                 {
                     UNI76AudioProcessor processor;
@@ -9273,11 +9319,11 @@ public:
                     const auto seriesStats = analyzeSeries (series);
                     const auto period = measureOscillationPeriodSeconds (series, (double) windowLen / sr);
 
-                    std::cout << "IMAGE=" + juce::String (imagerNorm * 100.0f, 0) + "% TILT=" + juce::String (tilt * 200.0f - 100.0f, 0)
+                    std::cout << "IMAGE=" + juce::String (imagerReal, 0) + "% TILT=" + juce::String (tilt * 200.0f - 100.0f, 0)
                                 + ": centroidMean=" + juce::String (seriesStats.mean, 3) + " excursion=" + juce::String (seriesStats.rmsExcursion, 3)
                                 + " period=" + juce::String (period, 3) + "s" << std::endl;
 
-                    if (imagerNorm == 0.5f && tilt == 0.5f)
+                    if (imagerReal == 50.0f && tilt == 0.5f)
                         baselinePeriod = period;
 
                     // PAN's LFO must keep running regardless of IMAGE/TILT -
@@ -10761,6 +10807,172 @@ public:
 };
 
 static UNI76VerbDriveTests uni76VerbDriveTests; // NOLINT - self-registers with the UnitTestRunner
+
+// ---- IMAGE's bipolar redesign (ParamID::imager, live-testing follow-up
+// round) -------------------------------------------------------------------
+//
+// Covers the curve's three defining points (CENTER is a provable identity
+// regardless of direction; full MONO is a genuine, complete Side collapse,
+// not a partial narrowing; full STEREO is byte-for-byte the module's
+// original 0..100% WIDE behaviour, unchanged), that no schema-version bump
+// was needed (a hand-built state carrying `imager` values across the old
+// range loads every one of them completely unmigrated), and that the whole
+// existing PAN/IMAGE interaction suite's own real-processor defaults still
+// land on the correct identity point (the actual regression this round's
+// own auditParams/isMidpointDefault fixes were caught by).
+class UNI76ImagerBipolarTests final : public juce::UnitTest
+{
+public:
+    UNI76ImagerBipolarTests() : juce::UnitTest ("IMAGE bipolar redesign (imager, MONO<->STEREO)", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Curve anchors: CENTER=identity, full MONO=true zero, full STEREO=the original unchanged ceiling");
+        {
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthLow (0.0f), 1.0f, 1.0e-6f);
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthHigh (0.0f), 1.0f, 1.0e-6f);
+
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthLow (-1.0f), uni76::dsp::imagerWidthMonoGain, 1.0e-4f);
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthHigh (-1.0f), uni76::dsp::imagerWidthMonoGain, 1.0e-4f);
+
+            // The exact same ceilings this axis had before this round -
+            // an old saved `imager` value (always non-negative) produces
+            // byte-for-byte the same sound it always did.
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthLow (1.0f), uni76::dsp::imagerWidthMinLow, 1.0e-4f);
+            expectWithinAbsoluteError (uni76::dsp::imagerWidthHigh (1.0f), uni76::dsp::imagerWidthMaxHigh, 1.0e-4f);
+        }
+
+        beginTest ("Full MONO (-100%) produces a genuinely mono signal: Side collapses, L equals R");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+
+            // A genuinely wide stereo source (independent-ish L/R content,
+            // not dual-mono) - if MONO didn't actually collapse Side, this
+            // is exactly the material that would show it.
+            auto input = generateChord ((int) (2.0 * sr), sr, { 300.0f, 700.0f, 1500.0f }, { 0.2f, 0.15f, 0.1f });
+            juce::AudioBuffer<float> stereoInput (2, input.getNumSamples());
+            stereoInput.copyFrom (0, 0, input, 0, 0, input.getNumSamples());
+            stereoInput.copyFrom (1, 0, input, 0, 0, input.getNumSamples());
+            stereoInput.addFrom (1, 0, input, 0, 0, input.getNumSamples(), -0.3f); // decorrelate R from L a little
+
+            auto output = runImagerProcessor (imager, stereoInput, blockSize, -1.0f, 0.0f, true);
+
+            const auto settle = (int) (0.2 * sr);
+            const auto stats = measureStereo (output, settle, output.getNumSamples() - settle);
+            std::cout << "\nFull MONO: rmsSide=" << stats.rmsSide << " rmsL=" << stats.rmsL << " rmsR=" << stats.rmsR << std::endl;
+
+            expect (stats.rmsSide < 1.0e-4, "full MONO should collapse Side to (near) exactly zero");
+
+            double maxLRDiff = 0.0;
+            for (int i = settle; i < output.getNumSamples(); ++i)
+                maxLRDiff = juce::jmax (maxLRDiff, (double) std::abs (output.getSample (0, i) - output.getSample (1, i)));
+            expect (maxLRDiff < 1.0e-4, "full MONO should make L and R bit-close identical, maxDiff=" + juce::String (maxLRDiff));
+        }
+
+        beginTest ("CENTER (0%) is a provable identity regardless of direction, not just the old ORIGINAL resting point");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            uni76::dsp::ImagerProcessor imager;
+            imager.prepare (sr, blockSize, 2);
+
+            auto input = generateChord ((int) (1.0 * sr), sr, { 220.0f, 550.0f }, { 0.25f, 0.2f });
+            juce::AudioBuffer<float> stereoInput (2, input.getNumSamples());
+            stereoInput.copyFrom (0, 0, input, 0, 0, input.getNumSamples());
+            stereoInput.copyFrom (1, 0, input, 0, 0, input.getNumSamples());
+            stereoInput.addFrom (1, 0, input, 0, 0, input.getNumSamples(), -0.2f);
+
+            auto output = runImagerProcessor (imager, stereoInput, blockSize, 0.0f, 0.0f, true);
+
+            double maxDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < output.getNumSamples(); ++i)
+                    maxDiff = juce::jmax (maxDiff, (double) std::abs (output.getSample (ch, i) - stereoInput.getSample (ch, i)));
+
+            std::cout << "\nCENTER identity maxDiff=" << maxDiff << std::endl;
+            expect (maxDiff < 1.0e-5, "CENTER (0%) should be a bit-exact identity, maxDiff=" + juce::String (maxDiff));
+        }
+
+        beginTest ("A hand-built state carrying imager values across the old 0..100 range loads every one unmigrated (no schema bump)");
+        {
+            // Directly verifies ParameterLayout.cpp's own migration-safety
+            // claim: this round deliberately did NOT bump
+            // stateSchemaVersion, because the old [0,100] domain is a
+            // strict subset of the new [-100,100] one and the positive
+            // half's curve is unchanged - so a real project saved before
+            // this round loads with the exact same imager value it always
+            // had, at every point across the old range, not just at 0.
+            for (float oldRealValue : { 0.0f, 25.0f, 50.0f, 75.0f, 100.0f })
+            {
+                juce::ValueTree legacyState ("PARAMETERS");
+                legacyState.setProperty (uni76::stateSchemaVersionProperty, uni76::stateSchemaVersion, nullptr);
+
+                for (const auto* id : uni76::ParamID::all)
+                {
+                    juce::ValueTree param ("PARAM");
+                    param.setProperty ("id", juce::String (id), nullptr);
+                    const auto value = std::strcmp (id, uni76::ParamID::imager) == 0 ? (double) oldRealValue
+                                      : std::strcmp (id, uni76::ParamID::pitch) == 0  ? 0.0
+                                                                                        : 0.0;
+                    param.setProperty ("value", value, nullptr);
+                    legacyState.appendChild (param, nullptr);
+                }
+
+                juce::MemoryBlock data;
+                if (auto xml = legacyState.createXml())
+                    juce::AudioProcessor::copyXmlToBinary (*xml, data);
+
+                UNI76AudioProcessor processor;
+                processor.setStateInformation (data.getData(), (int) data.getSize());
+
+                auto* imagerParam = dynamic_cast<juce::AudioParameterFloat*> (processor.getValueTreeState().getParameter (uni76::ParamID::imager));
+                expect (imagerParam != nullptr);
+                if (imagerParam != nullptr)
+                    expectWithinAbsoluteError (imagerParam->get(), oldRealValue, 0.01f,
+                                                "imager=" + juce::String (oldRealValue) + " should load completely unmigrated");
+            }
+        }
+
+        beginTest ("PAN's motion excursion is unaffected by IMAGE left at its own real default (0/CENTER)");
+        {
+            // The actual regression this round's own auditParams/
+            // isMidpointDefault fixes were caught by: applyAuditDefaults()
+            // (and a fresh instance in general) must leave `imager` at its
+            // real 0/CENTER identity, not silently drive it to full MONO
+            // by defaulting to normalised 0.0 the way the pre-bipolar
+            // range's own "0.0 = rest" convention used to mean.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            const auto totalSamples = (int) (sr * 6.0);
+            auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.2f);
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, blockSize);
+            auto& apvts = processor.getValueTreeState();
+            applyAuditDefaults (apvts);
+            setNormalised (apvts, uni76::ParamID::panorama, 1.0f); // MOTION - imager deliberately left at its own default
+
+            auto out = runFullChain (processor, source, blockSize);
+            expect (bufferIsFinite (out), "produced non-finite output");
+
+            const auto windowLen = (int) (sr * 0.05);
+            const auto latency = processor.getLatencySamples();
+            const auto series = centroidSeries (out, latency, out.getNumSamples() - latency, windowLen);
+            const auto seriesStats = analyzeSeries (series);
+
+            std::cout << "\nIMAGE at its own default, PAN=MOTION: excursion=" << seriesStats.rmsExcursion << std::endl;
+            expect (seriesStats.rmsExcursion > 0.03, "PAN's motion must not appear collapsed just because IMAGE was left untouched");
+        }
+    }
+};
+
+static UNI76ImagerBipolarTests uni76ImagerBipolarTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

@@ -34,7 +34,7 @@ namespace uni76::dsp
         tiltShelfR.reset();
     }
 
-    void ImagerProcessor::process (juce::AudioBuffer<float>& buffer, float imageNormalised01, float tiltNormalisedMinus1to1, bool enabled) noexcept
+    void ImagerProcessor::process (juce::AudioBuffer<float>& buffer, float imageBipolarMinus1to1, float tiltNormalisedMinus1to1, bool enabled) noexcept
     {
         const auto numSamples = buffer.getNumSamples();
         const auto channels = buffer.getNumChannels();
@@ -56,10 +56,10 @@ namespace uni76::dsp
         // parameters before they ever reach a smoother, matching the
         // established defence-in-depth pattern for every macro parameter
         // in this plugin.
-        const auto safeImage = std::isfinite (imageNormalised01) ? imageNormalised01 : 0.0f;
+        const auto safeImage = std::isfinite (imageBipolarMinus1to1) ? imageBipolarMinus1to1 : 0.0f;
         const auto safeTilt  = std::isfinite (tiltNormalisedMinus1to1) ? tiltNormalisedMinus1to1 : 0.0f;
 
-        imageSmoother.setTargetValue (std::clamp (safeImage, 0.0f, 1.0f));
+        imageSmoother.setTargetValue (std::clamp (safeImage, -1.0f, 1.0f));
         tiltSmoother.setTargetValue (std::clamp (safeTilt, -1.0f, 1.0f));
         bypassSmoother.setTargetValue (enabled ? 1.0f : 0.0f);
 

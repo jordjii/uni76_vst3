@@ -323,7 +323,12 @@
         <div class="module__knob-area">
           <div class="knob-module">
             <div class="knob-wrap">
-              <div class="knob" data-param="imager" style="--knob-angle: -135deg">
+              <!-- 0deg = centred pointer, matching the new bipolar
+                   CENTER default (real 0, normalised 0.5) - same
+                   centred-knob convention PITCH's own 0 ST default
+                   already uses, not the old -135deg (leftmost/ORIGINAL)
+                   position a 0..100% knob started at. -->
+              <div class="knob" data-param="imager" style="--knob-angle: 0deg">
                 <div class="knob__ticks"></div>
                 <div class="knob__collar" aria-hidden="true"></div>
                 <div class="knob__body">
@@ -339,27 +344,37 @@
 
         <div class="module__aux module__aux--imager" hidden>
           <!-- Field pad + tri-scale removed from the visible layout on
-               request (live-testing feedback) - IMAGE's own knob/parameter
-               contract is being revisited (bipolar mono<->stereo), so the
-               old 0..100% tri-scale reading no longer applies and would be
-               actively misleading to leave on screen. NOT deleted from the
-               DOM: `imageTilt` (the FIELD pad's X axis) is a real,
-               separate parameter with no other UI control right now -
-               keeping the markup/JS wiring intact (just hidden) means
-               nothing needs re-plumbing once IMAGE's redesign is decided.
-               See the session's own follow-up note on this.
+               request (live-testing feedback), pending a fuller redesign -
+               that redesign (bipolar -100%..+100% mono<->stereo) has now
+               shipped for the main IMAGE knob above (see
+               docs/DSP_IMAGE.md's "Bipolar redesign" section), but the
+               FIELD pad's own Y axis (still wired to the same `imager`
+               parameter, still inverted so bottom=lowest/top=highest) has
+               NOT been re-interpreted for the new bipolar range - what
+               "bottom of the pad" should mean now that Y spans MONO to
+               STEREO rather than ORIGINAL to WIDE is a separate,
+               deliberate design decision, not made this round. The
+               tri-scale's own labels below ARE updated to the new
+               contract (harmless either way, since it's hidden) so this
+               markup is at least internally consistent while both stay
+               hidden. NOT deleted from the DOM: `imageTilt` (the FIELD
+               pad's X axis) is a real, separate parameter with no other
+               UI control right now - keeping the markup/JS wiring intact
+               (just hidden) means nothing needs re-plumbing once the
+               FIELD pad's own redesign is decided.
 
                IMAGE spatial field pad - a second, independent control that
                drives BOTH existing parameters at once: horizontal drag is
-               `imageTilt` (-100..+100), vertical drag is `imager` (0..100%,
-               kept in sync with the main IMAGE knob above via the shared
-               JUCE SliderState singleton - see Resources/Web/field_pad.js).
-               No new parameters, no new DSP - see docs/DSP_IMAGE.md's "UI"
-               section. Sits ABOVE the tri-scale (DOM order matters here -
-               .module__aux stacks top-to-bottom) so the vertical reading
-               order is knob -> FIELD -> semantic scale, matching every
-               other module's own knob -> aux-scale rhythm with FIELD
-               inserted between the two, not after. -->
+               `imageTilt` (-100..+100), vertical drag is `imager` (now
+               bipolar -100..+100, kept in sync with the main IMAGE knob
+               above via the shared JUCE SliderState singleton - see
+               Resources/Web/field_pad.js). No new parameters, no new DSP
+               - see docs/DSP_IMAGE.md's "UI" section. Sits ABOVE the
+               tri-scale (DOM order matters here - .module__aux stacks
+               top-to-bottom) so the vertical reading order is knob ->
+               FIELD -> semantic scale, matching every other module's own
+               knob -> aux-scale rhythm with FIELD inserted between the
+               two, not after. -->
           <div class="field">
             <div class="field__caption">FIELD</div>
             <div class="field__pad" tabindex="0" style="--pad-x: 50%; --pad-y: 93%">
@@ -376,9 +391,9 @@
           </div>
 
           <div class="tri-scale">
-            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 0%"></span></div>
+            <div class="tri-scale__track"><span class="tri-scale__marker" style="--marker-pos: 50%"></span></div>
             <div class="tri-scale__labels">
-              <span>ORIGINAL</span><span>FOCUS</span><span>WIDE</span>
+              <span>MONO</span><span>CENTER</span><span>STEREO</span>
             </div>
           </div>
         </div>

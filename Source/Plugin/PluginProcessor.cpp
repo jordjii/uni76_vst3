@@ -151,11 +151,12 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto verbDrive = verbDriveParameter != nullptr ? verbDriveParameter->load() / 100.0f : 0.0f;
     const auto reverbEnabled = moduleEnableState.isEnabled (5); // index 5 = reverb, see ModuleEnableState::propertyNames
 
-    // IMAGE reads two independent raw parameter values - `imager` (0..1,
-    // width/imaging amount) and `imageTilt` (-1..1 normalised, static
-    // L/R balance) - see docs/DSP_IMAGE.md. Both share the single
-    // `imagerEnabled` bypass flag (index 6): they are one module with
-    // two axes, not two separate modules.
+    // IMAGE reads two independent raw parameter values - `imager` (-1..1
+    // normalised, bipolar MONO<->STEREO width/imaging amount - see
+    // ImagerCurves.h's "Bipolar redesign" note) and `imageTilt` (-1..1
+    // normalised, static L/R balance) - see docs/DSP_IMAGE.md. Both share
+    // the single `imagerEnabled` bypass flag (index 6): they are one
+    // module with two axes, not two separate modules.
     const auto imageAmount = imagerParameter != nullptr ? imagerParameter->load() / 100.0f : 0.0f;
     const auto imageTilt = imageTiltParameter != nullptr ? imageTiltParameter->load() / 100.0f : 0.0f;
     const auto imagerEnabled = moduleEnableState.isEnabled (6); // index 6 = imager, see ModuleEnableState::propertyNames

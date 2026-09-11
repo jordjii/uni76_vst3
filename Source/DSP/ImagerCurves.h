@@ -5,16 +5,24 @@
 
 /*
     Single source of truth for how IMAGE's two independent macro
-    parameters - `imager` (0..1, width/imaging amount) and `imageTilt`
-    (-1..1 normalised, static L/R balance) - morph the module's
-    processing. See Source/DSP/ImagerProcessor and docs/DSP_IMAGE.md.
+    parameters - `imager` (-1..1 normalised, bipolar mono<->stereo) and
+    `imageTilt` (-1..1 normalised, static L/R balance) - morph the
+    module's processing. See Source/DSP/ImagerProcessor and
+    docs/DSP_IMAGE.md.
 
     IMAGE is a deliberate, explicit exception to the "one knob per
     module" rule (see CLAUDE.md): two independent axes, not one -
 
-        imager (0%..100%):    ORIGINAL -> NATURAL -> WIDE
-                               frequency-dependent stereo width: bass
-                               gathers toward centre, highs widen. Mid is
+        imager (-100%..+100%): MONO <- CENTER -> STEREO
+                               frequency-dependent stereo width, now
+                               bipolar (live-testing follow-up round -
+                               was a plain 0%..100% ORIGINAL->WIDE control
+                               before this round, see "Bipolar redesign"
+                               below): negative values progressively
+                               collapse the Side signal toward true mono,
+                               positive values widen it (bass gathers
+                               toward centre, highs widen - the exact same
+                               curve the old 0..100% control had). Mid is
                                never touched by this axis - only Side.
 
         imageTilt (-100..+100): LEFT <- CENTER -> RIGHT
@@ -45,29 +53,52 @@ namespace uni76::dsp
         return a + (b - a) * t;
     }
 
-    // ---- IMAGE AMOUNT: frequency-dependent width -----------------------------
+    // ---- IMAGE AMOUNT: frequency-dependent width (bipolar) --------------------
     //
     // A single low-shelf filter (not per-channel - this axis is symmetric,
-    // it never biases L vs R) reshapes the Side signal only: low
-    // frequencies *lose* width as the macro increases (bass "gathers"
-    // toward centre - low-end centering/mono-compatibility), high
-    // frequencies *gain* width (up to a real mastering-imager-style
-    // widen). At t=0 both asymptotes are exactly 1.0, so the shelf
-    // collapses to an algebraically exact identity filter (see Biquad.h's
-    // makeLowShelf) and Side passes through completely unmodified.
-    inline constexpr float imagerWidthMinLow  = 0.25f; // bass narrows toward 25% of its original width at 100%
-    inline constexpr float imagerWidthMaxHigh = 2.0f;  // highs widen up to 2x at 100%
+    // it never biases L vs R) reshapes the Side signal only. At t=0 both
+    // asymptotes are exactly 1.0, so the shelf collapses to an
+    // algebraically exact identity filter (see Biquad.h's makeLowShelf)
+    // and Side passes through completely unmodified - CENTER is a
+    // provable, not just measured, identity regardless of which side of
+    // 0 the knob sits on.
+    //
+    // Positive half (t>0, STEREO): unchanged from this module's original
+    // 0..100% ORIGINAL->WIDE contract - low frequencies *lose* width as
+    // the macro increases (bass "gathers" toward centre - low-end
+    // centering/mono-compatibility), high frequencies *gain* width (up to
+    // a real mastering-imager-style widen). Same imagerWidthMinLow/
+    // imagerWidthMaxHigh ceilings this axis has always used, so an old
+    // saved `imager` value (always in [0,100] under the pre-bipolar
+    // contract) produces byte-for-byte the same sound it always did - see
+    // ParameterLayout.cpp's own migration-safety reasoning.
+    //
+    // Negative half (t<0, MONO - new this round): both asymptotes
+    // converge on `imagerWidthMonoGain` (exactly 0.0) as t approaches -1 -
+    // a *true* mono collapse (Side removed entirely, at every frequency,
+    // not just narrowed) - see docs/DSP_IMAGE.md's "Bipolar redesign"
+    // section. This is a genuinely different destination than the
+    // positive half's own ceiling, not a mirror image of it - full MONO
+    // is a stronger, more absolute statement than full STEREO's "extra
+    // wide" is.
+    inline constexpr float imagerWidthMinLow  = 0.25f; // bass narrows toward 25% of its original width at full STEREO (+100%)
+    inline constexpr float imagerWidthMaxHigh = 2.0f;  // highs widen up to 2x at full STEREO (+100%)
+    inline constexpr float imagerWidthMonoGain = 0.0f; // both bands collapse fully to 0 (true mono) at full MONO (-100%)
 
-    inline float imagerWidthLow (float t01) noexcept
+    inline float imagerWidthLow (float tBipolar) noexcept
     {
-        const auto t = std::clamp (t01, 0.0f, 1.0f);
-        return imagerLerp (1.0f, imagerWidthMinLow, imagerSmoothstep (t));
+        const auto t = std::clamp (tBipolar, -1.0f, 1.0f);
+        return t >= 0.0f
+            ? imagerLerp (1.0f, imagerWidthMinLow, imagerSmoothstep (t))
+            : imagerLerp (1.0f, imagerWidthMonoGain, imagerSmoothstep (-t));
     }
 
-    inline float imagerWidthHigh (float t01) noexcept
+    inline float imagerWidthHigh (float tBipolar) noexcept
     {
-        const auto t = std::clamp (t01, 0.0f, 1.0f);
-        return imagerLerp (1.0f, imagerWidthMaxHigh, imagerSmoothstep (t));
+        const auto t = std::clamp (tBipolar, -1.0f, 1.0f);
+        return t >= 0.0f
+            ? imagerLerp (1.0f, imagerWidthMaxHigh, imagerSmoothstep (t))
+            : imagerLerp (1.0f, imagerWidthMonoGain, imagerSmoothstep (-t));
     }
 
     // Crossover for the width shelf - shared order of magnitude with PAN's

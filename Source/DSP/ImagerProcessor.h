@@ -12,11 +12,17 @@
     IMAGE is a deliberate, explicit exception to the plugin's "one knob
     per module" rule: it has TWO independent public parameters -
 
-        imager (0..100%):     ORIGINAL -> NATURAL -> WIDE
-                               Frequency-dependent stereo width/imaging:
-                               bass gathers toward centre as the macro
-                               rises, highs widen. Operates on Side only
-                               - Mid is never touched by this axis.
+        imager (-100..+100%): MONO <- CENTER -> STEREO
+                               Bipolar frequency-dependent stereo width/
+                               imaging (live-testing follow-up round - see
+                               ImagerCurves.h's "Bipolar redesign" note):
+                               negative values collapse Side toward true
+                               mono, positive values widen it (bass
+                               gathers toward centre as the macro rises,
+                               highs widen - unchanged from the module's
+                               original 0..100% contract). Operates on
+                               Side only - Mid is never touched by this
+                               axis.
 
         imageTilt (-100..+100): LEFT <- CENTER -> RIGHT
                                A static (time-invariant) stereo image
@@ -55,16 +61,16 @@ namespace uni76::dsp
         void prepare (double sampleRate, int maximumBlockSize, int numChannelsToUse);
         void reset() noexcept;
 
-        /** imageNormalised01 (0..1, `imager`) and tiltNormalisedMinus1to1
-            (-1..1, `imageTilt`) are read once per call and smoothed
-            internally - passing raw (possibly jumpy) automation values
-            each block is safe and expected. Both are static/time-
-            invariant by design (no internal LFO, unlike PAN) - see the
-            class comment. Mono buses (numChannels < 2) are left
+        /** imageBipolarMinus1to1 (-1..1, `imager`) and
+            tiltNormalisedMinus1to1 (-1..1, `imageTilt`) are read once per
+            call and smoothed internally - passing raw (possibly jumpy)
+            automation values each block is safe and expected. Both are
+            static/time-invariant by design (no internal LFO, unlike PAN)
+            - see the class comment. Mono buses (numChannels < 2) are left
             completely untouched - there is no L/R balance or width to
             build in a true mono bus (see docs/DSP_IMAGE.md's "Real mono
             bus" section). */
-        void process (juce::AudioBuffer<float>& buffer, float imageNormalised01, float tiltNormalisedMinus1to1, bool enabled) noexcept;
+        void process (juce::AudioBuffer<float>& buffer, float imageBipolarMinus1to1, float tiltNormalisedMinus1to1, bool enabled) noexcept;
 
         /** Always 0 - IMAGE is a pure gain/filter morph with no
             oversampling, no lookahead, no delay-based widening (no

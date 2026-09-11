@@ -34,7 +34,14 @@ export class FieldPad {
   }) {
     this.element = element;
     this.xState = xState; // imageTilt: 0=LEFT(-100) .. 1=RIGHT(+100)
-    this.yState = yState; // imager: 0=0% .. 1=100% (visually inverted - top=100%)
+    // imager is bipolar (-100..+100, live-testing follow-up round - see
+    // docs/DSP_IMAGE.md's "Bipolar redesign" section): normalised 0=-100%
+    // (MONO), 1=+100% (STEREO), 0.5=0%/CENTER. Still visually inverted
+    // (top=1/highest) - this mapping itself has NOT been re-interpreted
+    // for the new bipolar range (a separate, deliberate decision not made
+    // this round; the pad stays hidden either way - see app.js's
+    // initImageField()).
+    this.yState = yState;
     this.ariaLabel = ariaLabel;
     this.xDefaultNormalised = xDefaultNormalised;
     this.yDefaultNormalised = yDefaultNormalised;
