@@ -68,6 +68,16 @@ namespace uni76
         params.push_back (makePercentParameter (ParamID::imager,     "Imager",     0.0f));
         params.push_back (makeImageTiltParameter());
 
+        // PAN's nested RATE knob (see docs/DSP_PAN.md's "Motion rate"
+        // section, Source/DSP/PanoramaCurves.h's panRateHz()). 35.303% is
+        // not an arbitrary "middle" default - it is the exact normalised
+        // position that solves panRateHz(t) == 0.3Hz, the fixed LFO speed
+        // every PAN preset/session relied on before this parameter
+        // existed, so nothing that never touches the new RATE knob
+        // changes speed. Verified by a dedicated test in
+        // Tests/PluginTests.cpp against PanoramaCurves.h's own curve.
+        params.push_back (makePercentParameter (ParamID::panRate, "Pan Rate", 35.303f));
+
         return { params.begin(), params.end() };
     }
 }

@@ -44,25 +44,29 @@ get oriented without re-reading the whole codebase.
   `Resources/Web/knob.js`. The only permitted decorative effect beyond flat
   colour is very low-opacity CSS-generated grain/gradient (see the
   `.app::after` rule in `shell.css`) - never anything that reads as 3D.
-- **One primary knob per processor - with one deliberate exception.**
+- **One primary knob per processor - with two deliberate exceptions.**
   Each of the 7 modules gets exactly one large interactive knob bound to
-  its one public parameter. Any secondary read-out (the Preamp
-  filter-position lines, the tri-point scales on EQ/Pitch/Pan/Verb/Image)
-  is purely a derived visual computed from that same parameter's value in
-  JS - never a second control, never a second parameter. PAN's tri-scale
-  (`ORIGINAL`/`WIDE`/`MOTION`) is a stereo width + slow ear-to-ear motion
-  scale, not L/R balance - see the PAN section below. **IMAGE is the one
-  exception**: alongside its main `imager` knob (width/imaging amount,
-  same "one knob, one parameter" pattern as every other module), it also
-  carries a second, small, genuinely interactive control - a square
-  spatial field pad (`Resources/Web/field_pad.js`) whose X axis drives
-  `imageTilt` and whose Y axis drives `imager` itself (kept in sync with
-  the main knob via the shared JUCE SliderState singleton - see the
-  IMAGE section below and docs/DSP_IMAGE.md). This is a real second
-  control, unlike every other module's purely-derived tri-scale/filter-
-  lines, and it does not extend to any other module without a separate,
-  deliberate decision.
-- **8 immutable public parameters.** See below - the UI must never grow a
+  its one public parameter, except IMAGE and PAN (below). Any secondary
+  read-out (the Preamp filter-position lines, the tri-point scales on
+  EQ/Pitch/Verb) is purely a derived visual computed from that same
+  parameter's value in JS - never a second control, never a second
+  parameter. **IMAGE** carries a second, small, genuinely interactive
+  control alongside its main `imager` knob - a square spatial field pad
+  (`Resources/Web/field_pad.js`) whose X axis drives `imageTilt` and
+  whose Y axis drives `imager` itself (kept in sync with the main knob
+  via the shared JUCE SliderState singleton - see the IMAGE section
+  below and docs/DSP_IMAGE.md). **PAN** (live-testing follow-up round)
+  carries a genuinely second knob too - a smaller RATE knob nested
+  *concentrically inside* the main WIDTH knob (`--knob-size-inner`,
+  `Resources/Web/knobs.css`), driving the new `panRate` parameter (the
+  motion LFO's own speed, referencing SoundToys PanMan's Rate knob - see
+  docs/DSP_PAN.md's "Motion rate" section); PAN's own tri-scale
+  (`ORIGINAL`/`WIDE`/`MOTION`, a stereo width + slow ear-to-ear motion
+  scale, not L/R balance) remains purely derived from `panorama` alone,
+  unaffected by RATE. Both are real second controls, unlike every other
+  module's purely-derived tri-scale/filter-lines, and neither extends to
+  any other module without a separate, deliberate decision.
+- **9 immutable public parameters.** See below - the UI must never grow a
   9th public parameter without a deliberate, separate decision (the
   IMAGE/`imageTilt` addition above was exactly such a decision, already
   made and shipped).
@@ -94,10 +98,10 @@ Do not duplicate these values by hand elsewhere - `include()` that file, or
 read from `Source/Core/PluginIdentity.h` for the C++-only schema-version
 constant.
 
-### The 8 public parameters (stable IDs, do not rename)
+### The 9 public parameters (stable IDs, do not rename)
 
 `preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager`,
-`imageTilt` - see
+`imageTilt`, `panRate` - see
 [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
 Six are `0..100%` `AudioParameterFloat`s: default `50%` for `eq` (its
 centred/flat "PHONE" position), `0%` for the other five - including
@@ -105,7 +109,7 @@ centred/flat "PHONE" position), `0%` for the other five - including
 saturation/width/space/image all start at zero). `pitch` is a discrete
 `AudioParameterInt`, `-12..+12` semitones, step 1, default `0` (25 fixed
 positions, no cents - see [docs/DSP_PITCH.md](docs/DSP_PITCH.md)'s
-"Parameter and state migration" section). `imageTilt` is the other
+"Parameter and state migration" section). `imageTilt` is the first
 exception - a continuous `AudioParameterFloat`, `-100..+100`, default `0`
 (CENTER, sitting at the range's exact midpoint, same normalised-midpoint
 shape as `eq`'s 50% PHONE default and `pitch`'s 0 ST default) - a
@@ -113,7 +117,15 @@ deliberate, explicit exception to the "one parameter per module" rule
 (see [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md)): IMAGE alone has two
 independent axes, `imager` (frequency-dependent width/imaging amount)
 and `imageTilt` (a static L/R stereo balance/tilt on top of that same
-image - not a pan). `panorama`'s internal ID is a naming holdover - the
+image - not a pan). `panRate` is the second such exception (live-testing
+follow-up round) - a `0..100%` `AudioParameterFloat`, default `35.303%`
+(the exact normalised position that reproduces PAN's original fixed
+~0.3Hz LFO speed - see docs/DSP_PAN.md's "Motion rate" section), driving
+PAN's nested RATE knob (the motion LFO's own speed, referencing
+SoundToys PanMan's Rate control) - PAN now has two independent axes too,
+`panorama` (width/motion depth) and `panRate` (motion speed), the same
+"genuinely independent second axis" reasoning `imageTilt` already
+established. `panorama`'s internal ID is a naming holdover - the
 module it drives is a stereo width + slow motion control, not an L/R
 balance pan, see below. Low Cut / High Cut are **not** separate
 parameters - they are internal to `Source/DSP/PreampProcessor`, derived
@@ -1470,6 +1482,64 @@ MSVC 19.51):
     the real audible-difference test, save/restore, two corrupt-state
     fallback cases, and a 4-order finite/bounded stability sweep);
     installer rebuilt.
+
+- **PAN nested RATE knob (9th public parameter, `panRate`)** - the first
+  of the three modules flagged as separate follow-ups above, user-chosen
+  to go first. PAN's motion LFO speed was a fixed constant
+  (`panLfoRateHz`, ~0.3Hz) through every previous round; it is now a real,
+  automatable parameter driving a genuine second knob nested concentrically
+  inside the main WIDTH knob - see docs/DSP_PAN.md's "Motion rate" section
+  for the full derivation, and the "One primary knob per processor" rule
+  above for the UI precedent this follows (IMAGE's FIELD pad).
+  - **Curve** (`PanoramaCurves.h`'s `panRateHz()`): exponential taper,
+    `panRateMinHz=0.05` (~20s/cycle) to `panRateMaxHz=8.0` (clear
+    tremolo), same `g=min*(max/min)^t` shape the drive curves use.
+  - **Default preserves every existing sound exactly**: `35.303%` is not
+    an arbitrary middle value - it is the precise position that solves
+    `panRateHz(t)==0.3Hz` (measured 0.007% off target), so nothing that
+    never touches the new knob changes speed. All 32 factory presets
+    carry this same value; a legacy user-preset file missing the
+    `panRate` XML attribute falls back to it too.
+  - **A genuine, wide-reaching, this-project's-first 9th-parameter
+    addition** - unlike `imageTilt` (which only needed a schema-version-
+    free default fallback), this one is a *ninth* index into every
+    fixed-size, 8-element structure the codebase had: `ParamID::all`
+    (`std::array<..., 8>` -> 9), `FactoryPreset`'s raw-value table (a new
+    `panRate` field, all 32 rows updated), `UserPresetData::values` and
+    `WebUIEditor.h`'s `ABSnapshot::values` (both `std::array<float, 8>` ->
+    9), three `WebSliderRelay`/`WebSliderParameterAttachment` pairs, and -
+    the one genuinely dangerous find - **two hand-written `float
+    rawValues[8]` C arrays** (one in `WebUIEditor.cpp`'s
+    `uni76LoadFactoryPreset`, one duplicated verbatim inside
+    `Tests/PluginTests.cpp`'s own preset-application test) that compiled
+    cleanly at 9 parameters but would have read/written one element past
+    the array's end at runtime - caught only because the *test*
+    duplicate's own assertion read back garbage (`1.44953e+26`) rather
+    than the intended default; the `WebUIEditor.cpp` copy had no such
+    self-check and would have silently corrupted the stack on every
+    preset load had it shipped. Both fixed to `[9]` with `preset.panRate`
+    appended - a reminder that reusing `ParamID::all.size()` as a loop
+    bound over a *separately hand-sized* local array is exactly the kind
+    of latent bug a 9th-parameter addition exposes, and worth grepping
+    for specifically on any future parameter-count change.
+  - **Realtime behaviour**: `rateNormalised01` is smoothed the same
+    ~20ms way width already is; the LFO increment is recomputed every
+    sample (not once per block) so RATE moves retune the swing smoothly.
+    Only the LFO's *speed* changed - its free-running *phase* is
+    untouched by this round, same as always.
+  - **Measured**: RATE 50%->95% gave periods of 1.58s and 0.161s
+    respectively (clearly, substantially different - confirms RATE
+    genuinely retunes the LFO); an untouched instance still measures
+    PAN's original ~3.3s period at MOTION, matching every pre-existing
+    PAN motion test's own baseline.
+  - Debug/Release clean (0 warnings); full suite green, including the two
+    fixed stale "8 parameters" assumption tests the new count broke, plus
+    5 new dedicated RATE tests (curve anchors, the real period-change
+    test, untouched-default-preserves-behaviour, save/restore, and every
+    factory preset's own default); installer rebuilt.
+  - **VERB's nested DRIVE knob and IMAGE's bipolar mono<->stereo redesign
+    remain not started** - the user's own next-priority choice between
+    them wasn't asked this round; ask before starting either.
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

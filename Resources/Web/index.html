@@ -218,9 +218,31 @@
                   <div class="knob__center-dot"></div>
                 </div>
               </div>
+              <!-- Nested RATE knob (live-testing follow-up round) - a
+                   genuinely second, independent, interactive control
+                   inside PAN's own panel, the same "one deliberate
+                   exception" pattern IMAGE's FIELD pad already
+                   established (see CLAUDE.md's HTML/CSS/JS UI rule).
+                   Drives the new panRate parameter - the motion LFO's own
+                   speed, referencing SoundToys PanMan's own Rate knob -
+                   physically nested concentrically inside the WIDTH knob
+                   (--knob-size-inner, knobs.css), not a separate control
+                   elsewhere in the panel. See docs/DSP_PAN.md's "Motion
+                   rate" section. -->
+              <div class="knob knob--inner" data-param="panRate" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
+                <div class="knob__collar" aria-hidden="true"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
             </div>
             <div class="knob__value">0%</div>
             <div class="knob__label">WIDTH</div>
+            <div class="knob-module__inner-readout">
+              <span class="knob__value knob__value--inner">0.30 Hz</span>
+              <span class="knob__label knob__label--inner">RATE</span>
+            </div>
           </div>
         </div>
 

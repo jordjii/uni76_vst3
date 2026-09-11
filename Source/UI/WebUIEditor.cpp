@@ -32,6 +32,7 @@ namespace
         juce::WebSliderRelay& reverb,
         juce::WebSliderRelay& imager,
         juce::WebSliderRelay& imageTilt,
+        juce::WebSliderRelay& panRate,
         juce::WebControlParameterIndexReceiver& indexReceiver,
         UNI76AudioProcessor& processor,
         UNI76AudioProcessorEditor& editor)
@@ -60,6 +61,7 @@ namespace
             .withOptionsFrom (reverb)
             .withOptionsFrom (imager)
             .withOptionsFrom (imageTilt)
+            .withOptionsFrom (panRate)
             .withOptionsFrom (indexReceiver)
             // The 7 module-enabled flags are persistent but NOT DAW
             // automation parameters (see Core/ModuleEnableState.h), so
@@ -164,9 +166,10 @@ namespace
                             const auto& preset = uni76::factoryPresets[(size_t) index];
                             auto& apvts = processor.getValueTreeState();
 
-                            const float rawValues[8] {
+                            const float rawValues[9] {
                                 preset.preamp, preset.eq, preset.saturation, preset.pitch,
-                                preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+                                preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
+                                preset.panRate
                             };
 
                             for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
@@ -314,7 +317,7 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
                                     panoramaRelay, reverbRelay, imagerRelay, imageTiltRelay,
-                                    controlParameterIndexReceiver, p, *this)),
+                                    panRateRelay, controlParameterIndexReceiver, p, *this)),
       preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
                              preampRelay, processor.getValueTreeState().undoManager),
       eqAttachment         (*processor.getValueTreeState().getParameter (uni76::ParamID::eq),
@@ -330,7 +333,9 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       imagerAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::imager),
                              imagerRelay, processor.getValueTreeState().undoManager),
       imageTiltAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::imageTilt),
-                             imageTiltRelay, processor.getValueTreeState().undoManager)
+                             imageTiltRelay, processor.getValueTreeState().undoManager),
+      panRateAttachment    (*processor.getValueTreeState().getParameter (uni76::ParamID::panRate),
+                             panRateRelay, processor.getValueTreeState().undoManager)
 {
     addAndMakeVisible (webView);
     webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());

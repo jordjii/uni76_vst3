@@ -114,6 +114,50 @@ function initModule({ id, control, name, defaultNormalised, formatValue, discret
 // field_pad.js), so the two controls stay in sync automatically with no
 // extra wiring: whichever one changes the parameter, both receive the
 // resulting valueChangedEvent.
+// PAN's nested RATE knob (9th public parameter, panRate - live-testing
+// follow-up round) - a second, genuinely independent, interactive knob
+// physically nested inside the WIDTH knob (knobs.css's --knob-size-inner),
+// the same "one deliberate exception" pattern IMAGE's FIELD pad already
+// established (see CLAUDE.md's HTML/CSS/JS UI rule). Drives the motion
+// LFO's own speed - referencing SoundToys PanMan's own Rate knob - not
+// folded into initModule()/MODULES above, which is built around exactly
+// one control per module. See docs/DSP_PAN.md's "Motion rate" section.
+//
+// panRateHz() below is a presentation-only duplicate of
+// PanoramaCurves.h's own curve (same reasoning as formatEqPercent above -
+// no shared source across the JS/C++ boundary) so the readout shows the
+// real, audible speed rather than a bare percentage.
+const PAN_RATE_MIN_HZ = 0.05;
+const PAN_RATE_MAX_HZ = 8.0;
+
+function formatPanRateHz(scaled) {
+  const t = scaled / 100;
+  const hz = PAN_RATE_MIN_HZ * Math.pow(PAN_RATE_MAX_HZ / PAN_RATE_MIN_HZ, t);
+  return `${hz.toFixed(2)} Hz`;
+}
+
+function initPanRateKnob() {
+  const section = document.querySelector('.module[data-param="panorama"]');
+  if (!section) return;
+
+  const knobElement = section.querySelector(".knob--inner");
+  const valueElement = section.querySelector(".knob__value--inner");
+  if (!knobElement) return;
+
+  new ParameterKnob({
+    element: knobElement,
+    sliderState: getSliderState("panRate"),
+    ariaLabel: "Panorama Rate",
+    valueElement,
+    // Matches ParameterLayout.cpp's own default (35.303%) - the exact
+    // position that reproduces PAN's original fixed ~0.3Hz LFO speed, so
+    // a freshly opened instance's inner knob starts pointing at the same
+    // place its parameter default already is, not a generic 0/50%.
+    defaultNormalised: 0.35303,
+    formatValue: formatPanRateHz,
+  });
+}
+
 function initImageField() {
   const element = document.querySelector(".field__pad");
   if (!element) return;
@@ -150,6 +194,7 @@ function preventButtonFocusStealing() {
 }
 
 MODULES.forEach(initModule);
+initPanRateKnob();
 initImageField();
 initMeters();
 initModulePower();

@@ -70,14 +70,18 @@ namespace uni76::dsp
         void prepare (double sampleRate, int maximumBlockSize, int numChannelsToUse);
         void reset() noexcept;
 
-        /** widthNormalised01 and enabled are read once per call - both are
-            smoothed internally (~20ms), so passing a raw (possibly jumpy)
-            automation value each block is safe and expected. The motion
-            LFO's own phase is a free-running clock, entirely independent
-            of widthNormalised01 changes - only reset() (not a parameter
-            change) resets it. Mono buses (numChannels < 2) are left
-            untouched - there is no stereo field to build. */
-        void process (juce::AudioBuffer<float>& buffer, float widthNormalised01, bool enabled) noexcept;
+        /** widthNormalised01, rateNormalised01 and enabled are read once
+            per call - all smoothed internally (~20ms), so passing a raw
+            (possibly jumpy) automation value each block is safe and
+            expected. rateNormalised01 drives the motion LFO's own speed
+            (see PanoramaCurves.h's panRateHz()) - the LFO's *phase* is
+            still a free-running clock, entirely independent of both
+            width and rate changes; only reset() (not a parameter change)
+            resets it, so changing RATE mid-motion smoothly retunes the
+            existing swing rather than restarting it. Mono buses
+            (numChannels < 2) are left untouched - there is no stereo
+            field to build. */
+        void process (juce::AudioBuffer<float>& buffer, float widthNormalised01, float rateNormalised01, bool enabled) noexcept;
 
         /** Always 0 - PAN is a pure gain/filter/rotation morph with no
             oversampling, no lookahead, no delay-based motion (no Haas).
@@ -150,6 +154,7 @@ namespace uni76::dsp
         double lfoPhase = 0.0;
 
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> widthSmoother;
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> rateSmoother;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> bypassSmoother;
 
         // No latency to align against (getLatencySamples() == 0), so the

@@ -23,7 +23,7 @@ namespace uni76
 {
     struct UserPresetData
     {
-        std::array<float, 8> values {};       // ParamID::all order, real units
+        std::array<float, 9> values {};       // ParamID::all order, real units
         std::array<bool, 7> moduleEnabled {};
     };
 
@@ -144,8 +144,8 @@ namespace uni76
         root.setAttribute ("name", name);
 
         auto* params = root.createNewChildElement ("Parameters");
-        static const char* paramNames[8] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt" };
-        for (int i = 0; i < 8; ++i)
+        static const char* paramNames[9] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate" };
+        for (int i = 0; i < 9; ++i)
             params->setAttribute (paramNames[i], (double) data.values[(size_t) i]);
 
         auto* modules = root.createNewChildElement ("ModulesEnabled");
@@ -172,9 +172,18 @@ namespace uni76
             return std::nullopt;
 
         UserPresetData data;
-        static const char* paramNames[8] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt" };
-        for (int i = 0; i < 8; ++i)
-            data.values[(size_t) i] = (float) params->getDoubleAttribute (paramNames[i]);
+        static const char* paramNames[9] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate" };
+        // A preset saved before PAN's RATE knob existed has no "panRate"
+        // attribute at all - getDoubleAttribute's own default (0.0) would
+        // silently read as the *slowest* possible rate, not "unchanged
+        // from before this parameter existed". 35.303 is the exact
+        // normalised position that reproduces PAN's original fixed
+        // ~0.3Hz LFO speed (see ParameterLayout.cpp's own comment) - the
+        // same fallback-to-current-default pattern
+        // ModuleEnableState/imageTilt migrations already use.
+        static const double paramDefaults[9] { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 35.303 };
+        for (int i = 0; i < 9; ++i)
+            data.values[(size_t) i] = (float) params->getDoubleAttribute (paramNames[i], paramDefaults[i]);
 
         static const char* moduleNames[7] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager" };
         for (int i = 0; i < 7; ++i)

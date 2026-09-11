@@ -136,6 +136,13 @@
      A single scale so the knob, its tick ring and its indicator always
      stay proportional to one another. */
   --knob-size: clamp(5.1rem, 3.5rem + 6.2vw, 9.3rem);
+  /* PAN's nested RATE knob (live-testing follow-up round, see
+     docs/DSP_PAN.md's "Motion rate" section) - sized as a fraction of the
+     outer WIDTH knob it sits concentrically inside, so it scales with
+     everything else rather than needing its own clamp(). ~42% leaves a
+     visible outer ring (WIDTH) around the inner face (RATE), reading as
+     one dual-concentric hardware pot rather than two separate knobs. */
+  --knob-size-inner: calc(var(--knob-size) * 0.42);
   --knob-ring-inset: 9%;
   --knob-collar-inset: 4.5%;
   --knob-indicator-width: 5.5%;

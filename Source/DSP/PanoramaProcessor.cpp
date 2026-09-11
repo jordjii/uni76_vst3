@@ -19,12 +19,18 @@ namespace uni76::dsp
         dryScratch.setSize (2, maximumBlockSize, false, false, true);
 
         widthSmoother.reset (sampleRate, panSmoothingSeconds);
+        rateSmoother.reset (sampleRate, panSmoothingSeconds);
         bypassSmoother.reset (sampleRate, panSmoothingSeconds);
         // ORIGINAL (0%) is the new product default and the module's own
         // identity point - matches ParameterLayout.cpp's default so a
         // freshly prepared instance never ramps from a wrong value before
-        // the host's first real parameter update arrives.
+        // the host's first real parameter update arrives. RATE starts at
+        // its own default-matching position (see ParameterLayout.cpp's
+        // 35.303% comment) for the same reason - a fresh instance's very
+        // first block should already be at the documented 0.3Hz anchor,
+        // not ramping up from 0.
         widthSmoother.setCurrentAndTargetValue (0.0f);
+        rateSmoother.setCurrentAndTargetValue (0.35303f);
         bypassSmoother.setCurrentAndTargetValue (1.0f);
 
         reset();
@@ -41,7 +47,7 @@ namespace uni76::dsp
         lfoPhase = 0.0;
     }
 
-    void PanoramaProcessor::process (juce::AudioBuffer<float>& buffer, float widthNormalised01, bool enabled) noexcept
+    void PanoramaProcessor::process (juce::AudioBuffer<float>& buffer, float widthNormalised01, float rateNormalised01, bool enabled) noexcept
     {
         const auto numSamples = buffer.getNumSamples();
         const auto channels = buffer.getNumChannels();
@@ -59,6 +65,7 @@ namespace uni76::dsp
         }
 
         widthSmoother.setTargetValue (std::clamp (widthNormalised01, 0.0f, 1.0f));
+        rateSmoother.setTargetValue (std::clamp (rateNormalised01, 0.0f, 1.0f));
         bypassSmoother.setTargetValue (enabled ? 1.0f : 0.0f);
 
         // Mono buses have no stereo field to build - a true no-op (not
@@ -80,13 +87,21 @@ namespace uni76::dsp
         const auto* dryL = dryScratch.getReadPointer (0);
         const auto* dryR = dryScratch.getReadPointer (1);
 
-        const auto lfoIncrement = twoPi * panLfoRateHz / sampleRate;
         constexpr float sqrt2 = 1.4142135623730951f;
 
         for (int i = 0; i < numSamples; ++i)
         {
             const auto t = widthSmoother.getNextValue();
+            const auto rate = rateSmoother.getNextValue();
             const auto mix = bypassSmoother.getNextValue();
+
+            // RATE (nested knob) drives the LFO's own speed - recomputed
+            // every sample from the smoothed value so a RATE move retunes
+            // the swing smoothly rather than in a block-sized staircase,
+            // matching the motion shelves' own per-sample coefficient
+            // recompute just below. The LFO's *phase* itself is untouched
+            // by this - see the class comment's "free-running clock" note.
+            const auto lfoIncrement = twoPi * panRateHz (rate) / sampleRate;
 
             const auto l = L[i];
             const auto r = R[i];

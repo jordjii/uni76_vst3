@@ -676,6 +676,60 @@ alike, each with a hand-set legacy value of 50.0 (the old "NATURAL"
 value specifically, to confirm it is *not* preserved as if it still
 meant something).
 
+## Motion rate (nested RATE knob, live-testing follow-up round)
+
+The motion LFO's own speed was a fixed constant (`panLfoRateHz`, ~0.3Hz)
+through every previous round of this module's development - "deliberately
+slow, nothing resembling tremolo" was a hard product constraint, not a
+tunable parameter. Direct feedback asked for it to become one, referencing
+SoundToys PanMan's own Rate knob as the explicit model: a nested,
+concentric secondary control - physically inside the WIDTH knob, not
+beside it - the same "one deliberate exception to one-knob-per-module"
+pattern IMAGE's FIELD pad already established for this project (see
+CLAUDE.md's HTML/CSS/JS UI rule).
+
+**New 9th public parameter**: `panRate` (`Source/Parameters/ParameterIDs.h`) -
+a plain `0..100%` `AudioParameterFloat`, same shape as six of the other
+eight parameters. Following the same precedent `imageTilt` set for growing
+past 8 parameters (a genuinely independent second axis on one module, not
+a second knob controlling the same thing) - see ParameterIDs.h's own
+updated class comment.
+
+**Curve** (`PanoramaCurves.h`'s `panRateHz()`): an exponential taper,
+`g = min*(max/min)^t`, the same shape this project's drive curves already
+use - not a linear Hz sweep, which would spend almost the whole knob in
+an "impossibly slow" region and compress every musically useful speed
+into the last few percent. `panRateMinHz = 0.05` (~20s/cycle, glacial but
+not "stuck"); `panRateMaxHz = 8.0` (clear tremolo-like flutter, matching
+the fast end of PanMan's own range by ear/spec).
+
+**Default preserves every existing preset/session exactly**: the
+parameter's own default (`ParameterLayout.cpp`) is `35.303%` - not an
+arbitrary "middle" value, but the precise normalised position that solves
+`panRateHz(t) == panLfoRateHz` (measured `panRateHz(0.35303) = 0.299979Hz`,
+0.007% off target). Every one of the 32 factory presets carries this same
+value (`FactoryPresets.h`), and a legacy user-preset file with no
+`panRate` attribute at all falls back to it too (`UserPresets.h`) - a
+session/preset that never touches the new RATE knob sounds identical to
+before this round shipped.
+
+**Realtime behaviour**: `rateNormalised01` is smoothed the same
+`panSmoothingSeconds` (~20ms) way `widthNormalised01` already is, and the
+resulting LFO increment (`panRateHz(rate) * twoPi / sampleRate`) is
+recomputed every sample - a RATE move retunes the swing smoothly, not in
+a block-sized staircase. Only the LFO's own *speed* is parameterised;
+its *phase* is unchanged by this round - still a free-running clock, never
+reset by any parameter change (RATE included), only by `reset()`.
+
+**Measured**: swinging RATE from 50% to 95% (chosen so both settings
+complete several cycles inside a 6s test window) measured periods of
+1.58s and 0.161s respectively via the same centroid-trajectory method the
+rest of this module's motion tests use - clearly, substantially different,
+confirming RATE genuinely retunes the measured LFO, not just a stored
+number. A completely untouched instance (RATE left at its own default)
+still measures a ~3.3s period at MOTION, matching every pre-existing PAN
+motion test's own baseline.
+
 ## Known limitations
 
 - The 80Hz-under-stereo-highs centre-stability test measures a **0.19dB**

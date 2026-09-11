@@ -77,19 +77,27 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 8 parameter IDs exist with the correct defaults (EQ 50%, everything else 0%)");
+        beginTest ("All 9 parameter IDs exist with the correct defaults (EQ 50%, panRate 35.303%, everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
 
-            expectEquals ((int) uni76::ParamID::all.size(), 8);
+            expectEquals ((int) uni76::ParamID::all.size(), 9);
 
             for (const auto* id : uni76::ParamID::all)
             {
                 auto* param = apvts.getParameter (id);
                 expect (param != nullptr, juce::String ("missing parameter: ") + id);
 
-                const auto expectedDefault = std::strcmp (id, uni76::ParamID::eq) == 0 ? 50.0f : 0.0f;
+                // panRate's default (see ParameterLayout.cpp) is not a
+                // "neutral 0/50" value like every other module's own
+                // resting default - it is the exact normalised position
+                // that reproduces PAN's pre-existing fixed ~0.3Hz LFO
+                // speed, so a bare/no-preset instance sounds identical to
+                // before this parameter existed.
+                float expectedDefault = 0.0f;
+                if (std::strcmp (id, uni76::ParamID::eq) == 0) expectedDefault = 50.0f;
+                else if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = 35.303f;
 
                 if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
                     expectWithinAbsoluteError (floatParam->get(), expectedDefault, 0.001f, id);
@@ -134,7 +142,11 @@ public:
                 const bool isMidpointDefault = std::strcmp (id, uni76::ParamID::eq) == 0
                                              || std::strcmp (id, uni76::ParamID::pitch) == 0
                                              || std::strcmp (id, uni76::ParamID::imageTilt) == 0;
-                const auto expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
+                // panRate's own normalised default (0.35303) is neither
+                // 0 nor the 0.5 midpoint every other special-cased
+                // parameter uses - see ParameterLayout.cpp's own comment.
+                float expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
+                if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = 0.35303f;
 
                 if (auto* param = apvts.getParameter (id))
                     expectWithinAbsoluteError (param->getValue(), expectedDefault, 0.001f, id);
@@ -1007,9 +1019,16 @@ namespace
 
     /** Feeds an already-built stereo buffer through `pan` in fixed-size
         blocks, mirroring exactly how PluginProcessor::processBlock() calls
-        PanoramaProcessor::process(). */
+        PanoramaProcessor::process(). rateNormalised01 defaults to 0.35303f
+        - the exact normalised position that reproduces PAN's original
+        fixed ~0.3Hz LFO speed (see ParameterLayout.cpp/PanoramaCurves.h's
+        panRateHz()) - so every pre-existing call site below, none of which
+        passes a rate argument, keeps measuring exactly the same LFO period
+        it always has; only the new RATE-specific tests pass a different
+        value explicitly. */
     juce::AudioBuffer<float> runPanoramaProcessor (uni76::dsp::PanoramaProcessor& pan, const juce::AudioBuffer<float>& input,
-                                                    int blockSize, float widthNormalised01, bool enabled)
+                                                    int blockSize, float widthNormalised01, bool enabled,
+                                                    float rateNormalised01 = 0.35303f)
     {
         const auto numChannels = input.getNumChannels();
         const auto totalSamples = input.getNumSamples();
@@ -1024,7 +1043,7 @@ namespace
             for (int ch = 0; ch < numChannels; ++ch)
                 block.copyFrom (ch, 0, input, ch, done, thisBlock);
 
-            pan.process (block, widthNormalised01, enabled);
+            pan.process (block, widthNormalised01, rateNormalised01, enabled);
 
             for (int ch = 0; ch < numChannels; ++ch)
                 result.copyFrom (ch, done, block, ch, 0, thisBlock);
@@ -5021,7 +5040,7 @@ public:
                 for (int i = 0; i < 512; ++i)
                     buffer.setSample (ch, i, 0.2f * std::sin (0.1f * (float) i));
 
-            pan.process (buffer, 1.0f, true);
+            pan.process (buffer, 1.0f, 0.35303f, true);
             expect (bufferIsFinite (buffer), "process() produced non-finite output right after prepare()");
         }
 
@@ -5045,7 +5064,7 @@ public:
                 {
                     juce::AudioBuffer<float> buffer (2, 512);
                     buffer.clear();
-                    pan.process (buffer, width, enabled);
+                    pan.process (buffer, width, 0.35303f, enabled);
                     expectEquals (pan.getLatencySamples(), 0);
                 }
         }
@@ -5303,7 +5322,7 @@ public:
                 block.copyFrom (1, 0, monoInStereo, 1, done, thisBlock);
 
                 stepIndex = juce::jmin ((int) (sizeof (widthSteps) / sizeof (widthSteps[0])) - 1, done / juce::jmax (1, stepSamples));
-                pan.process (block, widthSteps[stepIndex], true);
+                pan.process (block, widthSteps[stepIndex], 0.35303f, true);
 
                 output.copyFrom (0, done, block, 0, 0, thisBlock);
                 output.copyFrom (1, done, block, 1, 0, thisBlock);
@@ -5875,7 +5894,7 @@ public:
                     block.copyFrom (1, 0, input, 1, done, thisBlock);
 
                     const auto width = done < preSwitch ? t.from : t.to;
-                    pan.process (block, width, true);
+                    pan.process (block, width, 0.35303f, true);
 
                     output.copyFrom (0, done, block, 0, 0, thisBlock);
                     output.copyFrom (1, done, block, 1, 0, thisBlock);
@@ -5952,7 +5971,7 @@ public:
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < 256; ++i)
                     poisoned.setSample (ch, i, (i % 2 == 0) ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN());
-            pan.process (poisoned, 1.0f, true);
+            pan.process (poisoned, 1.0f, 0.35303f, true);
             expect (bufferIsFinite (poisoned), "NaN/Inf input leaked through to the output");
 
             auto clean = generateDecorrelatedStereo (44100, 44100.0);
@@ -8331,12 +8350,15 @@ namespace
 
     struct ParamSpec { const char* id; float defaultNorm; };
 
-    // Every one of the 8 parameters expressed uniformly in normalised 0..1
+    // Every one of the 9 parameters expressed uniformly in normalised 0..1
     // space: 1.0 is always that parameter's "loud" extreme (100%, +12 ST,
-    // +100 TILT); 0.0 is a second, distinct extreme only for pitch (-12 ST)
-    // and imageTilt (-100/LEFT) - for the other six, 0.0 is simply their
-    // own resting default.
-    const std::array<ParamSpec, 8> auditParams {{
+    // +100 TILT, fastest RATE); 0.0 is a second, distinct extreme only for
+    // pitch (-12 ST) and imageTilt (-100/LEFT) - for the other seven, 0.0
+    // is simply their own resting default. panRate's own resting default
+    // (0.35303) is neither 0 nor 1 - see ParameterLayout.cpp's own
+    // comment - so it is listed at that value, not folded into the "0.0 =
+    // rest" convention the six plain percent modules share.
+    const std::array<ParamSpec, 9> auditParams {{
         { uni76::ParamID::preamp,     0.0f },
         { uni76::ParamID::eq,         0.5f },
         { uni76::ParamID::saturation, 0.0f },
@@ -8345,6 +8367,7 @@ namespace
         { uni76::ParamID::reverb,     0.0f },
         { uni76::ParamID::imager,     0.0f },
         { uni76::ParamID::imageTilt,  0.5f },
+        { uni76::ParamID::panRate,    0.35303f },
     }};
 
     void applyAuditDefaults (juce::AudioProcessorValueTreeState& apvts)
@@ -9998,9 +10021,10 @@ public:
                     processor.getModuleEnableState().setEnabled (m, ! preset.modulesEnabled[(size_t) m]);
 
                 // Verbatim replica of WebUIEditor.cpp's uni76LoadFactoryPreset.
-                const float rawValues[8] {
+                const float rawValues[9] {
                     preset.preamp, preset.eq, preset.saturation, preset.pitch,
-                    preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+                    preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
+                    preset.panRate
                 };
                 for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
                     if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
@@ -10055,7 +10079,7 @@ public:
 
         beginTest ("Loading a preset does not rename or add any parameter ID (stable-ID contract)");
         {
-            expectEquals ((int) uni76::ParamID::all.size(), 8);
+            expectEquals ((int) uni76::ParamID::all.size(), 9);
             UNI76AudioProcessor processor;
             for (auto& preset : uni76::factoryPresets)
                 juce::ignoreUnused (preset);
@@ -10134,9 +10158,10 @@ public:
             // Pick a preset that clearly engages multiple modules (not
             // "Default", which is near-identity at every stage).
             const auto& preset = uni76::factoryPresets[1]; // "Warm Analog"
-            const float rawValues[8] {
+            const float rawValues[9] {
                 preset.preamp, preset.eq, preset.saturation, preset.pitch,
-                preset.panorama, preset.reverb, preset.imager, preset.imageTilt
+                preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
+                preset.panRate
             };
             for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
                 if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
@@ -10487,6 +10512,124 @@ public:
 };
 
 static UNI76ChainOrderTests uni76ChainOrderTests; // NOLINT - self-registers with the UnitTestRunner
+
+// ---- PAN's nested RATE knob (9th public parameter, ParamID::panRate) -----
+//
+// Covers the new panRateHz() curve's anchors (min/max/the default position
+// that must reproduce PAN's pre-existing fixed ~0.3Hz speed exactly), that
+// moving RATE genuinely changes the measured motion-LFO period (not just a
+// stored number), that a completely untouched instance still measures the
+// same ~3.3s period the rest of the PAN suite has always relied on, and
+// that the new parameter survives a real save/restore round-trip.
+class UNI76PanRateTests final : public juce::UnitTest
+{
+public:
+    UNI76PanRateTests() : juce::UnitTest ("PAN RATE (panRate, nested knob)", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("panRateHz() anchors: min at 0%, max at 100%, ~0.3Hz at the parameter's own default");
+        {
+            expectWithinAbsoluteError ((float) uni76::dsp::panRateHz (0.0f), (float) uni76::dsp::panRateMinHz, 1.0e-6f);
+            expectWithinAbsoluteError ((float) uni76::dsp::panRateHz (1.0f), (float) uni76::dsp::panRateMaxHz, 1.0e-3f);
+
+            // 0.35303 is ParameterLayout.cpp's documented default - must
+            // land within a fraction of a percent of the module's
+            // original fixed speed, or every pre-existing preset/session
+            // would audibly change speed the moment this parameter
+            // shipped.
+            const auto atDefault = uni76::dsp::panRateHz (0.35303f);
+            const auto errorPercent = 100.0 * std::abs (atDefault - uni76::dsp::panLfoRateHz) / uni76::dsp::panLfoRateHz;
+            std::cout << "\npanRateHz(0.35303) = " << atDefault << "Hz (target " << uni76::dsp::panLfoRateHz
+                        << "Hz, error " << errorPercent << "%)" << std::endl;
+            expect (errorPercent < 1.0, "the default RATE position should reproduce ~0.3Hz within 1%");
+        }
+
+        beginTest ("Moving RATE genuinely changes the measured motion-LFO period (PanoramaProcessor alone)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            const auto totalSamples = (int) (sr * 6.0);
+            const auto windowLen = (int) (sr * 0.02);
+
+            auto measurePeriod = [&] (float rate)
+            {
+                uni76::dsp::PanoramaProcessor pan;
+                pan.prepare (sr, blockSize, 2);
+                auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.3f);
+                auto output = runPanoramaProcessor (pan, source, blockSize, 1.0f, true, rate);
+                const auto series = centroidSeries (output, 0, totalSamples, windowLen);
+                return measureOscillationPeriodSeconds (series, (double) windowLen / sr);
+            };
+
+            // 0.1's own period (~12s at this curve) wouldn't complete even
+            // one cycle in this window - 0.5/0.95 both comfortably fit
+            // several cycles in 6s (~1.6s and ~0.16s respectively) while
+            // still being clearly, measurably different rates.
+            const auto slowPeriod = measurePeriod (0.5f);
+            const auto fastPeriod = measurePeriod (0.95f);
+
+            std::cout << "\nRATE=50%: period=" << slowPeriod << "s   RATE=95%: period=" << fastPeriod << "s" << std::endl;
+
+            expect (slowPeriod > 0.0 && fastPeriod > 0.0, "both RATE settings should produce a measurable period");
+            expect (fastPeriod < slowPeriod * 0.5, "a much higher RATE should give a measurably shorter period, not the same one");
+        }
+
+        beginTest ("Full processor: a completely untouched RATE still measures PAN's original ~3.3s period");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 512;
+            const auto totalSamples = (int) (sr * 8.0);
+            const auto windowLen = (int) (sr * 0.05);
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, blockSize);
+            auto& apvts = processor.getValueTreeState();
+            applyAuditDefaults (apvts);
+            setNormalised (apvts, uni76::ParamID::panorama, 1.0f); // MOTION - RATE deliberately left untouched
+
+            auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.2f);
+            auto output = runFullChain (processor, source, blockSize);
+            const auto latency = processor.getLatencySamples();
+            const auto series = centroidSeries (output, latency, output.getNumSamples() - latency, windowLen);
+            const auto period = measureOscillationPeriodSeconds (series, (double) windowLen / sr);
+
+            std::cout << "\nUntouched RATE: measured period=" << period << "s (target ~3.3s)" << std::endl;
+            expect (period > 2.5 && period < 4.2, "an untouched RATE should still measure PAN's original ~3.3s period");
+        }
+
+        beginTest ("panRate survives a real getStateInformation()/setStateInformation() save+restore");
+        {
+            UNI76AudioProcessor processor;
+            auto* param = processor.getValueTreeState().getParameter (uni76::ParamID::panRate);
+            expect (param != nullptr);
+            if (param == nullptr) return;
+
+            param->setValueNotifyingHost (0.8f);
+
+            juce::MemoryBlock saved;
+            processor.getStateInformation (saved);
+
+            UNI76AudioProcessor reloaded;
+            reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+            auto* reloadedParam = reloaded.getValueTreeState().getParameter (uni76::ParamID::panRate);
+            expect (reloadedParam != nullptr);
+            if (reloadedParam != nullptr)
+                expectWithinAbsoluteError (reloadedParam->getValue(), 0.8f, 0.001f, "panRate should survive save/restore");
+        }
+
+        beginTest ("Every factory preset carries the same behaviour-preserving panRate default");
+        {
+            for (auto& preset : uni76::factoryPresets)
+                expectWithinAbsoluteError (preset.panRate, 35.303f, 0.001f,
+                                            juce::String (preset.name) + ": panRate should default to the original ~0.3Hz speed");
+        }
+    }
+};
+
+static UNI76PanRateTests uni76PanRateTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

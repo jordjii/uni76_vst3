@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <cmath>
 
 /*
     Single source of truth for how the PAN / STEREO FIELD macro parameter
@@ -97,10 +98,43 @@ namespace uni76::dsp
     // per band) - free-running from the moment prepare() is called,
     // *never* reset or re-phased by a parameter change (only reset()
     // - i.e. playback stop/restart - resets it, same as every other
-    // module's filter state). ~0.3Hz -> a full Left-Center-Right-Center-
-    // Left cycle takes a bit over 3 seconds - deliberately slow, nothing
-    // resembling tremolo.
+    // module's filter state).
+    //
+    // The clock's own *speed* used to be this fixed constant; it is now
+    // driven by the nested RATE knob (`ParamID::panRate`, see
+    // panRateHz() below) - kept here, unused by PanoramaProcessor
+    // directly any more, purely as the documented anchor value RATE's own
+    // default normalised position (see ParameterLayout.cpp) is solved
+    // against, so every existing preset/session that never touches RATE
+    // keeps exactly this speed.
     inline constexpr double panLfoRateHz = 0.3;
+
+    // ---- Motion rate (nested RATE knob - live-testing follow-up round) ------
+    //
+    // SoundToys PanMan's own Rate knob was the explicit reference: slow
+    // and considered at the low end, clearly tremolo-fast at the high
+    // end, on a continuously-variable (not tempo-synced - that is a
+    // separate, larger, not-yet-started follow-up needing host BPM
+    // access) exponential taper - the same `g = min*(max/min)^t` shape
+    // this project's drive curves already use, not a linear Hz sweep
+    // (a linear sweep would spend almost the whole knob in the
+    // "impossibly slow" region and compress every musically useful speed
+    // into the last few percent).
+    //
+    // panRateMinHz (20s per cycle) is close enough to "the field barely
+    // moves" that it reads as a deliberate, glacial pace rather than
+    // "broken/stuck". panRateMaxHz (8Hz) is fast enough to read as clear
+    // tremolo-like flutter - well short of anything that would alias or
+    // beat unpleasantly against typical program material, and matches
+    // the fast end of PanMan's own Rate range by ear/spec.
+    inline constexpr double panRateMinHz = 0.05;
+    inline constexpr double panRateMaxHz = 8.0;
+
+    inline double panRateHz (float rateNormalised01) noexcept
+    {
+        const auto t = std::clamp (rateNormalised01, 0.0f, 1.0f);
+        return panRateMinHz * std::pow (panRateMaxHz / panRateMinHz, (double) t);
+    }
 
     // Equal-power motion: at depth=0, theta sits at the fixed centre
     // pi/4 (cos==sin==1/sqrt(2), i.e. the ordinary symmetric-width

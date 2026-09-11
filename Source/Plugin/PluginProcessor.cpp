@@ -22,6 +22,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     reverbParameter = apvts.getRawParameterValue (uni76::ParamID::reverb);
     imagerParameter = apvts.getRawParameterValue (uni76::ParamID::imager);
     imageTiltParameter = apvts.getRawParameterValue (uni76::ParamID::imageTilt);
+    panRateParameter = apvts.getRawParameterValue (uni76::ParamID::panRate);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -136,6 +137,10 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     // PITCH) - 0.5 (NATURAL) is both the parameter's own default and the
     // module's identity point, see docs/DSP_PAN.md.
     const auto panoramaWidth = panoramaParameter != nullptr ? panoramaParameter->load() / 100.0f : 0.5f;
+    // PAN's nested RATE knob (see docs/DSP_PAN.md's "Motion rate" section) -
+    // shares panoramaEnabled below (one bypass flag for the whole module,
+    // same as IMAGE's imager+imageTilt pair).
+    const auto panRate = panRateParameter != nullptr ? panRateParameter->load() / 100.0f : 0.35303f;
     const auto panoramaEnabled = moduleEnableState.isEnabled (4); // index 4 = panorama, see ModuleEnableState::propertyNames
 
     const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
@@ -163,7 +168,7 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             case 1: eqProcessor.process (buffer, eqTone, eqEnabled); break;
             case 2: satProcessor.process (buffer, satHeat, satEnabled); break;
             case 3: pitchProcessor.process (buffer, pitchSemitones, pitchEnabled); break;
-            case 4: panoramaProcessor.process (buffer, panoramaWidth, panoramaEnabled); break;
+            case 4: panoramaProcessor.process (buffer, panoramaWidth, panRate, panoramaEnabled); break;
             case 5: verbProcessor.process (buffer, reverbWet, reverbEnabled); break;
             case 6: imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled); break;
             default: break; // unreachable for a validated permutation - see ChainOrder::isValidPermutation()

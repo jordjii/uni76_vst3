@@ -199,3 +199,32 @@
   color: var(--ink-mid);
   text-align: center;
 }
+
+/* ---- PAN's nested RATE knob (live-testing follow-up round) --------------
+   Concentric, not beside - absolutely centred inside the same knob-wrap
+   the outer WIDTH knob occupies, at --knob-size-inner (tokens.css). Both
+   knobs are otherwise unmodified ParameterKnob instances (knob.js) with
+   the same interaction model (drag/wheel/keyboard) - only their size and
+   stacking differ. */
+.knob--inner {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 1;
+}
+
+.knob-module__inner-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4em;
+}
+
+.knob__value--inner {
+  font-size: calc(var(--fs-knob-value) * 0.62);
+  min-width: 0;
+}
+
+.knob__label--inner {
+  font-size: calc(var(--fs-knob-label) * 0.85);
+}
