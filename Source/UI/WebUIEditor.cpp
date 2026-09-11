@@ -93,6 +93,46 @@ namespace
 
                     complete (juce::var (states));
                 })
+            // Drag-and-drop pedalboard reordering (see Core/ChainOrder.h) -
+            // uni76GetChainOrder returns the 7 role indices in *position*
+            // order (result[0] is the role that currently runs first);
+            // uni76SetChainOrder takes the same shape, validates it is a
+            // genuine permutation before applying (an invalid array is
+            // silently ignored, not partially applied), and persists via
+            // the existing getStateInformation()/setStateInformation()
+            // mechanism automatically - no new save path needed.
+            .withNativeFunction ("uni76GetChainOrder",
+                [&processor] (const juce::Array<juce::var>&, Completion complete)
+                {
+                    juce::Array<juce::var> order;
+                    for (auto role : processor.getChainOrder().snapshot())
+                        order.add (role);
+
+                    complete (juce::var (order));
+                })
+            .withNativeFunction ("uni76SetChainOrder",
+                [&processor] (const juce::Array<juce::var>& args, Completion complete)
+                {
+                    bool ok = false;
+                    if (args.size() >= 1 && args[0].isArray())
+                    {
+                        auto* incoming = args[0].getArray();
+                        if (incoming != nullptr && incoming->size() == uni76::ChainOrder::numModules)
+                        {
+                            std::array<int, uni76::ChainOrder::numModules> candidate {};
+                            for (int i = 0; i < uni76::ChainOrder::numModules; ++i)
+                                candidate[(size_t) i] = (int) incoming->getReference (i);
+
+                            if (uni76::ChainOrder::isValidPermutation (candidate))
+                            {
+                                processor.getChainOrder().setOrder (candidate);
+                                ok = true;
+                            }
+                        }
+                    }
+
+                    complete (juce::var (ok));
+                })
             // RC1 factory presets (see Core/FactoryPresets.h) - a preset is
             // just a named set of values for the existing 8 parameters +
             // the 7 module-enable flags, applied through the exact same

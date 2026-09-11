@@ -13,6 +13,7 @@ import { FieldPad } from "./field_pad.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
 import { initMeters } from "./meters.js";
 import { initModulePower } from "./module_power.js";
+import { initChainOrder } from "./chain_order.js";
 import { initPresetMenu, initABToggle } from "./header_controls.js";
 
 // PITCH is a discrete -12..+12 semitone APVTS int parameter (25 positions,
@@ -152,6 +153,7 @@ MODULES.forEach(initModule);
 initImageField();
 initMeters();
 initModulePower();
+initChainOrder();
 initPresetMenu();
 initABToggle();
 preventButtonFocusStealing();

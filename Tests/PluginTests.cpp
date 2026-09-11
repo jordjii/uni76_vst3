@@ -7,6 +7,7 @@
 #include "Core/LevelMeter.h"
 #include "Core/MeterEnvelope.h"
 #include "Core/ModuleEnableState.h"
+#include "Core/ChainOrder.h"
 #include "Core/FactoryPresets.h"
 #include "Core/UserPresets.h"
 #include "DSP/PreampProcessor.h"
@@ -10289,6 +10290,203 @@ public:
 };
 
 static UNI76UXPolishTests uni76UXPolishTests; // NOLINT - self-registers with the UnitTestRunner
+
+// ---- Drag-and-drop pedalboard reordering (Core/ChainOrder.h) -------------
+//
+// Covers the data structure itself (default order, permutation validation,
+// round-trip), that PluginProcessor::processBlock() genuinely dispatches
+// through it rather than the old fixed sequence (a real, audible-difference
+// test - two nonlinear modules in swapped order measurably diverge), that
+// the order survives save/restore the same way the module-enabled flags
+// do, that a corrupt/missing saved order falls back to the factory default
+// rather than crashing or duplicating a module, and a stability sweep
+// across several distinct orders with real content flowing through.
+class UNI76ChainOrderTests final : public juce::UnitTest
+{
+public:
+    UNI76ChainOrderTests() : juce::UnitTest ("uni76::ChainOrder + processBlock dispatch", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Defaults to the factory PREAMP->EQ->SAT->PITCH->PAN->VERB->IMAGE order");
+        {
+            uni76::ChainOrder chain;
+            const std::array<int, 7> expected { 0, 1, 2, 3, 4, 5, 6 };
+            expect (chain.snapshot() == expected, "fresh ChainOrder should be the identity permutation");
+            for (int i = 0; i < 7; ++i)
+                expectEquals (chain.roleAtPosition (i), i);
+        }
+
+        beginTest ("isValidPermutation accepts real permutations and rejects everything else");
+        {
+            expect (uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 5, 6 }), "identity should be valid");
+            expect (uni76::ChainOrder::isValidPermutation ({ 6, 5, 4, 3, 2, 1, 0 }), "reversed should be valid");
+            expect (uni76::ChainOrder::isValidPermutation ({ 2, 0, 6, 1, 4, 3, 5 }), "an arbitrary shuffle should be valid");
+
+            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 0, 2, 3, 4, 5, 6 }), "a duplicate role must be rejected");
+            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 5, 7 }), "an out-of-range role must be rejected");
+            expect (! uni76::ChainOrder::isValidPermutation ({ -1, 1, 2, 3, 4, 5, 6 }), "a negative role must be rejected");
+        }
+
+        beginTest ("setOrder / snapshot / roleAtPosition round-trip");
+        {
+            uni76::ChainOrder chain;
+            const std::array<int, 7> shuffled { 5, 6, 0, 1, 2, 3, 4 }; // e.g. VERB->IMAGE->PREAMP->...
+            chain.setOrder (shuffled);
+
+            expect (chain.snapshot() == shuffled, "snapshot() should return exactly what was set");
+            for (int i = 0; i < 7; ++i)
+                expectEquals (chain.roleAtPosition (i), shuffled[(size_t) i]);
+
+            chain.resetToDefault();
+            const std::array<int, 7> identity { 0, 1, 2, 3, 4, 5, 6 };
+            expect (chain.snapshot() == identity, "resetToDefault() should return to the factory order");
+        }
+
+        beginTest ("Reordering genuinely changes the processed signal (PREAMP<->SAT swap, both nonlinear)");
+        {
+            // Both PREAMP and SAT are nonlinear waveshapers - running
+            // SAT->PREAMP must produce a measurably different result than
+            // PREAMP->SAT for the same drive settings, proving
+            // processBlock() actually dispatches through ChainOrder and
+            // isn't just storing an unused permutation.
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+            auto makeSource = [&] { return makeStereoFromMono (generateSine (1, 8192, sr, 300.0f, 0.5f)); };
+
+            auto runWithOrder = [&] (const std::array<int, 7>& order)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, blockSize);
+                auto& apvts = processor.getValueTreeState();
+
+                setNormalised (apvts, uni76::ParamID::preamp, 0.7f);
+                setNormalised (apvts, uni76::ParamID::saturation, 0.7f);
+                processor.getModuleEnableState().setEnabled (0, true);  // preamp
+                processor.getModuleEnableState().setEnabled (1, false); // eq
+                processor.getModuleEnableState().setEnabled (2, true);  // saturation
+                for (int m = 3; m < 7; ++m)
+                    processor.getModuleEnableState().setEnabled (m, false);
+
+                processor.getChainOrder().setOrder (order);
+
+                return runFullChain (processor, makeSource(), blockSize);
+            };
+
+            const std::array<int, 7> preampFirst { 0, 2, 1, 3, 4, 5, 6 }; // PREAMP -> SAT -> (rest, all disabled/no-op)
+            const std::array<int, 7> satFirst    { 2, 0, 1, 3, 4, 5, 6 }; // SAT -> PREAMP -> (rest)
+
+            const auto outputA = runWithOrder (preampFirst);
+            const auto outputB = runWithOrder (satFirst);
+
+            expect (bufferIsFinite (outputA) && bufferIsFinite (outputB), "reordered chains produced non-finite output");
+
+            double sumSqDiff = 0.0;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int i = 0; i < outputA.getNumSamples(); ++i)
+                {
+                    const auto diff = outputA.getSample (ch, i) - outputB.getSample (ch, i);
+                    sumSqDiff += (double) diff * (double) diff;
+                }
+            const auto rmsDiff = std::sqrt (sumSqDiff / (double) (2 * outputA.getNumSamples()));
+
+            std::cout << "\nPREAMP->SAT vs SAT->PREAMP rmsDiff=" << rmsDiff << std::endl;
+            expect (rmsDiff > 1.0e-4, "swapping PREAMP and SAT's order should measurably change the output");
+        }
+
+        beginTest ("Chain order survives a real getStateInformation()/setStateInformation() save+restore");
+        {
+            UNI76AudioProcessor processor;
+            const std::array<int, 7> custom { 4, 6, 0, 5, 1, 3, 2 }; // an arbitrary but valid shuffle
+            processor.getChainOrder().setOrder (custom);
+
+            juce::MemoryBlock saved;
+            processor.getStateInformation (saved);
+
+            UNI76AudioProcessor reloaded;
+            reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+            expect (reloaded.getChainOrder().snapshot() == custom, "chain order should survive save/restore exactly");
+        }
+
+        beginTest ("Missing or corrupt saved chain order falls back to the factory default, not a crash or partial order");
+        {
+            const std::array<int, 7> identity { 0, 1, 2, 3, 4, 5, 6 };
+
+            // Missing property entirely (state saved before this round).
+            {
+                UNI76AudioProcessor processor;
+                auto legacyState = processor.getValueTreeState().copyState();
+                if (auto xml = legacyState.createXml())
+                {
+                    juce::MemoryBlock data;
+                    juce::AudioProcessor::copyXmlToBinary (*xml, data);
+                    processor.getChainOrder().setOrder ({ 6, 5, 4, 3, 2, 1, 0 }); // perturb first
+                    processor.setStateInformation (data.getData(), (int) data.getSize());
+                }
+                expect (processor.getChainOrder().snapshot() == identity,
+                        "a state with no chainOrder property should fall back to the default order");
+            }
+
+            // Corrupt value (wrong length / non-numeric / not a permutation).
+            {
+                UNI76AudioProcessor processor;
+                auto badState = processor.getValueTreeState().copyState();
+                badState.setProperty (uni76::ChainOrder::stateProperty, juce::String ("0,0,2,3,4,5,6"), nullptr);
+                if (auto xml = badState.createXml())
+                {
+                    juce::MemoryBlock data;
+                    juce::AudioProcessor::copyXmlToBinary (*xml, data);
+                    processor.getChainOrder().setOrder ({ 6, 5, 4, 3, 2, 1, 0 }); // perturb first
+                    processor.setStateInformation (data.getData(), (int) data.getSize());
+                }
+                expect (processor.getChainOrder().snapshot() == identity,
+                        "a non-permutation chainOrder value should fall back to the default order");
+            }
+        }
+
+        beginTest ("Several distinct chain orders stay finite and bounded with multiple modules engaged");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            const std::array<int, 7> orders[] {
+                { 0, 1, 2, 3, 4, 5, 6 }, // factory default
+                { 6, 5, 4, 3, 2, 1, 0 }, // fully reversed
+                { 5, 2, 6, 0, 3, 1, 4 }, // arbitrary shuffle
+                { 3, 4, 5, 6, 0, 1, 2 }, // PITCH/PAN/VERB/IMAGE moved ahead of PREAMP/EQ/SAT
+            };
+
+            for (auto& order : orders)
+            {
+                UNI76AudioProcessor processor;
+                processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+                processor.prepareToPlay (sr, blockSize);
+                auto& apvts = processor.getValueTreeState();
+
+                applyAuditDefaults (apvts);
+                setNormalised (apvts, uni76::ParamID::preamp, 0.6f);
+                setNormalised (apvts, uni76::ParamID::saturation, 0.6f);
+                setNormalised (apvts, uni76::ParamID::panorama, 1.0f);
+                setNormalised (apvts, uni76::ParamID::reverb, 0.8f);
+                setNormalised (apvts, uni76::ParamID::imager, 0.8f);
+                for (int m = 0; m < uni76::ModuleEnableState::numModules; ++m)
+                    processor.getModuleEnableState().setEnabled (m, m != 1); // everything but EQ
+
+                processor.getChainOrder().setOrder (order);
+
+                auto source = makeStereoFromMono (generateSine (1, 22050, sr, 220.0f, 0.4f));
+                auto output = runFullChain (processor, source, blockSize);
+
+                expect (bufferIsFinite (output), "reordered chain produced non-finite output");
+                expect (peakOf (output) < 4.0, "reordered chain peak implausibly large (possible gain explosion)");
+            }
+        }
+    }
+};
+
+static UNI76ChainOrderTests uni76ChainOrderTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {

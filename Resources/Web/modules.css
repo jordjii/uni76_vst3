@@ -109,6 +109,28 @@
   justify-content: center;
   gap: 0.15em;
   text-align: center;
+  /* Drag-and-drop pedalboard reordering (see chain_order.js) - only the
+     header (name + tag) is the drag handle, never the knob/aux zones
+     below it, so a slider drag never gets mistaken for a module reorder. */
+  cursor: grab;
+}
+
+.module__header:active {
+  cursor: grabbing;
+}
+
+/* The module currently being dragged - a soft fade, not full transparency,
+   so its panel stays readable as a positional reference while dragging. */
+.module.is-dragging {
+  opacity: 0.4;
+}
+
+/* The module the dragged one would land on if dropped now - an inset
+   outline in the dragged module's own accent-neutral cream, matching the
+   project's flat-panel/no-glow language (no shadow, no glass). */
+.module.is-drop-target {
+  outline: 2px solid var(--ink-strong);
+  outline-offset: -2px;
 }
 
 .module__index {

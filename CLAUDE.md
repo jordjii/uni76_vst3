@@ -1387,6 +1387,90 @@ MSVC 19.51):
     machine's user profile, not Program Files - `ISCC.exe` found via the
     registry uninstall key, not a fixed path assumption).
 
+- **PITCH zero-latency bypass** (real bug: live MIDI/audio monitoring felt
+  laggy with PITCH never engaged, since its ~140ms STFT latency used to be
+  held open even while disabled - PITCH's resting state in every factory
+  preset) - see `docs/DSP_PITCH.md`'s "Fixed latency (the engine's own
+  figure) and the zero-latency bypass" section and this file's own PITCH
+  architecture description above for the full mechanism
+  (`PitchProcessor::process()`'s true-bypass early return,
+  `PluginProcessor::updateReportedLatency()`'s conditional summing). Debug/
+  Release clean, full suite green, installer rebuilt. The compiled-in
+  default enabled state was deliberately left unchanged this round (a
+  bare, no-preset instance still holds the latency until a preset is
+  picked or the module is explicitly disabled) - flagged as a further,
+  larger follow-up (touches every test that relies on PITCH's own
+  default-enabled state to exercise pitch-shifting without an explicit
+  enable call).
+
+- **Drag-and-drop pedalboard reordering + numeric prefixes removed**:
+  - **`01`/`02`/.../`07` module-index labels removed** from every panel
+    header (`index.html`'s `.module__index` spans) - a fixed numbering no
+    longer describes anything once the processing order is user-chosen.
+  - **The 7 modules' processing order is now genuinely user-reorderable**,
+    not fixed PREAMP->EQ->SAT->PITCH->PAN->VERB->IMAGE - a new
+    `Source/Core/ChainOrder.h` (same deliberately-not-an-APVTS-parameter
+    pattern as `ModuleEnableState.h`: structural/session state, not an
+    automation lane) holds which module *role* runs at each of the 7
+    chain positions. `PluginProcessor::processBlock()` now reads every
+    parameter/enabled value up front (unchanged) and dispatches the seven
+    `xxxProcessor.process()` calls through a `switch` keyed by
+    `chainOrder.roleAtPosition()` in a loop, rather than seven hardcoded
+    calls in a fixed sequence - allocation-free, realtime-safe. **This
+    genuinely changes the processed audio**, not just the on-screen order
+    - proven by a dedicated test swapping PREAMP/SAT's positions (both
+    nonlinear waveshapers) and measuring a real RMS difference (0.093,
+    not noise-floor) between the two orders at identical settings. Total
+    plugin latency is unaffected by construction - it is a *sum* of each
+    module's own latency and addition is order-independent, so
+    `updateReportedLatency()` needed no changes.
+  - **UI**: each module's `.module__header` (name + tag, not the knob or
+    aux zone below it - a drag can never be mistaken for a knob gesture)
+    is now `draggable="true"` (native HTML5 drag-and-drop, no library);
+    `Resources/Web/chain_order.js` (new) repositions panels via each
+    `.module`'s CSS grid `order` property (`.app__main` is already
+    `display: grid`, so no DOM node ever actually moves) and persists the
+    new order through two new native functions, `uni76GetChainOrder` /
+    `uni76SetChainOrder` (`WebUIEditor.cpp`), which validate a genuine
+    permutation before applying - an invalid array from a broken sync is
+    silently ignored, never partially applied. On load, the *persisted
+    DSP order* is authoritative and re-applied to the DOM's visual
+    `order` - the document's own written sequence is only the factory-
+    default fallback, not a hidden second source of truth.
+  - **Persistence**: one comma-joined string property (`chainOrder`) on
+    the same saved-state ValueTree the module-enabled flags already use -
+    no new save path, no schema bump (a missing or corrupt property - an
+    old saved state, or a hand-edited/broken one - falls back to the
+    factory default order via `ChainOrder::isValidPermutation()`, covered
+    by two dedicated tests, rather than crashing or silently duplicating
+    a module's processing).
+  - **Not verified this round**: the actual drag gesture in a live
+    WebView2 editor (no scratch host harness was built this session to
+    drive real OS-level drag events - see the project's past pattern of
+    doing this for PITCH/PAN's knob input). The JS/CSS/native-bridge code
+    was reviewed carefully and the underlying reorder mechanism is fully
+    covered at the C++ level, but a real on-screen drag-and-drop pass
+    (like the existing `docs/screenshots/*` acceptance passes for other
+    controls) is a natural, still-open follow-up.
+  - **Explicitly not started this round** (flagged, scoped as separate,
+    large follow-ups - each needs at least one new public parameter, a
+    real DSP redesign, and its own full test/measurement pass): PAN's
+    nested dual-knob redesign (outer = width from centre to fully wide,
+    inner = motion **rate**, referencing SoundToys PanMan's Rate knob -
+    today's ~0.3Hz LFO period is a fixed constant, not user-adjustable);
+    VERB's nested DRIVE knob (an inner control for the plate's own
+    saturation amount, referencing the Vynl Audio Voyager-Verb reference
+    screenshot's concentric-knob layout); IMAGE's bipolar redesign
+    (centred rest position, full left = -100%/mono, full right =
+    +100%/stereo - the `imager` parameter's own 0..100% range and
+    semantics would need to change, which is a real migration, not a
+    cosmetic relabel).
+  - Debug/Release clean (0 warnings); full suite green including 8 new
+    `ChainOrder` tests (default order, permutation validation, round-trip,
+    the real audible-difference test, save/restore, two corrupt-state
+    fallback cases, and a 4-order finite/bounded stability sweep);
+    installer rebuilt.
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
 Presets browser, copy protection, licensing system - see

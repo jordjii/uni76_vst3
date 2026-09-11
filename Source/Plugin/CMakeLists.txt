@@ -106,6 +106,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/aux_visuals.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/meters.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/module_power.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/chain_order.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/header_controls.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 

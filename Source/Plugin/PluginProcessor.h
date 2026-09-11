@@ -1,6 +1,7 @@
 #pragma once
 
 #include <juce_audio_processors/juce_audio_processors.h>
+#include "Core/ChainOrder.h"
 #include "Core/LevelMeter.h"
 #include "Core/ModuleEnableState.h"
 #include "DSP/PreampProcessor.h"
@@ -95,6 +96,12 @@ public:
     /** Persistent (state-saved) but non-automatable per-module on/off flags - see Core/ModuleEnableState.h. */
     uni76::ModuleEnableState& getModuleEnableState() noexcept { return moduleEnableState; }
 
+    /** Persistent (state-saved) but non-automatable module processing
+        order - drag-and-drop pedalboard reordering, see Core/ChainOrder.h.
+        processBlock() dispatches through this every block, so reordering
+        genuinely changes the signal path, not just the on-screen layout. */
+    uni76::ChainOrder& getChainOrder() noexcept { return chainOrder; }
+
     /** Recomputes and reports the plugin's total latency from every
         module's own getLatencySamples() plus the *current* module-enable
         state - must be called (from the message thread, never
@@ -121,6 +128,10 @@ private:
     // getStateInformation/setStateInformation) but deliberately not part
     // of the APVTS parameter tree - see Core/ModuleEnableState.h.
     uni76::ModuleEnableState moduleEnableState;
+
+    // Same persistence pattern as moduleEnableState above - see
+    // Core/ChainOrder.h.
+    uni76::ChainOrder chainOrder;
 
     uni76::dsp::PreampProcessor preampProcessor;
     uni76::dsp::EqProcessor eqProcessor;

@@ -111,20 +111,18 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     // Measured before the processing chain.
     inputLevelMeter.pushBlock (buffer);
 
+    // Every parameter/enabled value is read once here, up front, exactly
+    // as before reordering was possible - only *which order* the seven
+    // process() calls below happen in is now variable (see
+    // Core/ChainOrder.h), not how each module's own inputs are read.
     const auto preampDrive = preampParameter != nullptr ? preampParameter->load() / 100.0f : 0.0f;
     const auto preampEnabled = moduleEnableState.isEnabled (0); // index 0 = preamp, see ModuleEnableState::propertyNames
-
-    preampProcessor.process (buffer, preampDrive, preampEnabled);
 
     const auto eqTone = eqParameter != nullptr ? eqParameter->load() / 100.0f : 0.5f;
     const auto eqEnabled = moduleEnableState.isEnabled (1); // index 1 = eq, see ModuleEnableState::propertyNames
 
-    eqProcessor.process (buffer, eqTone, eqEnabled);
-
     const auto satHeat = saturationParameter != nullptr ? saturationParameter->load() / 100.0f : 0.0f;
     const auto satEnabled = moduleEnableState.isEnabled (2); // index 2 = saturation, see ModuleEnableState::propertyNames
-
-    satProcessor.process (buffer, satHeat, satEnabled);
 
     // PITCH's raw parameter value is already an integer semitone count
     // (-12..+12, see ParameterLayout.cpp's AudioParameterInt) - round
@@ -133,8 +131,6 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto pitchSemitones = pitchParameter != nullptr ? (int) std::lround (pitchParameter->load()) : 0;
     const auto pitchEnabled = moduleEnableState.isEnabled (3); // index 3 = pitch, see ModuleEnableState::propertyNames
 
-    pitchProcessor.process (buffer, pitchSemitones, pitchEnabled);
-
     // PAN/STEREO FIELD reads the raw `panorama` value as a plain 0..1
     // normalised width (not semitones/percent-of-something-else like
     // PITCH) - 0.5 (NATURAL) is both the parameter's own default and the
@@ -142,12 +138,8 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto panoramaWidth = panoramaParameter != nullptr ? panoramaParameter->load() / 100.0f : 0.5f;
     const auto panoramaEnabled = moduleEnableState.isEnabled (4); // index 4 = panorama, see ModuleEnableState::propertyNames
 
-    panoramaProcessor.process (buffer, panoramaWidth, panoramaEnabled);
-
     const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
     const auto reverbEnabled = moduleEnableState.isEnabled (5); // index 5 = reverb, see ModuleEnableState::propertyNames
-
-    verbProcessor.process (buffer, reverbWet, reverbEnabled);
 
     // IMAGE reads two independent raw parameter values - `imager` (0..1,
     // width/imaging amount) and `imageTilt` (-1..1 normalised, static
@@ -158,7 +150,25 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto imageTilt = imageTiltParameter != nullptr ? imageTiltParameter->load() / 100.0f : 0.0f;
     const auto imagerEnabled = moduleEnableState.isEnabled (6); // index 6 = imager, see ModuleEnableState::propertyNames
 
-    imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled);
+    // Dispatch through the user's chosen chain order (drag-and-drop
+    // pedalboard reordering - see Core/ChainOrder.h). Role indices match
+    // ModuleEnableState::propertyNames' order, same as every `isEnabled()`
+    // call above. A switch over a small fixed set of roles, not a
+    // std::function table, so this stays allocation-free and realtime-safe.
+    for (int position = 0; position < uni76::ChainOrder::numModules; ++position)
+    {
+        switch (chainOrder.roleAtPosition (position))
+        {
+            case 0: preampProcessor.process (buffer, preampDrive, preampEnabled); break;
+            case 1: eqProcessor.process (buffer, eqTone, eqEnabled); break;
+            case 2: satProcessor.process (buffer, satHeat, satEnabled); break;
+            case 3: pitchProcessor.process (buffer, pitchSemitones, pitchEnabled); break;
+            case 4: panoramaProcessor.process (buffer, panoramaWidth, panoramaEnabled); break;
+            case 5: verbProcessor.process (buffer, reverbWet, reverbEnabled); break;
+            case 6: imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled); break;
+            default: break; // unreachable for a validated permutation - see ChainOrder::isValidPermutation()
+        }
+    }
 
     // Measured after the processing chain - now meaningfully different
     // from the input reading whenever PREAMP is enabled and driven.
@@ -218,6 +228,17 @@ void UNI76AudioProcessor::getStateInformation (juce::MemoryBlock& destData)
     for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
         state.setProperty (uni76::ModuleEnableState::propertyNames[(size_t) i],
                             moduleEnableState.isEnabled (i), nullptr);
+
+    // Chain order (drag-and-drop pedalboard reordering) - same
+    // outside-the-APVTS-tree persistence pattern as the module-enabled
+    // flags above, one comma-joined string rather than 7 properties since
+    // an order is inherently one unit - see Core/ChainOrder.h.
+    {
+        juce::StringArray parts;
+        for (auto role : chainOrder.snapshot())
+            parts.add (juce::String (role));
+        state.setProperty (uni76::ChainOrder::stateProperty, parts.joinIntoString (","), nullptr);
+    }
 
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
@@ -288,6 +309,32 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
         for (int i = 0; i < uni76::ModuleEnableState::numModules; ++i)
             moduleEnableState.setEnabled (i,
                 (bool) newState.getProperty (uni76::ModuleEnableState::propertyNames[(size_t) i], true));
+
+        // Chain order - a missing property (state saved before this round,
+        // or from a corrupt/hand-edited file) falls back to the original
+        // factory order rather than a partial/garbage permutation.
+        {
+            const auto saved = newState.getProperty (uni76::ChainOrder::stateProperty, juce::String()).toString();
+            juce::StringArray parts;
+            parts.addTokens (saved, ",", "");
+
+            std::array<int, uni76::ChainOrder::numModules> parsed {};
+            bool ok = parts.size() == uni76::ChainOrder::numModules;
+            for (int i = 0; ok && i < uni76::ChainOrder::numModules; ++i)
+            {
+                if (! parts[i].containsOnly ("0123456789"))
+                {
+                    ok = false;
+                    break;
+                }
+                parsed[(size_t) i] = parts[i].getIntValue();
+            }
+
+            if (ok && uni76::ChainOrder::isValidPermutation (parsed))
+                chainOrder.setOrder (parsed);
+            else
+                chainOrder.resetToDefault();
+        }
 
         apvts.replaceState (newState);
 
