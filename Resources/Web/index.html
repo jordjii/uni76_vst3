@@ -217,23 +217,28 @@
                   <div class="knob__indicator"></div>
                   <div class="knob__center-dot"></div>
                 </div>
-              </div>
-              <!-- Nested RATE knob (live-testing follow-up round) - a
-                   genuinely second, independent, interactive control
-                   inside PAN's own panel, the same "one deliberate
-                   exception" pattern IMAGE's FIELD pad already
-                   established (see CLAUDE.md's HTML/CSS/JS UI rule).
-                   Drives the new panRate parameter - the motion LFO's own
-                   speed, referencing SoundToys PanMan's own Rate knob -
-                   physically nested concentrically inside the WIDTH knob
-                   (--knob-size-inner, knobs.css), not a separate control
-                   elsewhere in the panel. See docs/DSP_PAN.md's "Motion
-                   rate" section. -->
-              <div class="knob knob--inner" data-param="panRate" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
-                <div class="knob__collar" aria-hidden="true"></div>
-                <div class="knob__body">
-                  <div class="knob__indicator"></div>
-                  <div class="knob__center-dot"></div>
+                <!-- Nested RATE knob (live-testing follow-up round) - a
+                     genuinely second, independent, interactive control
+                     inside PAN's own panel, the same "one deliberate
+                     exception" pattern IMAGE's FIELD pad already
+                     established (see CLAUDE.md's HTML/CSS/JS UI rule).
+                     Drives the new panRate parameter - the motion LFO's
+                     own speed, referencing SoundToys PanMan's own Rate
+                     knob - physically nested concentrically inside the
+                     WIDTH knob (--knob-size-inner, knobs.css). A CHILD of
+                     the outer .knob (not a sibling in .knob-wrap) so its
+                     top:50%/left:50% centring (knobs.css's .knob--inner
+                     rule) is relative to the outer knob's own circle,
+                     not .knob-wrap's asymmetric padding box (that
+                     mismatch was a real bug - see CLAUDE.md's own history
+                     of this round). See docs/DSP_PAN.md's "Motion rate"
+                     section. -->
+                <div class="knob knob--inner" data-param="panRate" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
+                  <div class="knob__collar" aria-hidden="true"></div>
+                  <div class="knob__body">
+                    <div class="knob__indicator"></div>
+                    <div class="knob__center-dot"></div>
+                  </div>
                 </div>
               </div>
             </div>
@@ -274,22 +279,26 @@
                   <div class="knob__indicator"></div>
                   <div class="knob__center-dot"></div>
                 </div>
-              </div>
-              <!-- Nested DRIVE knob (live-testing follow-up round) - same
-                   concentric second-control pattern PAN's RATE knob
-                   established just above (see CLAUDE.md's HTML/CSS/JS UI
-                   rule). Drives the new verbDrive parameter - scales the
-                   plate's own analog send/return coloration from its
-                   original tiny "texture" resting point up to a genuinely
-                   hot, driven plate, referencing a real reference
-                   plugin's (Vynl Audio Voyager-Verb) own nested-knob
-                   DRIVE control. See docs/DSP_VERB.md's "Drive (nested
-                   knob)" section. -->
-              <div class="knob knob--inner" data-param="verbDrive" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
-                <div class="knob__collar" aria-hidden="true"></div>
-                <div class="knob__body">
-                  <div class="knob__indicator"></div>
-                  <div class="knob__center-dot"></div>
+                <!-- Nested DRIVE knob (live-testing follow-up round) -
+                     same concentric second-control pattern PAN's RATE
+                     knob established above (see CLAUDE.md's HTML/CSS/JS
+                     UI rule). Drives the new verbDrive parameter - scales
+                     the plate's own analog send/return coloration from
+                     its original tiny "texture" resting point up to a
+                     genuinely hot, driven plate, referencing a real
+                     reference plugin's (Vynl Audio Voyager-Verb) own
+                     nested-knob DRIVE control. A CHILD of the outer .knob
+                     (not a sibling in .knob-wrap) so its centring is
+                     relative to the outer knob's own circle, not
+                     .knob-wrap's asymmetric padding box - see PAN's own
+                     knob above for the same fix. See
+                     docs/DSP_VERB.md's "Drive (nested knob)" section. -->
+                <div class="knob knob--inner" data-param="verbDrive" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
+                  <div class="knob__collar" aria-hidden="true"></div>
+                  <div class="knob__body">
+                    <div class="knob__indicator"></div>
+                    <div class="knob__center-dot"></div>
+                  </div>
                 </div>
               </div>
             </div>

@@ -37,6 +37,7 @@ namespace uni76::ui
                 { "aux_visuals.js",  { BinaryData::aux_visuals_js,  BinaryData::aux_visuals_jsSize,  "text/javascript" } },
                 { "meters.js",       { BinaryData::meters_js,       BinaryData::meters_jsSize,       "text/javascript" } },
                 { "module_power.js", { BinaryData::module_power_js, BinaryData::module_power_jsSize, "text/javascript" } },
+                { "chain_order.js",  { BinaryData::chain_order_js,  BinaryData::chain_order_jsSize,  "text/javascript" } },
                 { "header_controls.js", { BinaryData::header_controls_js, BinaryData::header_controls_jsSize, "text/javascript" } },
                 { "juce_webview.js", { BinaryData::juce_webview_js, BinaryData::juce_webview_jsSize, "text/javascript" } },
             };
