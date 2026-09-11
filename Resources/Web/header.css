@@ -101,8 +101,18 @@
   outline-offset: 1px;
 }
 
+/* A fixed width, not just a max-width: with only a cap, a short preset
+   name (or the arrow-stepped transition between two differently-sized
+   names) let the PRESET button itself shrink to fit its content, which
+   visibly shifted the prev/next arrows sideways on every step - a real
+   bug found via live use. Width + flex-shrink: 0 keeps this label (and
+   therefore the whole button, and therefore the arrows flanking it) at
+   one constant footprint regardless of which preset is loaded; longer
+   names still ellipsise via the overflow/text-overflow pair below. */
 .header__btn-preset-label {
-  max-width: 11rem;
+  display: inline-block;
+  width: 9rem;
+  flex-shrink: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;

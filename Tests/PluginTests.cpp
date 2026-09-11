@@ -10151,6 +10151,71 @@ public:
             expect (! sanitised.containsAnyOf (":*?\"<>|"), "sanitised filename must not contain reserved characters");
         }
 
+        beginTest ("User presets: names are clamped to userPresetMaxNameLength (arrow-jump fix)");
+        {
+            // A real bug found via live use: a long preset name grew the
+            // header's PRESET label, which visibly shifted the prev/next
+            // arrows flanking it. header.css now fixes that label's own
+            // width - this test covers the other half, that a name can
+            // never reach that label longer than userPresetMaxNameLength
+            // in the first place, at every entry point (a fresh save, and
+            // an old file saved before this limit existed).
+            const juce::String longName = "This Preset Name Is Absurdly Long For A Header Label";
+            expect (longName.length() > uni76::userPresetMaxNameLength,
+                    "precondition: test name must exceed the limit");
+
+            const auto clamped = uni76::sanitizeUserPresetFilename (longName);
+            expect (clamped.length() <= uni76::userPresetMaxNameLength,
+                    "sanitizeUserPresetFilename must clamp to the max name length");
+            expect (longName.startsWith (clamped), "the clamp must be a straight truncation, not a rewrite");
+
+            uni76::deleteUserPreset (longName); // best-effort cleanup, resolves to the same clamped file
+            uni76::deleteUserPreset (clamped);
+
+            uni76::UserPresetData data;
+            data.values = { 1.0f, 2.0f, 3.0f, 0.0f, 4.0f, 5.0f, 6.0f, 0.0f };
+            data.moduleEnabled = { true, false, true, false, true, false, true };
+
+            expect (uni76::saveUserPreset (longName, data), "saving an overlong name should still succeed (clamped)");
+            expect (uni76::userPresetExists (clamped), "the saved file should exist under its clamped name");
+            expect (uni76::listUserPresetNames().contains (clamped),
+                    "listUserPresetNames should report the clamped name, not the original");
+
+            auto loaded = uni76::loadUserPreset (clamped);
+            expect (loaded.has_value(), "the clamped preset should be loadable");
+            if (loaded.has_value())
+                for (size_t i = 0; i < 8; ++i)
+                    expectWithinAbsoluteError (loaded->values[i], data.values[i], 1.0e-4f, "value " + juce::String ((int) i));
+
+            uni76::deleteUserPreset (clamped);
+
+            // Migration half: a file that predates this limit (written
+            // directly, bypassing sanitizeUserPresetFilename entirely -
+            // the way a preset saved by an older build would already be
+            // sitting on disk) must be renamed, not left overlong or
+            // dropped, the next time the preset list is read.
+            auto dir = uni76::getUserPresetsDirectory();
+            expect (dir.isDirectory() || dir.createDirectory(), "presets directory must exist for the migration test");
+
+            const juce::String legacyOverlongName = "Legacy Preset Saved Before The Length Limit Existed";
+            auto legacyFile = dir.getChildFile (legacyOverlongName + ".uni76preset");
+            legacyFile.deleteFile();
+            const auto legacyClamped = uni76::sanitizeUserPresetFilename (legacyOverlongName);
+            dir.getChildFile (legacyClamped + ".uni76preset").deleteFile();
+
+            juce::XmlElement legacyRoot ("UNI76UserPreset");
+            legacyRoot.setAttribute ("schemaVersion", uni76::userPresetSchemaVersion);
+            expect (legacyRoot.writeTo (legacyFile), "writing the raw legacy-style overlong file should succeed");
+            expect (legacyFile.existsAsFile(), "the legacy overlong file must exist before migration runs");
+
+            const auto namesAfterMigration = uni76::listUserPresetNames(); // triggers renameOverlongUserPresetsIfNeeded
+            expect (! legacyFile.existsAsFile(), "the overlong legacy file should have been renamed away");
+            expect (namesAfterMigration.contains (legacyClamped),
+                    "the migrated preset should appear under its clamped name");
+
+            dir.getChildFile (legacyClamped + ".uni76preset").deleteFile();
+        }
+
         beginTest ("Factory presets are never deletable (no delete path exists for them - by construction)");
         {
             // Factory presets live in a compiled-in constexpr array

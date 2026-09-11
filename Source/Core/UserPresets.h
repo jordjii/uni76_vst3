@@ -36,10 +36,23 @@ namespace uni76
                    .getChildFile ("User");
     }
 
+    // Keeps a saved preset's name inside the header's fixed-width PRESET
+    // label without relying on the ellipsis to hide most of it - see
+    // header_controls.js's buildSaveRow(), which enforces the same limit
+    // at the input field itself (`input.maxLength`, kept in sync with
+    // this constant by comment cross-reference, not a shared source - the
+    // JS/C++ boundary has no shared header). This is also the hard limit:
+    // sanitizeUserPresetFilename() below clamps to it regardless of what
+    // reaches this function, so a name can never arrive here already too
+    // long (e.g. from an older build's saved file, or a future caller
+    // that skips the JS input's own maxLength).
+    constexpr int userPresetMaxNameLength = 24;
+
     // Conservative filesystem-safe filename: keep alphanumerics/space/dash/
     // underscore, drop everything else (path separators, quotes, control
     // chars, etc.) so a user-typed preset name can never escape the presets
-    // directory or collide with reserved characters on Windows/macOS.
+    // directory or collide with reserved characters on Windows/macOS: then
+    // clamp to userPresetMaxNameLength above.
     inline juce::String sanitizeUserPresetFilename (const juce::String& name)
     {
         juce::String result;
@@ -49,6 +62,8 @@ namespace uni76
                 result += juce::String::charToString (c);
         }
         result = result.trim();
+        if (result.length() > userPresetMaxNameLength)
+            result = result.substring (0, userPresetMaxNameLength).trim();
         return result.isEmpty() ? "Untitled" : result;
     }
 
@@ -59,6 +74,46 @@ namespace uni76
 
     constexpr int userPresetSchemaVersion = 1;
 
+    // One-time-per-scan self-healing migration: userPresetMaxNameLength
+    // above is new (a real UX bug found live - a long preset name shifted
+    // the header's prev/next arrows sideways every time it changed), so
+    // any preset saved before this limit existed may still be sitting on
+    // disk with a longer name than any future save could produce. Renamed
+    // in place (never silently dropped) to the same clamped form
+    // sanitizeUserPresetFilename() would now enforce, with a numeric
+    // suffix on the rare collision (two overlong names that clamp to the
+    // same prefix). Cheap: only runs the string work on files that are
+    // already overlong, and the directory is already being iterated by
+    // the caller.
+    inline void renameOverlongUserPresetsIfNeeded (const juce::File& dir)
+    {
+        if (! dir.isDirectory())
+            return;
+
+        for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*.uni76preset", juce::File::findFiles))
+        {
+            auto file = entry.getFile();
+            const auto baseName = file.getFileNameWithoutExtension();
+            if (baseName.length() <= userPresetMaxNameLength)
+                continue;
+
+            const auto clamped = sanitizeUserPresetFilename (baseName);
+            auto target = dir.getChildFile (clamped + ".uni76preset");
+
+            int suffix = 2;
+            while (target.existsAsFile() && target != file)
+            {
+                const auto shortened = clamped.length() > userPresetMaxNameLength - 3
+                                            ? clamped.substring (0, userPresetMaxNameLength - 3)
+                                            : clamped;
+                target = dir.getChildFile (shortened + " " + juce::String (suffix) + ".uni76preset");
+                ++suffix;
+            }
+
+            file.moveFileTo (target);
+        }
+    }
+
     // Directory scan only - call on user gesture (PRESET menu open), never
     // at editor construction, so it never sits on the cold-open critical
     // path.
@@ -68,6 +123,8 @@ namespace uni76
         auto dir = getUserPresetsDirectory();
         if (! dir.isDirectory())
             return names;
+
+        renameOverlongUserPresetsIfNeeded (dir);
 
         for (const auto& entry : juce::RangedDirectoryIterator (dir, false, "*.uni76preset", juce::File::findFiles))
             names.add (entry.getFile().getFileNameWithoutExtension());

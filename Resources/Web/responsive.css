@@ -22,7 +22,7 @@
   }
 
   .header__btn-preset-label {
-    max-width: 4.5rem;
+    width: 4.5rem;
   }
 
   /* The prev/next arrows added alongside PRESET need their own shrink at

@@ -75,11 +75,19 @@ export function initPresetMenu() {
     const row = document.createElement("div");
     row.className = "preset-menu__save-row";
 
+    // 24 - matches UserPresets.h's userPresetMaxNameLength exactly (no
+    // shared header across the JS/C++ boundary, so this is a deliberate,
+    // commented duplication, not independently tunable). Keeps a saved
+    // name from ever needing more than the header's fixed-width PRESET
+    // label can show before falling back to the ellipsis - see
+    // header.css's .header__btn-preset-label.
+    const USER_PRESET_MAX_NAME_LENGTH = 24;
+
     const input = document.createElement("input");
     input.type = "text";
     input.className = "preset-menu__save-input";
     input.placeholder = "Preset name";
-    input.maxLength = 48;
+    input.maxLength = USER_PRESET_MAX_NAME_LENGTH;
 
     const save = document.createElement("button");
     save.type = "button";
