@@ -153,6 +153,7 @@ private:
     std::atomic<float>* imagerParameter = nullptr;
     std::atomic<float>* imageTiltParameter = nullptr;
     std::atomic<float>* panRateParameter = nullptr;
+    std::atomic<float>* verbDriveParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

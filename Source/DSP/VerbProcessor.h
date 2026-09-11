@@ -29,15 +29,16 @@
         DRY ------------------------------------------------> MIX
         INPUT
           -> wet send HPF (350Hz, cascaded 4-pole Butterworth)
-          -> analog send stage (tiny asymmetric tanh + implicit
-             bandwidth via the plate's own diffuser/tank)
+          -> analog send stage (asymmetric tanh, DRIVE-scaled - see
+             VerbCurves.h's "DRIVE (nested knob)" section - tiny/
+             "texture" at DRIVE=0%, up to genuinely hot at 100%)
           -> diffuser (4-stage short-delay allpass - early density)
           -> pre-delay (smoothly variable, linear-interpolated)
           -> FDN plate tank (12 delay lines, Householder feedback
              matrix, per-line one-pole damping so highs decay faster
              than mid, fixed decorrelated stereo output taps)
-          -> analog return stage (tiny tanh + ~9.5kHz soft bandwidth
-             ceiling)
+          -> analog return stage (asymmetric tanh, also DRIVE-scaled,
+             + ~9.5kHz soft bandwidth ceiling)
           -> wet output HPF safety (350Hz, lighter, 2-pole)
           -> MIX (dry*(1-wet) + wetProcessed*wet)
           -> enable/disable crossfade against a dry copy (zero latency,
@@ -72,10 +73,14 @@ namespace uni76::dsp
         void prepare (double sampleRate, int maximumBlockSize, int numChannelsToUse);
         void reset() noexcept;
 
-        /** wetNormalised01 and enabled are read once per call - both are
-            smoothed internally, so passing a raw (possibly jumpy)
-            automation value each block is safe and expected. */
-        void process (juce::AudioBuffer<float>& buffer, float wetNormalised01, bool enabled) noexcept;
+        /** wetNormalised01, driveNormalised01 and enabled are read once
+            per call - all smoothed internally, so passing a raw (possibly
+            jumpy) automation value each block is safe and expected.
+            driveNormalised01 drives the nested DRIVE knob (see
+            VerbCurves.h's "DRIVE (nested knob)" section) - at 0% it
+            reproduces this module's original, pre-existing send/return
+            coloration exactly. */
+        void process (juce::AudioBuffer<float>& buffer, float wetNormalised01, float driveNormalised01, bool enabled) noexcept;
 
         /** Always 0 - the plate's pre-delay and recirculation are wet-
             path effects, not a lookahead/analysis delay on the direct
@@ -110,6 +115,7 @@ namespace uni76::dsp
         OnePoleLowPass returnBandwidthL, returnBandwidthR;
 
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoother;
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> driveSmoother;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> bypassSmoother;
 
         // Unlike EQ/PAN (which replace the signal, so bypass crossfades

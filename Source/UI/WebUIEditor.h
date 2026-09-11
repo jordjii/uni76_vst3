@@ -61,7 +61,7 @@ public:
     // can keep the real current preset highlighted, and so the header/
     // footer can show "Name" vs "Name *" (dirty - live values no longer
     // match what was loaded) without ever doing an expensive preset-table
-    // search on every parameter callback: dirty is just 9 float + 7 bool
+    // search on every parameter callback: dirty is just 10 float + 7 bool
     // compares against the snapshot captured at the moment the preset was
     // applied, done at most once per 30Hz timer tick (see timerCallback()),
     // not per callback.
@@ -84,7 +84,7 @@ private:
 public:
     struct ABSnapshot
     {
-        std::array<float, 9> values {};
+        std::array<float, 10> values {};
         std::array<bool, 7> moduleEnabled {};
     };
 
@@ -120,6 +120,7 @@ private:
     juce::WebSliderRelay imagerRelay     { "imager" };
     juce::WebSliderRelay imageTiltRelay  { "imageTilt" };
     juce::WebSliderRelay panRateRelay    { "panRate" };
+    juce::WebSliderRelay verbDriveRelay  { "verbDrive" };
 
     juce::WebControlParameterIndexReceiver controlParameterIndexReceiver;
 
@@ -134,6 +135,7 @@ private:
     juce::WebSliderParameterAttachment imagerAttachment;
     juce::WebSliderParameterAttachment imageTiltAttachment;
     juce::WebSliderParameterAttachment panRateAttachment;
+    juce::WebSliderParameterAttachment verbDriveAttachment;
 
     // Message-thread-only envelope state for the meter telemetry timer -
     // fast attack, slower release, applied here (not in JS, not on the

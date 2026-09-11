@@ -52,12 +52,15 @@ namespace uni76::dsp
         returnBandwidthR.setCutoffHz (sampleRate, verbReturnBandwidthHz);
 
         wetSmoother.reset (sampleRate, verbSmoothingSeconds);
+        driveSmoother.reset (sampleRate, verbSmoothingSeconds);
         bypassSmoother.reset (sampleRate, verbSmoothingSeconds);
         // DRY (0%) is this module's default and identity point - matches
         // ParameterLayout.cpp's default so a freshly prepared instance
         // never ramps from a wrong value before the host's first real
-        // parameter update arrives.
+        // parameter update arrives. DRIVE also starts at its own default
+        // (0%, the original fixed coloration) for the same reason.
         wetSmoother.setCurrentAndTargetValue (0.0f);
+        driveSmoother.setCurrentAndTargetValue (0.0f);
         bypassSmoother.setCurrentAndTargetValue (1.0f);
 
         reset();
@@ -112,7 +115,7 @@ namespace uni76::dsp
         }
     }
 
-    void VerbProcessor::process (juce::AudioBuffer<float>& buffer, float wetNormalised01, bool enabled) noexcept
+    void VerbProcessor::process (juce::AudioBuffer<float>& buffer, float wetNormalised01, float driveNormalised01, bool enabled) noexcept
     {
         const auto numSamples = buffer.getNumSamples();
         const auto channels = buffer.getNumChannels();
@@ -141,6 +144,10 @@ namespace uni76::dsp
         // independent location by the same class of regression test.
         const auto safeWetNormalised01 = std::isfinite (wetNormalised01) ? wetNormalised01 : 0.0f;
         wetSmoother.setTargetValue (std::clamp (safeWetNormalised01, 0.0f, 1.0f));
+        // DRIVE (nested knob) - same NaN-guard reasoning as the wet macro
+        // just above, since this also reaches a smoother target.
+        const auto safeDriveNormalised01 = std::isfinite (driveNormalised01) ? driveNormalised01 : 0.0f;
+        driveSmoother.setTargetValue (std::clamp (safeDriveNormalised01, 0.0f, 1.0f));
         bypassSmoother.setTargetValue (enabled ? 1.0f : 0.0f);
 
         // Coefficients derived from the macro value are recomputed once
@@ -156,6 +163,19 @@ namespace uni76::dsp
         const auto preDelaySamples = verbPreDelayMs (tForCoefficients) * 0.001f * (float) sampleRate;
         updateDecayDependentCoefficients (tForCoefficients);
         wetSmoother.skip (numSamples);
+
+        // DRIVE-derived send/return coefficients - same once-per-block
+        // pattern as the wet-macro coefficients just above (no audio-rate
+        // precision needed - DRIVE is a slow user/automation macro, not
+        // an LFO-driven value the way PAN's rotation is).
+        const auto driveForCoefficients = driveSmoother.getCurrentValue();
+        const auto sendDriveGain    = verbSendDriveGain (driveForCoefficients);
+        const auto sendAsymmetry    = verbSendAsymmetry (driveForCoefficients);
+        const auto sendDriveNorm    = std::tanh (sendDriveGain);
+        const auto returnDriveGain  = verbReturnDriveGain (driveForCoefficients);
+        const auto returnAsymmetry  = verbReturnAsymmetry (driveForCoefficients);
+        const auto returnDriveNorm  = std::tanh (returnDriveGain);
+        driveSmoother.skip (numSamples);
 
         const bool stereo = channels >= 2 && numChannels >= 2;
         auto* L = buffer.getWritePointer (0);
@@ -177,13 +197,12 @@ namespace uni76::dsp
             auto sent = wetSendHighpassA.processSample (monoSum);
             sent = wetSendHighpassB.processSample (sent);
 
-            // ---- analog send stage (tiny asymmetric tanh) -----------
-            // Same bounded per-half-gain tanh() shape PREAMP/SAT use,
-            // own fixed (much smaller) constants - see VerbCurves.h.
-            const auto sendXd = sent * verbSendDriveGain;
-            const auto sendShaped = sendXd >= 0.0f ? std::tanh (sendXd) : std::tanh (sendXd * (1.0f - verbSendAsymmetry));
-            const auto sendNorm = std::tanh (verbSendDriveGain);
-            const auto sentShaped = sendShaped / sendNorm;
+            // ---- analog send stage (tiny asymmetric tanh, DRIVE-scaled) --
+            // Same bounded per-half-gain tanh() shape PREAMP/SAT use, own
+            // (much smaller, DRIVE-dependent) values - see VerbCurves.h.
+            const auto sendXd = sent * sendDriveGain;
+            const auto sendShaped = sendXd >= 0.0f ? std::tanh (sendXd) : std::tanh (sendXd * (1.0f - sendAsymmetry));
+            const auto sentShaped = sendShaped / sendDriveNorm;
 
             // ---- diffuser (4-stage short-delay Schroeder allpass) ---
             // Early-density stage ahead of the FDN tank - NOT used alone
@@ -262,15 +281,14 @@ namespace uni76::dsp
             tapL /= sqrtNumLines;
             tapR /= sqrtNumLines;
 
-            // ---- analog return stage (tiny tanh + bandwidth ceiling) -
-            const auto retXdL = tapL * verbReturnDriveGain;
-            const auto retShapedL = retXdL >= 0.0f ? std::tanh (retXdL) : std::tanh (retXdL * (1.0f - verbReturnAsymmetry));
-            const auto retNorm = std::tanh (verbReturnDriveGain);
-            const auto returnedL = returnBandwidthL.processSample (retShapedL / retNorm);
+            // ---- analog return stage (tiny tanh + bandwidth ceiling, DRIVE-scaled) --
+            const auto retXdL = tapL * returnDriveGain;
+            const auto retShapedL = retXdL >= 0.0f ? std::tanh (retXdL) : std::tanh (retXdL * (1.0f - returnAsymmetry));
+            const auto returnedL = returnBandwidthL.processSample (retShapedL / returnDriveNorm);
 
-            const auto retXdR = tapR * verbReturnDriveGain;
-            const auto retShapedR = retXdR >= 0.0f ? std::tanh (retXdR) : std::tanh (retXdR * (1.0f - verbReturnAsymmetry));
-            const auto returnedR = returnBandwidthR.processSample (retShapedR / retNorm);
+            const auto retXdR = tapR * returnDriveGain;
+            const auto retShapedR = retXdR >= 0.0f ? std::tanh (retXdR) : std::tanh (retXdR * (1.0f - returnAsymmetry));
+            const auto returnedR = returnBandwidthR.processSample (retShapedR / returnDriveNorm);
 
             // ---- wet output HPF safety (lighter, 2-pole) -------------
             const auto safeL = wetOutputHighpassL.processSample (returnedL);

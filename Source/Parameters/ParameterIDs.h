@@ -27,6 +27,15 @@
     second axis on one module, not one knob controlling two things" reasoning
     IMAGE's `imageTilt` addition already established as this project's own
     precedent for growing past 8 parameters.
+
+    `verbDrive` (10th parameter, VERB's nested DRIVE knob - see
+    docs/DSP_VERB.md's "Drive (nested knob)" section) is the third:
+    VERB's analog send/return coloration was a fixed, deliberately tiny
+    pair of tanh() constants until this round ("texture, not a second SAT
+    module"); DRIVE now scales both stages together, from that same
+    tiny-texture resting point up to a genuinely hot, audibly-driven
+    plate - referencing a real reference plugin's (Vynl Audio Voyager-
+    Verb) own nested-knob DRIVE control.
 */
 
 namespace uni76::ParamID
@@ -40,6 +49,7 @@ namespace uni76::ParamID
     inline constexpr const char* imager     = "imager";
     inline constexpr const char* imageTilt  = "imageTilt";
     inline constexpr const char* panRate    = "panRate";
+    inline constexpr const char* verbDrive  = "verbDrive";
 
     /** Version tag passed to juce::ParameterID for every parameter below.
         JUCE mixes this into the VST3 parameter hash; bump it only if a
@@ -49,8 +59,8 @@ namespace uni76::ParamID
     inline constexpr int parameterVersionHint = 1;
 
     /** All parameter IDs, for iteration (tests, UI wiring, etc). */
-    inline constexpr std::array<const char*, 9> all
+    inline constexpr std::array<const char*, 10> all
     {
-        preamp, eq, saturation, pitch, panorama, reverb, imager, imageTilt, panRate
+        preamp, eq, saturation, pitch, panorama, reverb, imager, imageTilt, panRate, verbDrive
     };
 }

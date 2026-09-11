@@ -182,20 +182,83 @@ namespace uni76::dsp
 
     // ---- Analog send/return coloration -----------------------------------------
     //
-    // Deliberately tiny - texture, not a second SAT module. Same bounded
-    // per-half-gain tanh() shape PREAMP/SAT use, own (much smaller)
-    // constants - wet-path only, dry is never touched. See
-    // docs/DSP_VERB.md's "Analog send electronics"/"Analog return stage"
-    // sections for measured THD.
+    // Base (DRIVE=0%) values are deliberately tiny - texture, not a second
+    // SAT module. Same bounded per-half-gain tanh() shape PREAMP/SAT use,
+    // own (much smaller) constants - wet-path only, dry is never touched.
+    // See docs/DSP_VERB.md's "Analog send electronics"/"Analog return
+    // stage" sections for measured THD at the base values.
     // Reduced during tuning - measured wet-path THD at the original,
     // larger values reached ~5.9% on a sustained full-level tone at
     // 100% wet (edge of "texture, not distortion"); these land closer to
     // 2% under the same worst-case test - see docs/DSP_VERB.md's
     // "Analog nonlinearity" section for the measured H2/H3/THD table.
-    inline constexpr float verbSendDriveGain  = 0.18f;
-    inline constexpr float verbSendAsymmetry  = 0.02f;
-    inline constexpr float verbReturnDriveGain = 0.12f;
-    inline constexpr float verbReturnAsymmetry = 0.02f;
+    inline constexpr float verbSendDriveGainBase  = 0.18f;
+    inline constexpr float verbSendAsymmetryBase  = 0.02f;
+    inline constexpr float verbReturnDriveGainBase = 0.12f;
+    inline constexpr float verbReturnAsymmetryBase = 0.02f;
+
+    // ---- DRIVE (nested knob, live-testing follow-up round) --------------------
+    //
+    // The base values above were fixed for every previous round of this
+    // module's development - DRIVE (`ParamID::verbDrive`) now scales both
+    // the send and return stages together, from that same tiny-texture
+    // resting point up to a genuinely hot, audibly-driven plate -
+    // referencing a real reference plugin's (Vynl Audio Voyager-Verb) own
+    // nested-knob DRIVE control (see the module's own class comment /
+    // docs/DSP_VERB.md's "Drive (nested knob)" section). DRIVE=0% must
+    // reproduce the base values exactly (verbSmoothstep(0)==0), so every
+    // existing preset/session that never touches the new knob sounds
+    // identical to before this round shipped.
+    //
+    // Asymmetry ceilings (0.30/0.24) sit in the same range PREAMP/SAT's
+    // own asymmetry maxima do (0.32/0.28) - real, audible even-harmonic
+    // character at full DRIVE, not a token gesture.
+    //
+    // Drive-gain ceilings: an early version of this curve used 1.1/0.75 -
+    // reasonable-looking numbers that turned out to reproduce exactly the
+    // "no audible effect" bug this session's own PREAMP/SAT drive-curve
+    // fix diagnosed and corrected. At this module's own -18dBFS reference
+    // test level (amplitude ~0.126), a gain of 1.1 only reaches a tanh
+    // argument of ~0.14 - still deep in tanh's near-linear region (linear
+    // to within a fraction of a percent below ~0.2) - so "full DRIVE"
+    // measured barely more THD than DRIVE=0% (1.92% -> 2.16%, caught by a
+    // dedicated regression test before this shipped, not discovered
+    // later). PREAMP's own drive-gain ceiling for comparison is 10.0
+    // (PreampCurves.h) - VERB's DRIVE is deliberately less extreme than a
+    // dedicated saturator (this is still a reverb's send/return
+    // coloration, not PREAMP's own job), but large enough to push the
+    // tanh well into its curved region at the reference level: gain 7.0
+    // on a 0.126-amplitude signal reaches tanh(0.88), clearly compressed.
+    inline constexpr float verbSendDriveGainMax   = 7.0f;
+    inline constexpr float verbSendAsymmetryMax   = 0.30f;
+    inline constexpr float verbReturnDriveGainMax = 5.0f;
+    inline constexpr float verbReturnAsymmetryMax = 0.24f;
+
+    inline float verbDriveLerp (float base, float max, float driveNormalised01) noexcept
+    {
+        const auto t = std::clamp (driveNormalised01, 0.0f, 1.0f);
+        return base + (max - base) * verbSmoothstep (t);
+    }
+
+    inline float verbSendDriveGain (float driveNormalised01) noexcept
+    {
+        return verbDriveLerp (verbSendDriveGainBase, verbSendDriveGainMax, driveNormalised01);
+    }
+
+    inline float verbSendAsymmetry (float driveNormalised01) noexcept
+    {
+        return verbDriveLerp (verbSendAsymmetryBase, verbSendAsymmetryMax, driveNormalised01);
+    }
+
+    inline float verbReturnDriveGain (float driveNormalised01) noexcept
+    {
+        return verbDriveLerp (verbReturnDriveGainBase, verbReturnDriveGainMax, driveNormalised01);
+    }
+
+    inline float verbReturnAsymmetry (float driveNormalised01) noexcept
+    {
+        return verbDriveLerp (verbReturnAsymmetryBase, verbReturnAsymmetryMax, driveNormalised01);
+    }
 
     // Overall wet bandwidth ceiling (return stage) - soft, single-pole
     // rolloff, not brickwall. Sits well above the damping filter's own

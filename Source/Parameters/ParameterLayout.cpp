@@ -78,6 +78,13 @@ namespace uni76
         // Tests/PluginTests.cpp against PanoramaCurves.h's own curve.
         params.push_back (makePercentParameter (ParamID::panRate, "Pan Rate", 35.303f));
 
+        // VERB's nested DRIVE knob (see docs/DSP_VERB.md's "Drive (nested
+        // knob)" section, Source/DSP/VerbCurves.h). 0% default = exactly
+        // today's pre-existing tiny fixed send/return coloration - a
+        // session/preset that never touches DRIVE sounds identical to
+        // before this parameter existed.
+        params.push_back (makePercentParameter (ParamID::verbDrive, "Verb Drive", 0.0f));
+
         return { params.begin(), params.end() };
     }
 }

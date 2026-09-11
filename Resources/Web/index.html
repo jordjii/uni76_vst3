@@ -275,9 +275,30 @@
                   <div class="knob__center-dot"></div>
                 </div>
               </div>
+              <!-- Nested DRIVE knob (live-testing follow-up round) - same
+                   concentric second-control pattern PAN's RATE knob
+                   established just above (see CLAUDE.md's HTML/CSS/JS UI
+                   rule). Drives the new verbDrive parameter - scales the
+                   plate's own analog send/return coloration from its
+                   original tiny "texture" resting point up to a genuinely
+                   hot, driven plate, referencing a real reference
+                   plugin's (Vynl Audio Voyager-Verb) own nested-knob
+                   DRIVE control. See docs/DSP_VERB.md's "Drive (nested
+                   knob)" section. -->
+              <div class="knob knob--inner" data-param="verbDrive" style="--knob-angle: -135deg; --knob-size: var(--knob-size-inner)">
+                <div class="knob__collar" aria-hidden="true"></div>
+                <div class="knob__body">
+                  <div class="knob__indicator"></div>
+                  <div class="knob__center-dot"></div>
+                </div>
+              </div>
             </div>
             <div class="knob__value">0%</div>
             <div class="knob__label">SPACE</div>
+            <div class="knob-module__inner-readout">
+              <span class="knob__value knob__value--inner">0%</span>
+              <span class="knob__label knob__label--inner">DRIVE</span>
+            </div>
           </div>
         </div>
 

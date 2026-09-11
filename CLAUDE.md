@@ -44,30 +44,34 @@ get oriented without re-reading the whole codebase.
   `Resources/Web/knob.js`. The only permitted decorative effect beyond flat
   colour is very low-opacity CSS-generated grain/gradient (see the
   `.app::after` rule in `shell.css`) - never anything that reads as 3D.
-- **One primary knob per processor - with two deliberate exceptions.**
+- **One primary knob per processor - with three deliberate exceptions.**
   Each of the 7 modules gets exactly one large interactive knob bound to
-  its one public parameter, except IMAGE and PAN (below). Any secondary
-  read-out (the Preamp filter-position lines, the tri-point scales on
-  EQ/Pitch/Verb) is purely a derived visual computed from that same
+  its one public parameter, except IMAGE, PAN and VERB (below). Any
+  secondary read-out (the Preamp filter-position lines, the tri-point
+  scales on EQ/Pitch) is purely a derived visual computed from that same
   parameter's value in JS - never a second control, never a second
   parameter. **IMAGE** carries a second, small, genuinely interactive
   control alongside its main `imager` knob - a square spatial field pad
   (`Resources/Web/field_pad.js`) whose X axis drives `imageTilt` and
   whose Y axis drives `imager` itself (kept in sync with the main knob
   via the shared JUCE SliderState singleton - see the IMAGE section
-  below and docs/DSP_IMAGE.md). **PAN** (live-testing follow-up round)
-  carries a genuinely second knob too - a smaller RATE knob nested
-  *concentrically inside* the main WIDTH knob (`--knob-size-inner`,
-  `Resources/Web/knobs.css`), driving the new `panRate` parameter (the
-  motion LFO's own speed, referencing SoundToys PanMan's Rate knob - see
-  docs/DSP_PAN.md's "Motion rate" section); PAN's own tri-scale
-  (`ORIGINAL`/`WIDE`/`MOTION`, a stereo width + slow ear-to-ear motion
-  scale, not L/R balance) remains purely derived from `panorama` alone,
-  unaffected by RATE. Both are real second controls, unlike every other
-  module's purely-derived tri-scale/filter-lines, and neither extends to
-  any other module without a separate, deliberate decision.
-- **9 immutable public parameters.** See below - the UI must never grow a
-  9th public parameter without a deliberate, separate decision (the
+  below and docs/DSP_IMAGE.md). **PAN** and **VERB** (live-testing
+  follow-up round, same "concentric nested knob" pattern for both) each
+  carry a genuinely second knob nested *inside* their main knob
+  (`--knob-size-inner`, `Resources/Web/knobs.css`): PAN's RATE knob
+  drives the new `panRate` parameter (the motion LFO's own speed,
+  referencing SoundToys PanMan's Rate knob - see docs/DSP_PAN.md's
+  "Motion rate" section); VERB's DRIVE knob drives the new `verbDrive`
+  parameter (the plate's own analog send/return coloration amount,
+  referencing Vynl Audio Voyager-Verb's own nested DRIVE control - see
+  docs/DSP_VERB.md's "Drive (nested knob)" section). Both modules' own
+  tri-scales remain purely derived from their *main* knob alone,
+  unaffected by the nested control. All three are real second controls,
+  unlike every other module's purely-derived tri-scale/filter-lines, and
+  none extends to any other module without a separate, deliberate
+  decision.
+- **10 immutable public parameters.** See below - the UI must never grow
+  an 11th public parameter without a deliberate, separate decision (the
   IMAGE/`imageTilt` addition above was exactly such a decision, already
   made and shipped).
 - No network requests from the frontend, ever. The one vendored exception
@@ -98,10 +102,10 @@ Do not duplicate these values by hand elsewhere - `include()` that file, or
 read from `Source/Core/PluginIdentity.h` for the C++-only schema-version
 constant.
 
-### The 9 public parameters (stable IDs, do not rename)
+### The 10 public parameters (stable IDs, do not rename)
 
 `preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager`,
-`imageTilt`, `panRate` - see
+`imageTilt`, `panRate`, `verbDrive` - see
 [`Source/Parameters/ParameterIDs.h`](Source/Parameters/ParameterIDs.h).
 Six are `0..100%` `AudioParameterFloat`s: default `50%` for `eq` (its
 centred/flat "PHONE" position), `0%` for the other five - including
@@ -125,8 +129,14 @@ PAN's nested RATE knob (the motion LFO's own speed, referencing
 SoundToys PanMan's Rate control) - PAN now has two independent axes too,
 `panorama` (width/motion depth) and `panRate` (motion speed), the same
 "genuinely independent second axis" reasoning `imageTilt` already
-established. `panorama`'s internal ID is a naming holdover - the
-module it drives is a stereo width + slow motion control, not an L/R
+established. `verbDrive` is the third such exception (same round) - a
+plain `0..100%` `AudioParameterFloat`, default `0%` (the module's
+original, pre-existing send/return coloration - see docs/DSP_VERB.md's
+"Drive (nested knob)" section), driving VERB's nested DRIVE knob (the
+plate's own analog send/return coloration amount, referencing Vynl Audio
+Voyager-Verb's own nested DRIVE control). `panorama`'s internal ID is a
+naming holdover - the module it drives is a stereo width + slow motion
+control, not an L/R
 balance pan, see below. Low Cut / High Cut are **not** separate
 parameters - they are internal to `Source/DSP/PreampProcessor`, derived
 entirely from `preamp` (see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
@@ -1540,6 +1550,51 @@ MSVC 19.51):
   - **VERB's nested DRIVE knob and IMAGE's bipolar mono<->stereo redesign
     remain not started** - the user's own next-priority choice between
     them wasn't asked this round; ask before starting either.
+
+- **VERB nested DRIVE knob (10th public parameter, `verbDrive`)** - the
+  second of the three modules flagged above; user said priority didn't
+  matter, so VERB went next (closer in shape to the just-shipped RATE
+  knob). VERB's analog send/return coloration was a fixed pair of tiny
+  tanh constants through every previous round ("texture, not a second SAT
+  module"); now a real, automatable parameter scales both stages together
+  from that resting point up to a genuinely hot, driven plate - see
+  docs/DSP_VERB.md's "Drive (nested knob)" section for the full
+  derivation, and the "One primary knob per processor" rule above for the
+  now-three-module UI precedent this follows.
+  - **A real "no audible effect" bug found and fixed before shipping -
+    the exact same defect class this session's PREAMP/SAT drive-curve
+    round diagnosed**, caught this time by a dedicated regression test
+    before any docs were written, not discovered after. An early version
+    of the curve used drive-gain ceilings of 1.1 (send) / 0.75 (return) -
+    reasonable-looking numbers, but at VERB's own -18dBFS reference test
+    level (amplitude ~0.126), gain 1.1 only reaches a tanh argument of
+    ~0.14 - still deep in tanh's near-linear region. DRIVE=0% measured
+    1.92% THD, DRIVE=100% measured only 2.16% - the test written
+    specifically to confirm "does DRIVE do something" failed immediately.
+    Raised to 7.0/5.0 (PREAMP's own ceiling is 10.0, for comparison) -
+    DRIVE=100% now measures **9.03% THD**, clearly audible. A second
+    reminder (after the earlier `float rawValues[8]` stack-overflow find)
+    that adding a new drive-style parameter needs its *own* fresh
+    measurement, not just a curve that "looks like" the pattern other
+    modules use.
+  - **Default (`0%`) preserves every existing preset/session exactly** -
+    verifed by both a dedicated full-chain THD test (untouched DRIVE
+    still measures the pre-existing ~1.68% baseline) and all 32 factory
+    presets' own `verbDrive=0` value.
+  - Widened the same fixed-size-array surface `panRate` first exposed:
+    `ParamID::all` (9->10), `FactoryPreset`'s table (new field, all 32
+    rows), `UserPresetData::values`/`ABSnapshot::values` (9->10), a new
+    relay/attachment pair, and - checked specifically this time given the
+    prior round's find - both `float rawValues[9]` C arrays (one in
+    `WebUIEditor.cpp`, one duplicated in `Tests/PluginTests.cpp`) bumped
+    to `[10]` before either could repeat the same stack-corruption bug.
+  - Debug/Release clean (0 warnings); full suite green, including 5 new
+    dedicated DRIVE tests (curve anchors at both ends, the real THD-
+    increase test that caught the ceiling bug above, untouched-default-
+    preserves-behaviour, save/restore, and every factory preset's own
+    default); installer rebuilt.
+  - **IMAGE's bipolar mono<->stereo redesign remains not started** - the
+    last of the three modules originally flagged.
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

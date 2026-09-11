@@ -23,6 +23,7 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     imagerParameter = apvts.getRawParameterValue (uni76::ParamID::imager);
     imageTiltParameter = apvts.getRawParameterValue (uni76::ParamID::imageTilt);
     panRateParameter = apvts.getRawParameterValue (uni76::ParamID::panRate);
+    verbDriveParameter = apvts.getRawParameterValue (uni76::ParamID::verbDrive);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -144,6 +145,10 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto panoramaEnabled = moduleEnableState.isEnabled (4); // index 4 = panorama, see ModuleEnableState::propertyNames
 
     const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
+    // VERB's nested DRIVE knob (see docs/DSP_VERB.md's "Drive (nested
+    // knob)" section) - shares reverbEnabled below (one bypass flag for
+    // the whole module, same as PAN's panorama+panRate pair).
+    const auto verbDrive = verbDriveParameter != nullptr ? verbDriveParameter->load() / 100.0f : 0.0f;
     const auto reverbEnabled = moduleEnableState.isEnabled (5); // index 5 = reverb, see ModuleEnableState::propertyNames
 
     // IMAGE reads two independent raw parameter values - `imager` (0..1,
@@ -169,7 +174,7 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             case 2: satProcessor.process (buffer, satHeat, satEnabled); break;
             case 3: pitchProcessor.process (buffer, pitchSemitones, pitchEnabled); break;
             case 4: panoramaProcessor.process (buffer, panoramaWidth, panRate, panoramaEnabled); break;
-            case 5: verbProcessor.process (buffer, reverbWet, reverbEnabled); break;
+            case 5: verbProcessor.process (buffer, reverbWet, verbDrive, reverbEnabled); break;
             case 6: imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled); break;
             default: break; // unreachable for a validated permutation - see ChainOrder::isValidPermutation()
         }

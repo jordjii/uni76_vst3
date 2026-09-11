@@ -158,6 +158,36 @@ function initPanRateKnob() {
   });
 }
 
+// VERB's nested DRIVE knob (10th public parameter, verbDrive - live-testing
+// follow-up round) - same concentric second-control pattern PAN's RATE
+// knob just established (see initPanRateKnob() above and CLAUDE.md's
+// HTML/CSS/JS UI rule). Scales the plate's own analog send/return
+// coloration from its original tiny "texture" resting point up to a
+// genuinely hot, driven plate - see docs/DSP_VERB.md's "Drive (nested
+// knob)" section. Unlike RATE, DRIVE's own displayed value is a plain
+// percentage (no Hz-style unit conversion needed), so this reuses the
+// default formatter rather than a bespoke one.
+function initVerbDriveKnob() {
+  const section = document.querySelector('.module[data-param="reverb"]');
+  if (!section) return;
+
+  const knobElement = section.querySelector(".knob--inner");
+  const valueElement = section.querySelector(".knob__value--inner");
+  if (!knobElement) return;
+
+  new ParameterKnob({
+    element: knobElement,
+    sliderState: getSliderState("verbDrive"),
+    ariaLabel: "Reverb Drive",
+    valueElement,
+    // Matches ParameterLayout.cpp's own default (0%) - the original,
+    // pre-existing send/return coloration, so a freshly opened instance's
+    // inner knob starts pointing at rest, same as every other module's
+    // own default-off knob.
+    defaultNormalised: 0,
+  });
+}
+
 function initImageField() {
   const element = document.querySelector(".field__pad");
   if (!element) return;
@@ -195,6 +225,7 @@ function preventButtonFocusStealing() {
 
 MODULES.forEach(initModule);
 initPanRateKnob();
+initVerbDriveKnob();
 initImageField();
 initMeters();
 initModulePower();

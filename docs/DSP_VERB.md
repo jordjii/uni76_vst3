@@ -801,6 +801,71 @@ audible reverb effect" under the old passthrough behaviour, and it still
 does under the new real DSP (DRY is a provable identity at 0%, see
 "Topology").
 
+## Drive (nested knob, live-testing follow-up round)
+
+The analog send/return coloration (`verbSendDriveGain`/`verbSendAsymmetry`/
+`verbReturnDriveGain`/`verbReturnAsymmetry`) was a fixed pair of tiny tanh
+constants through every previous round of this module's development -
+"texture, not a second SAT module" was a hard product constraint. Direct
+feedback asked for it to become a real, user-adjustable control, nested
+concentrically inside the main SPACE knob - referencing a real reference
+plugin's (Vynl Audio Voyager-Verb) own nested-knob DRIVE layout, the same
+"one deliberate exception to one-knob-per-module" pattern IMAGE's FIELD
+pad and PAN's RATE knob already established for this project (see
+CLAUDE.md's HTML/CSS/JS UI rule).
+
+**New 10th public parameter**: `verbDrive` (`Source/Parameters/ParameterIDs.h`) -
+a plain `0..100%` `AudioParameterFloat`, default `0%` (the module's
+original, pre-existing coloration - so every existing preset/session that
+never touches the new knob sounds identical to before this round shipped;
+all 32 factory presets carry this same `0%` value, and a legacy
+user-preset file with no `verbDrive` attribute correctly falls back to it
+too via `getDoubleAttribute`'s own default).
+
+**Curve** (`VerbCurves.h`): DRIVE scales all four of the send/return
+stage's own constants together via `base + (max-base)*verbSmoothstep(t)`,
+from their original tiny values up to real, audibly-driven ceilings.
+
+**A real bug found and fixed before shipping - the same "no audible
+effect" class this session's PREAMP/SAT drive-curve round diagnosed.** An
+early version of this curve used drive-gain ceilings of 1.1 (send) and
+0.75 (return) - reasonable-*looking* numbers, but at this module's own
+-18dBFS reference test level (amplitude ~0.126), a gain of 1.1 only
+reaches a tanh argument of ~0.14, still deep in tanh's near-linear region
+(linear to within a fraction of a percent below ~0.2). A dedicated
+regression test written specifically to measure "does full DRIVE actually
+increase THD" caught this immediately: DRIVE=0% measured 1.92% THD,
+DRIVE=100% measured only 2.16% - barely different, exactly the same defect
+class as PREAMP/SAT's own back-loaded-curve bug, just via an insufficient
+absolute ceiling rather than a back-loaded exponent this time. Raised to
+7.0 (send) / 5.0 (return) - reaches `tanh(0.88)` at the reference level,
+clearly compressed - after which DRIVE=100% measured **9.03% THD**, a
+clearly audible "hot plate" character. For comparison, PREAMP's own
+drive-gain ceiling is 10.0 (`PreampCurves.h`) - VERB's DRIVE is
+deliberately a notch less extreme (this is still a reverb's send/return
+coloration, not a dedicated saturator's whole job), not zero-effort.
+
+**Measured**:
+
+| | DRIVE=0% | DRIVE=100% |
+|---|---|---|
+| Wet-path THD (isolated, -18dBFS/1kHz) | 1.92% | 9.03% |
+
+A completely untouched instance (DRIVE left at its own default) still
+measures 1.68% THD through the full processing chain at DEEP (100% wet),
+matching the pre-existing "Analog nonlinearity" section's own baseline
+above - nothing about the existing plate character changed for anyone who
+doesn't reach for the new knob.
+
+**Realtime behaviour**: `driveNormalised01` is smoothed the same
+`verbSmoothingSeconds` (~30ms) way the wet macro already is, and the four
+derived coefficients (send/return drive gain and asymmetry) are
+recomputed once per block from the smoothed value - the same
+once-per-block pattern this module's wet-gain/decay/pre-delay
+coefficients already use (DRIVE is a slow user/automation macro here, not
+an LFO-driven value the way PAN's rotation is, so audio-rate precision
+isn't needed).
+
 ## Known limitations
 
 - Measured RT60 at 100% (~3.5s at 1kHz) sits at the lower edge of the

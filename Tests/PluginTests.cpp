@@ -77,12 +77,12 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 9 parameter IDs exist with the correct defaults (EQ 50%, panRate 35.303%, everything else 0%)");
+        beginTest ("All 10 parameter IDs exist with the correct defaults (EQ 50%, panRate 35.303%, everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
 
-            expectEquals ((int) uni76::ParamID::all.size(), 9);
+            expectEquals ((int) uni76::ParamID::all.size(), 10);
 
             for (const auto* id : uni76::ParamID::all)
             {
@@ -6234,8 +6234,15 @@ static UNI76PanoramaIntegrationTests uni76PanoramaIntegrationTests; // NOLINT - 
 
 namespace
 {
+    /** driveNormalised01 defaults to 0.0f - VERB's original, pre-existing
+        fixed send/return coloration (see VerbCurves.h's "DRIVE (nested
+        knob)" section) - so every pre-existing call site below, none of
+        which passes a drive argument, keeps exercising exactly the
+        behaviour it always has; only the new DRIVE-specific tests pass a
+        different value explicitly. */
     juce::AudioBuffer<float> runVerbProcessor (uni76::dsp::VerbProcessor& verb, const juce::AudioBuffer<float>& input,
-                                                int blockSize, float wetNormalised01, bool enabled)
+                                                int blockSize, float wetNormalised01, bool enabled,
+                                                float driveNormalised01 = 0.0f)
     {
         const auto numChannels = input.getNumChannels();
         const auto totalSamples = input.getNumSamples();
@@ -6249,7 +6256,7 @@ namespace
             for (int ch = 0; ch < numChannels; ++ch)
                 block.copyFrom (ch, 0, input, ch, done, thisBlock);
 
-            verb.process (block, wetNormalised01, enabled);
+            verb.process (block, wetNormalised01, driveNormalised01, enabled);
 
             for (int ch = 0; ch < numChannels; ++ch)
                 result.copyFrom (ch, done, block, ch, 0, thisBlock);
@@ -6261,16 +6268,19 @@ namespace
     /** wetOnly = VERB(wet) - VERB(0%) - since 0% is provably dry-exact
         (verbWetGain(0)==0.0 - see VerbCurves.h), subtracting it isolates
         the additive wet contribution alone, regardless of what internal
-        tank state either run built up. */
-    juce::AudioBuffer<float> verbWetOnly (const juce::AudioBuffer<float>& input, double sampleRate, int blockSize, float wetNormalised01)
+        tank state either run built up. driveNormalised01 defaults to
+        0.0f (VERB's original fixed coloration), same reasoning as
+        runVerbProcessor's own default. */
+    juce::AudioBuffer<float> verbWetOnly (const juce::AudioBuffer<float>& input, double sampleRate, int blockSize, float wetNormalised01,
+                                           float driveNormalised01 = 0.0f)
     {
         uni76::dsp::VerbProcessor verbWet;
         verbWet.prepare (sampleRate, blockSize, 2);
-        auto atWet = runVerbProcessor (verbWet, input, blockSize, wetNormalised01, true);
+        auto atWet = runVerbProcessor (verbWet, input, blockSize, wetNormalised01, true, driveNormalised01);
 
         uni76::dsp::VerbProcessor verbDry;
         verbDry.prepare (sampleRate, blockSize, 2);
-        auto atDry = runVerbProcessor (verbDry, input, blockSize, 0.0f, true);
+        auto atDry = runVerbProcessor (verbDry, input, blockSize, 0.0f, true, driveNormalised01);
 
         juce::AudioBuffer<float> out (2, input.getNumSamples());
         for (int ch = 0; ch < 2; ++ch)
@@ -6383,7 +6393,7 @@ public:
                 {
                     juce::AudioBuffer<float> buffer (2, 512);
                     buffer.clear();
-                    verb.process (buffer, wet, enabled);
+                    verb.process (buffer, wet, 0.0f, enabled);
                     expectEquals (verb.getLatencySamples(), 0);
                 }
             }
@@ -6817,7 +6827,7 @@ public:
                 juce::AudioBuffer<float> block (2, thisBlock);
                 for (int ch = 0; ch < 2; ++ch)
                     block.copyFrom (ch, 0, autoInput, ch, done, thisBlock);
-                verbAuto.process (block, steps[stepIndex % 4], true);
+                verbAuto.process (block, steps[stepIndex % 4], 0.0f, true);
                 for (int ch = 0; ch < 2; ++ch)
                     autoOutput.copyFrom (ch, done, block, ch, 0, thisBlock);
                 done += thisBlock;
@@ -6849,7 +6859,7 @@ public:
                 const auto thisBlock = juce::jmin (blockSize, input.getNumSamples() - done);
                 juce::AudioBuffer<float> block (1, thisBlock);
                 block.copyFrom (0, 0, input, 0, done, thisBlock);
-                verb.process (block, 1.0f, true);
+                verb.process (block, 1.0f, 0.0f, true);
                 output.copyFrom (0, done, block, 0, 0, thisBlock);
                 done += thisBlock;
             }
@@ -6889,7 +6899,7 @@ public:
                     buffer.clear();
                     buffer.setSample (0, 0, std::numeric_limits<float>::quiet_NaN());
                     buffer.setSample (1, 0, std::numeric_limits<float>::infinity());
-                    verb.process (buffer, 1.0f, true);
+                    verb.process (buffer, 1.0f, 0.0f, true);
                     expect (bufferIsFinite (buffer), "NaN/Inf input should be sanitised at " + juce::String (sr) + "Hz/" + juce::String (bs));
                 }
             }
@@ -6928,7 +6938,7 @@ public:
                             for (int ch = 0; ch < 2; ++ch)
                                 for (int i = 0; i < bs; ++i)
                                     buffer.setSample (ch, i, 0.1f * std::sin ((float) i * 0.1f));
-                            verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), true);
+                            verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), 0.0f, true);
                             expect (bufferIsFinite (buffer), "NaN wet% must not produce non-finite output at " + juce::String (sr) + "Hz/" + juce::String (bs));
                         }
                     }
@@ -6945,7 +6955,7 @@ public:
                     for (int ch = 0; ch < 2; ++ch)
                         for (int i = 0; i < 512; ++i)
                             buffer.setSample (ch, i, 0.1f);
-                    verb.process (buffer, wet, true);
+                    verb.process (buffer, wet, 0.0f, true);
                     expect (bufferIsFinite (buffer), "Inf wet% must not produce non-finite output");
                 }
             }
@@ -6957,7 +6967,7 @@ public:
                 juce::AudioBuffer<float> nanBlock (2, 512);
                 nanBlock.clear();
                 nanBlock.setSample (0, 0, std::numeric_limits<float>::quiet_NaN());
-                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), true);
+                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), 0.0f, true);
                 verb.reset();
 
                 auto post = generateSine (2, (int) (0.5 * 44100.0), 44100.0, 500.0f, 0.2f);
@@ -6972,7 +6982,7 @@ public:
                 juce::AudioBuffer<float> nanBlock (2, 512);
                 nanBlock.clear();
                 nanBlock.setSample (1, 10, std::numeric_limits<float>::quiet_NaN());
-                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), true);
+                verb.process (nanBlock, std::numeric_limits<float>::quiet_NaN(), 0.0f, true);
 
                 const double rates[] { 48000.0, 96000.0, 44100.0, 192000.0 };
                 for (auto sr : rates)
@@ -6995,7 +7005,7 @@ public:
                 for (int ch = 0; ch < 2; ++ch)
                     for (int i = 0; i < 8192; ++i)
                         buffer.setSample (ch, i, 0.1f * std::sin ((float) i * 0.05f));
-                verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), true);
+                verb.process (buffer, std::numeric_limits<float>::quiet_NaN(), 0.0f, true);
                 expect (bufferIsFinite (buffer), "an 8192-sample block (larger than the pre-delay buffer) with NaN wet% must stay finite");
 
                 // Follow with a normal block to confirm the instance recovered cleanly.
@@ -7003,7 +7013,7 @@ public:
                 for (int ch = 0; ch < 2; ++ch)
                     for (int i = 0; i < 8192; ++i)
                         normalBlock.setSample (ch, i, 0.1f * std::sin ((float) i * 0.05f));
-                verb.process (normalBlock, 1.0f, true);
+                verb.process (normalBlock, 1.0f, 0.0f, true);
                 expect (bufferIsFinite (normalBlock), "normal processing after the oversized NaN block must be finite");
             }
         }
@@ -8350,15 +8360,17 @@ namespace
 
     struct ParamSpec { const char* id; float defaultNorm; };
 
-    // Every one of the 9 parameters expressed uniformly in normalised 0..1
-    // space: 1.0 is always that parameter's "loud" extreme (100%, +12 ST,
-    // +100 TILT, fastest RATE); 0.0 is a second, distinct extreme only for
-    // pitch (-12 ST) and imageTilt (-100/LEFT) - for the other seven, 0.0
-    // is simply their own resting default. panRate's own resting default
-    // (0.35303) is neither 0 nor 1 - see ParameterLayout.cpp's own
-    // comment - so it is listed at that value, not folded into the "0.0 =
-    // rest" convention the six plain percent modules share.
-    const std::array<ParamSpec, 9> auditParams {{
+    // Every one of the 10 parameters expressed uniformly in normalised
+    // 0..1 space: 1.0 is always that parameter's "loud" extreme (100%,
+    // +12 ST, +100 TILT, fastest RATE/DRIVE); 0.0 is a second, distinct
+    // extreme only for pitch (-12 ST) and imageTilt (-100/LEFT) - for the
+    // other eight, 0.0 is simply their own resting default. panRate's own
+    // resting default (0.35303) is neither 0 nor 1 - see
+    // ParameterLayout.cpp's own comment - so it is listed at that value,
+    // not folded into the "0.0 = rest" convention the seven plain percent
+    // modules (verbDrive included - its own 0% default *is* the original
+    // fixed coloration) share.
+    const std::array<ParamSpec, 10> auditParams {{
         { uni76::ParamID::preamp,     0.0f },
         { uni76::ParamID::eq,         0.5f },
         { uni76::ParamID::saturation, 0.0f },
@@ -8368,6 +8380,7 @@ namespace
         { uni76::ParamID::imager,     0.0f },
         { uni76::ParamID::imageTilt,  0.5f },
         { uni76::ParamID::panRate,    0.35303f },
+        { uni76::ParamID::verbDrive,  0.0f },
     }};
 
     void applyAuditDefaults (juce::AudioProcessorValueTreeState& apvts)
@@ -10021,10 +10034,10 @@ public:
                     processor.getModuleEnableState().setEnabled (m, ! preset.modulesEnabled[(size_t) m]);
 
                 // Verbatim replica of WebUIEditor.cpp's uni76LoadFactoryPreset.
-                const float rawValues[9] {
+                const float rawValues[10] {
                     preset.preamp, preset.eq, preset.saturation, preset.pitch,
                     preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
-                    preset.panRate
+                    preset.panRate, preset.verbDrive
                 };
                 for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
                     if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
@@ -10079,7 +10092,7 @@ public:
 
         beginTest ("Loading a preset does not rename or add any parameter ID (stable-ID contract)");
         {
-            expectEquals ((int) uni76::ParamID::all.size(), 9);
+            expectEquals ((int) uni76::ParamID::all.size(), 10);
             UNI76AudioProcessor processor;
             for (auto& preset : uni76::factoryPresets)
                 juce::ignoreUnused (preset);
@@ -10158,10 +10171,10 @@ public:
             // Pick a preset that clearly engages multiple modules (not
             // "Default", which is near-identity at every stage).
             const auto& preset = uni76::factoryPresets[1]; // "Warm Analog"
-            const float rawValues[9] {
+            const float rawValues[10] {
                 preset.preamp, preset.eq, preset.saturation, preset.pitch,
                 preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
-                preset.panRate
+                preset.panRate, preset.verbDrive
             };
             for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
                 if (auto* param = apvts.getParameter (uni76::ParamID::all[i]))
@@ -10630,6 +10643,124 @@ public:
 };
 
 static UNI76PanRateTests uni76PanRateTests; // NOLINT - self-registers with the UnitTestRunner
+
+// ---- VERB's nested DRIVE knob (10th public parameter, ParamID::verbDrive) -
+//
+// Covers the curve's anchors (DRIVE=0% reproduces the original fixed base
+// values exactly, DRIVE=100% reaches the documented ceilings), that moving
+// DRIVE genuinely increases measured wet-path THD (not just a stored
+// number), that a completely untouched instance still measures the
+// original small THD the rest of the VERB suite has always relied on, and
+// that the new parameter survives a real save/restore round-trip.
+class UNI76VerbDriveTests final : public juce::UnitTest
+{
+public:
+    UNI76VerbDriveTests() : juce::UnitTest ("VERB DRIVE (verbDrive, nested knob)", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("Drive curves: DRIVE=0% reproduces the original base values, DRIVE=100% reaches the documented ceilings");
+        {
+            expectWithinAbsoluteError (uni76::dsp::verbSendDriveGain (0.0f), uni76::dsp::verbSendDriveGainBase, 1.0e-6f);
+            expectWithinAbsoluteError (uni76::dsp::verbSendAsymmetry (0.0f), uni76::dsp::verbSendAsymmetryBase, 1.0e-6f);
+            expectWithinAbsoluteError (uni76::dsp::verbReturnDriveGain (0.0f), uni76::dsp::verbReturnDriveGainBase, 1.0e-6f);
+            expectWithinAbsoluteError (uni76::dsp::verbReturnAsymmetry (0.0f), uni76::dsp::verbReturnAsymmetryBase, 1.0e-6f);
+
+            expectWithinAbsoluteError (uni76::dsp::verbSendDriveGain (1.0f), uni76::dsp::verbSendDriveGainMax, 1.0e-4f);
+            expectWithinAbsoluteError (uni76::dsp::verbSendAsymmetry (1.0f), uni76::dsp::verbSendAsymmetryMax, 1.0e-4f);
+            expectWithinAbsoluteError (uni76::dsp::verbReturnDriveGain (1.0f), uni76::dsp::verbReturnDriveGainMax, 1.0e-4f);
+            expectWithinAbsoluteError (uni76::dsp::verbReturnAsymmetry (1.0f), uni76::dsp::verbReturnAsymmetryMax, 1.0e-4f);
+        }
+
+        beginTest ("Moving DRIVE genuinely increases measured wet-path THD (PanoramaProcessor-style isolation)");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            const int totalLen = (int) (11.0 * sr);
+            auto input = generateIdenticalStereo (totalLen, sr, 1000.0f, 0.1259f); // -18dBFS
+
+            auto measureThd = [&] (float drive)
+            {
+                auto wo = verbWetOnly (input, sr, blockSize, 1.0f, drive);
+                const int start = (int) (9.0 * sr);
+                const int win = (int) (1.5 * sr);
+                const auto h1 = goertzelMagnitude (wo, 0, start, win, sr, 1000.0f);
+                const auto h2 = goertzelMagnitude (wo, 0, start, win, sr, 2000.0f);
+                const auto h3 = goertzelMagnitude (wo, 0, start, win, sr, 3000.0f);
+                return std::sqrt (h2 * h2 + h3 * h3) / juce::jmax (h1, 1.0e-9f);
+            };
+
+            const auto thdAtZero = measureThd (0.0f);
+            const auto thdAtFull = measureThd (1.0f);
+
+            std::cout << "\nDRIVE=0%: THD=" << (thdAtZero * 100.0) << "%   DRIVE=100%: THD=" << (thdAtFull * 100.0) << "%" << std::endl;
+
+            expect (thdAtFull > thdAtZero * 3.0, "full DRIVE should measure substantially more THD than the original base coloration");
+            // Genuinely audible "hot plate" character, not a token gesture -
+            // see VerbCurves.h's own reasoning for the chosen ceilings.
+            expect (thdAtFull > 0.05, "full DRIVE should read as a clearly driven plate, not still 'texture'");
+        }
+
+        beginTest ("Full processor: a completely untouched DRIVE still measures VERB's original small THD");
+        {
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            processor.prepareToPlay (sr, blockSize);
+            auto& apvts = processor.getValueTreeState();
+            applyAuditDefaults (apvts);
+            setNormalised (apvts, uni76::ParamID::reverb, 1.0f); // DEEP - DRIVE deliberately left untouched
+
+            const int totalLen = (int) (11.0 * sr);
+            auto input = generateIdenticalStereo (totalLen, sr, 1000.0f, 0.1259f);
+            auto output = runFullChain (processor, input, blockSize);
+            expect (bufferIsFinite (output), "untouched-DRIVE full chain produced non-finite output");
+
+            const int start = (int) (9.0 * sr);
+            const int win = (int) (1.5 * sr);
+            const auto h1 = goertzelMagnitude (output, 0, start, win, sr, 1000.0f);
+            const auto h2 = goertzelMagnitude (output, 0, start, win, sr, 2000.0f);
+            const auto h3 = goertzelMagnitude (output, 0, start, win, sr, 3000.0f);
+            const auto thd = std::sqrt (h2 * h2 + h3 * h3) / juce::jmax (h1, 1.0e-9f);
+
+            std::cout << "\nUntouched DRIVE (full chain, DEEP): THD=" << (thd * 100.0) << "%" << std::endl;
+            expect (thd < 0.05, "an untouched DRIVE should still measure VERB's original small (texture-only) THD");
+        }
+
+        beginTest ("verbDrive survives a real getStateInformation()/setStateInformation() save+restore");
+        {
+            UNI76AudioProcessor processor;
+            auto* param = processor.getValueTreeState().getParameter (uni76::ParamID::verbDrive);
+            expect (param != nullptr);
+            if (param == nullptr) return;
+
+            param->setValueNotifyingHost (0.65f);
+
+            juce::MemoryBlock saved;
+            processor.getStateInformation (saved);
+
+            UNI76AudioProcessor reloaded;
+            reloaded.setStateInformation (saved.getData(), (int) saved.getSize());
+
+            auto* reloadedParam = reloaded.getValueTreeState().getParameter (uni76::ParamID::verbDrive);
+            expect (reloadedParam != nullptr);
+            if (reloadedParam != nullptr)
+                expectWithinAbsoluteError (reloadedParam->getValue(), 0.65f, 0.001f, "verbDrive should survive save/restore");
+        }
+
+        beginTest ("Every factory preset carries the same behaviour-preserving verbDrive default");
+        {
+            for (auto& preset : uni76::factoryPresets)
+                expectWithinAbsoluteError (preset.verbDrive, 0.0f, 0.001f,
+                                            juce::String (preset.name) + ": verbDrive should default to the original fixed coloration");
+        }
+    }
+};
+
+static UNI76VerbDriveTests uni76VerbDriveTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {
