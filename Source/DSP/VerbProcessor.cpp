@@ -298,6 +298,31 @@ namespace uni76::dsp
                 const auto idx0 = juce::jlimit (0, size - 1, (int) lineReadPosF);
                 const auto lineFrac = juce::jlimit (0.0f, 1.0f, lineReadPosF - (float) idx0);
                 const auto idx1 = (idx0 + 1 == size) ? 0 : idx0 + 1;
+                // Plain linear interpolation attenuates decorrelated/high-
+                // frequency content (worst case -3dB at frac==0.5, exactly
+                // like a 2-tap FIR lowpass, because that IS what this is) -
+                // a real regression found via direct feedback ("ревер
+                // ужасный"): compounded over the hundreds of feedback
+                // passes a multi-second RT60 needs, this silently collapsed
+                // the measured decay to well under half its intended length
+                // (the same "small per-pass loss compounds hugely" bug
+                // class the per-line damping filter's own tuning history
+                // already documents - see verbDampingHz's comment).
+                //
+                // A constant-power *gain boost* was tried here first and
+                // was a real, dangerous mistake: boosting the read value
+                // inside the recirculating feedback loop directly raises
+                // the loop's own effective gain, independent of - and
+                // therefore able to exceed - verbLineFeedbackGainMax's own
+                // safety clamp (which only bounds lineFeedbackGain itself,
+                // computed *before* this read). It measurably pushed the
+                // loop unstable (NaN-guarded output, near-zero "decay" in
+                // every test that touches VERB). The actual fix lives in
+                // VerbCurves.h's verbDecayAnchors instead - raising the
+                // *target* RT60 the feedback-gain formula solves for stays
+                // safely bounded by that same clamp, the same mechanism
+                // that already compensates for the per-line damping
+                // filter's own compounding loss.
                 rawLineOut[(size_t) k] = buf[(size_t) idx0] * (1.0f - lineFrac) + buf[(size_t) idx1] * lineFrac;
 
                 chorusLfoPhase[(size_t) k] += chorusLfoIncrement[(size_t) k];

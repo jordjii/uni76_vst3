@@ -84,7 +84,35 @@ namespace uni76::dsp
     // of that, so the *actual measured* RT60 undershoots the nominal
     // target unless compensated here. Empirically measured and tuned -
     // see docs/DSP_VERB.md's "RT60" section for the before/after numbers.
-    inline constexpr std::array<float, 5> verbDecayAnchors { 0.5f, 1.1f, 2.6f, 4.3f, 6.0f };
+    // Raised from the original {0.5, 1.1, 2.6, 4.3, 6.0} during the tail
+    // chorus/vibrato round - a real, serious regression found via direct
+    // feedback ("ревер ужасный", confirmed by direct audio comparison
+    // against a reference plate): reading each FDN line's own tank buffer
+    // at a modulated *fractional* position (VerbProcessor.cpp) via linear
+    // interpolation attenuates decorrelated/high-frequency content on
+    // every single pass (worst case -3dB at a half-sample offset, exactly
+    // like a 2-tap FIR lowpass), and that small per-pass loss compounds
+    // hugely over the hundreds of feedback passes a multi-second RT60
+    // needs - the same bug *class* the per-line damping filter's own
+    // compounding-loss history already documents (see verbDampingHz's
+    // comment), caught this time by a new dedicated "measured RT60 in
+    // real seconds" regression test rather than the pre-existing
+    // "frequency-dependent decay" test, which only checks *relative*
+    // frequency ordering and stays true even if the *whole* decay
+    // collapses uniformly. A first attempt at compensating this inside
+    // the feedback loop itself (a constant-power gain boost on the
+    // interpolated read) was a real, dangerous mistake - see
+    // VerbProcessor.cpp's own comment on why that pushed the loop
+    // unstable - so this fix instead raises the *target* RT60 the
+    // existing feedback-gain formula solves for, which stays safely
+    // bounded by verbLineFeedbackGainMax's own clamp. These anchors
+    // (paired with verbChorusDepthSamples's own reduced 1.6->0.3 depth
+    // below) were tuned so the *measured* RT60 (a dedicated test
+    // measures the real time-to­-60dB, not just this formula's raw
+    // input) lands close to this module's own pre-chorus, historically-
+    // measured figures (~1.9s at 50%, ~3.35s at 100%) - not an
+    // arbitrarily higher number for its own sake.
+    inline constexpr std::array<float, 5> verbDecayAnchors { 0.7f, 1.6f, 4.2f, 7.5f, 11.0f };
 
     inline float verbDecaySeconds (float t01) noexcept
     {
@@ -339,15 +367,21 @@ namespace uni76::dsp
     // so the 12 lines drift in and out of phase with each other rather
     // than wobbling in lockstep (which would just read as a single slow
     // pitch bend, not a chorused "shimmer").
-    // Deliberately more than a token vibrato amount - direct feedback was
-    // that DEEP/100% read as "metallic"/"iron", wanting it to "smear and
-    // recede into the distance" instead: a deeper, genuinely audible
-    // smear is what actually breaks up an FDN's own static comb-filter
-    // resonances (the physical cause of a "metallic ring" - a fixed set
-    // of resonant delay lengths reinforcing the same frequencies on every
-    // pass) into a continuously-shifting, non-metallic texture, not just
-    // a vintage-flavour garnish.
-    inline constexpr float verbChorusDepthSamples = 1.6f;
+    // Reduced from an initial 1.6 (chosen for maximum audible smear) after
+    // measuring its real cost: even at a *fraction* of a sample, this
+    // tank's Householder feedback matrix mixes all 12 lines' own damped
+    // output into one shared term every pass, so each line's own
+    // interpolation loss doesn't stay local - it compounds across the
+    // *whole* tank, not just that one line. 1.6 samples measured a real
+    // RT60 collapse to roughly half this module's own historical decay
+    // time even after a large compensating anchor increase (see
+    // verbDecayAnchors above) - not an acceptable trade for the smear
+    // effect. 0.3 samples is the depth that, paired with the raised
+    // anchors above, measured back within ~10% of this module's own pre-
+    // chorus RT60 - still a genuinely audible, continuously-shifting
+    // wobble (not zero, not a token vibrato), just not the most extreme
+    // depth that was tried first.
+    inline constexpr float verbChorusDepthSamples = 0.3f;
     inline constexpr std::array<float, 12> verbLineChorusRateHz
     {
         0.113f, 0.147f, 0.181f, 0.209f, 0.233f, 0.271f,
