@@ -17,11 +17,21 @@
         50%  = WIDE       - moderate static width, moderate slow motion.
         100% = MOTION      - wide, with an obvious slow L<->R swing.
 
-    Architecture: Mid (0.5*(L+R)) is the stable "core" - read exactly
-    once, never filtered, rotated, or otherwise touched anywhere in this
-    file. Every watt of width/motion comes from a *separate* "spatial"
-    signal built from two distinct kinds of content, kept conceptually
-    distinct throughout process():
+    Architecture: Mid (0.5*(L+R)) now gets a genuine constant-power L<->R
+    rotation too (direct feedback: an earlier "Mid never touched" design
+    read as "doesn't throw between ears, bass never moves" - Mid carries
+    essentially all of a mono/near-mono source's bass and overall energy,
+    so leaving it untouched capped how strongly PAN could ever be felt).
+    The rotation shares the same theta swing the spatial term below uses
+    (one coherent motion, not two separate effects), is full-band
+    (deliberately no shelf - bass genuinely swings with everything else),
+    and is constant-power (gainMidL^2+gainMidR^2==2 for any theta), so it
+    never changes overall loudness, only redistributes it - and collapses
+    to an exact identity (gain 1.0 both channels) at ORIGINAL (t=0),
+    where theta sits at its fixed centre regardless of the LFO. On top of
+    that shared rotation, every watt of *width* (not just motion) still
+    comes from a *separate* "spatial" signal built from two distinct
+    kinds of content, kept conceptually distinct throughout process():
       - real Side content (0.5*(L-R)) - part of the actual input, so it
         IS required for an exact reconstruction at width=0 (see below);
       - a synthesised "induced" component (mono/near-mono sources' only
@@ -45,9 +55,10 @@
     path to sum against, so no bump is possible by construction, not just
     by tuning. Both shelves' low/high asymptote gains already encode that
     channel's own width AND motion-rotation ceiling for that frequency
-    region, driven by a slow (~0.3Hz), free-running, deterministic LFO -
-    a stable centre with the *surrounding* space moving, not a global
-    auto-pan of the whole signal.
+    region, driven by a slow, free-running, deterministic, tempo-synced
+    LFO (see PanoramaCurves.h's "Tempo-synced motion rate" section) -
+    combined with the Mid rotation above, this is now a genuine, full-
+    band auto-pan at high MOTION, by deliberate design.
 
     Every curve in PanoramaCurves.h evaluates to its identity value at
     t=0 (width gain 1.0, motion depth 0.0, induced blend 0.0) - which is

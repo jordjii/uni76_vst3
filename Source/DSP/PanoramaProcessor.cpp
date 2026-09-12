@@ -201,11 +201,28 @@ namespace uni76::dsp
             makeLowShelf (shelfR, sampleRate, panCrossoverHz, gainDbR, panShelfSlope);
             const auto toR = shelfR.processSample (spatialRaw) * gainRHigh;
 
-            // Mid is never touched - at t=0, toL==toR==spatialRaw==side
-            // exactly, so wetL/wetR collapse to the exact input L/R - see
-            // the class comment in PanoramaProcessor.h.
-            const auto wetL = mid + toL;
-            const auto wetR = mid - toR;
+            // Mid rotation (direct feedback: "не гоняется по ушам, низа
+            // остаются" - PAN wasn't throwing hard between ears and bass
+            // never moved, because Mid - which carries essentially all of
+            // a mono/near-mono source's bass and overall energy - was
+            // never touched, only the highpassed spatial/Side term above
+            // was). A genuine constant-power rotation applied to Mid
+            // itself, using the same thetaHigh swing the spatial term
+            // already uses (so everything moves together, one coherent
+            // motion, not two separate effects) - gainMidL^2+gainMidR^2
+            // == 2 for any theta (same algebraic identity the shelves
+            // above already rely on), so this never changes overall
+            // loudness, only redistributes it L<->R. At t=0, thetaHigh ==
+            // panMotionThetaCentre (pi/4) exactly, so gainMidL==
+            // gainMidR==1.0 - ORIGINAL stays an exact identity. No shelf,
+            // no frequency split - deliberately full-band, so bass
+            // genuinely swings with everything else instead of staying
+            // anchored.
+            const auto gainMidL = sqrt2 * std::cos (thetaHigh);
+            const auto gainMidR = sqrt2 * std::sin (thetaHigh);
+
+            const auto wetL = mid * gainMidL + toL;
+            const auto wetR = mid * gainMidR - toR;
 
             L[i] = dryL[i] * (1.0f - mix) + wetL * mix;
             R[i] = dryR[i] * (1.0f - mix) + wetR * mix;
