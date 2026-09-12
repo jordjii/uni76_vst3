@@ -6666,7 +6666,10 @@ public:
             // *measured* RT60 in real seconds (a dedicated test elsewhere
             // in this file) is what actually matters now; this is just a
             // basic sanity bound on the formula input.
-            expect (uni76::dsp::verbDecaySeconds (1.0f) >= 3.0f && uni76::dsp::verbDecaySeconds (1.0f) <= 14.0f, "100% nominal decay target should stay in a sane range");
+            // Widened again (was 3.0-14.0) - the anti-metallic round's
+            // deeper chorus (verbChorusDepthSamples) needed more anchor
+            // compensation, same reasoning as the earlier widening.
+            expect (uni76::dsp::verbDecaySeconds (1.0f) >= 3.0f && uni76::dsp::verbDecaySeconds (1.0f) <= 20.0f, "100% nominal decay target should stay in a sane range");
         }
 
         beginTest ("Low-frequency wet rejection: 40-500Hz burst response, VERB=100%");
@@ -6706,8 +6709,15 @@ public:
 
                 if (freqHz <= 120.0f)
                     expect (relDb < -50.0f, juce::String (freqHz) + "Hz: bass should be almost completely rejected from the wet path, got " + juce::String (relDb) + "dB");
+                // 250Hz's own bound loosened (-25->-20) - the wet-path
+                // highpass cutoff itself moved 350->250Hz this round
+                // (direct feedback: "бас не реверим 250 гц примерно, всё
+                // остальное пиздато реверим"), so 250Hz now sits right at
+                // the filter's own corner rather than deep in the
+                // stopband - less suppression there is the deliberate
+                // point, not a regression.
                 else if (freqHz <= 250.0f)
-                    expect (relDb < -25.0f, juce::String (freqHz) + "Hz: should still be strongly suppressed, got " + juce::String (relDb) + "dB");
+                    expect (relDb < -20.0f, juce::String (freqHz) + "Hz: should still be strongly suppressed, got " + juce::String (relDb) + "dB");
                 else if (freqHz <= 300.0f)
                     expect (relDb < -20.0f, juce::String (freqHz) + "Hz: should still be clearly suppressed, got " + juce::String (relDb) + "dB");
             }

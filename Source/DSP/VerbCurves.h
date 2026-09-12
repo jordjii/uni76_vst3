@@ -112,7 +112,7 @@ namespace uni76::dsp
     // input) lands close to this module's own pre-chorus, historically-
     // measured figures (~1.9s at 50%, ~3.35s at 100%) - not an
     // arbitrarily higher number for its own sake.
-    inline constexpr std::array<float, 5> verbDecayAnchors { 0.7f, 1.6f, 4.2f, 7.5f, 11.0f };
+    inline constexpr std::array<float, 5> verbDecayAnchors { 1.0f, 2.2f, 6.0f, 11.0f, 16.0f };
 
     inline float verbDecaySeconds (float t01) noexcept
     {
@@ -131,7 +131,15 @@ namespace uni76::dsp
         return verbPiecewise (t01, verbPreDelayMsAnchors);
     }
 
-    // ---- Wet-path bass isolation (350Hz) --------------------------------------
+    // ---- Wet-path bass isolation (250Hz) --------------------------------------
+    //
+    // Lowered from 350Hz - direct feedback: "бас не реверим 250 гц
+    // примерно, всё остальное пиздато реверим" (keep bass out of the
+    // reverb down to ~250Hz, everything above that should reverb richly).
+    // The old 350Hz cutoff was excluding a real chunk of low-mid "body"
+    // (250-350Hz - guitar/vocal/snare warmth) from the wet path that
+    // could otherwise sound genuinely good reverbed; 250Hz keeps true
+    // bass/sub content dry while opening that range up.
     //
     // A cascaded (4-pole, -24dB/oct) Butterworth highpass on the wet SEND
     // path - not a brickwall FIR (no latency, no ringing) - plus a second,
@@ -139,10 +147,12 @@ namespace uni76::dsp
     // catching any low-frequency energy the plate's own recirculation
     // might otherwise sustain (a feedback network's own resonances aren't
     // guaranteed to respect an input-side filter alone - see
-    // docs/DSP_VERB.md's "350Hz wet-path isolation" section). The DRY path
-    // never passes through either of these - see VerbProcessor.cpp.
-    inline constexpr float verbWetSendHighpassHz   = 350.0f;
-    inline constexpr float verbWetOutputHighpassHz = 350.0f;
+    // docs/DSP_VERB.md's "350Hz wet-path isolation" section, written
+    // before this round's frequency change but describing the same
+    // mechanism). The DRY path never passes through either of these - see
+    // VerbProcessor.cpp.
+    inline constexpr float verbWetSendHighpassHz   = 250.0f;
+    inline constexpr float verbWetOutputHighpassHz = 250.0f;
 
     // ---- Plate delay-line layout -----------------------------------------------
     //
@@ -170,9 +180,17 @@ namespace uni76::dsp
     // only as a pre-density stage ahead of the real FDN tank, which is
     // what makes this architecturally different from a "cheap Schroeder"
     // reverb - see docs/DSP_VERB.md).
-    inline constexpr int verbNumDiffusers = 4;
-    inline constexpr std::array<float, 4> verbDiffuserLengthsMs { 3.1f, 2.3f, 1.7f, 1.1f };
-    inline constexpr float verbDiffuserGain = 0.6f;
+    // Grown from 4 to 6 stages, gain raised 0.6->0.72 (anti-metallic round -
+    // direct feedback: "железо убирать" / remove the metallic character).
+    // Denser early diffusion is what actually breaks up a plate's initial
+    // "ping" transient into a smooth wash before it ever reaches the FDN
+    // tank - a different lever from the tank's own line count/lengths
+    // (already investigated and found unhelpful in isolation - see
+    // docs/DSP_VERB.md's "Metallic-ring reduction investigation" section).
+    // Two new short, still non-commensurate lengths appended (0.8/0.6ms).
+    inline constexpr int verbNumDiffusers = 6;
+    inline constexpr std::array<float, 6> verbDiffuserLengthsMs { 3.1f, 2.3f, 1.7f, 1.1f, 0.8f, 0.6f };
+    inline constexpr float verbDiffuserGain = 0.72f;
 
     // ---- Frequency-dependent damping (HF decays faster than mid) --------------
     //
@@ -381,7 +399,13 @@ namespace uni76::dsp
     // chorus RT60 - still a genuinely audible, continuously-shifting
     // wobble (not zero, not a token vibrato), just not the most extreme
     // depth that was tried first.
-    inline constexpr float verbChorusDepthSamples = 0.3f;
+    // Raised again (anti-metallic round, direct feedback: "железо
+    // убирать") now that verbDecayAnchors below has more headroom to
+    // compensate with - deeper modulation smears the tank's own static
+    // comb-filter resonances more thoroughly. Re-measure RT60 (a
+    // dedicated test/diagnostic - see verbDecayAnchors's own comment)
+    // after touching this.
+    inline constexpr float verbChorusDepthSamples = 0.4f;
     inline constexpr std::array<float, 12> verbLineChorusRateHz
     {
         0.113f, 0.147f, 0.181f, 0.209f, 0.233f, 0.271f,
