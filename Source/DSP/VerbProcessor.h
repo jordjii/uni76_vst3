@@ -111,8 +111,22 @@ namespace uni76::dsp
         std::array<OnePoleLowPass, verbNumLines> lineDamping;
         std::array<float, verbNumLines> lineFeedbackGain {};
 
+        // ---- tail chorus/vibrato (see VerbCurves.h's "Tail chorus/
+        // vibrato" section) - a small per-line LFO wobbling each line's
+        // own *read* position (not its write side or nominal length) via
+        // linear interpolation between two adjacent buffer samples.
+        std::array<double, verbNumLines> chorusLfoPhase {};
+        std::array<double, verbNumLines> chorusLfoIncrement {};
+
         // ---- analog return bandwidth ----
         OnePoleLowPass returnBandwidthL, returnBandwidthR;
+
+        // ---- breakup (envelope-inverse return-stage character, see
+        // VerbCurves.h's "Breakup" section) ----
+        float breakupLevelSmoothed = 0.0f;    // fast-ish smoothed |tank output| envelope
+        float breakupLevelAlpha = 1.0f;       // one-pole coefficient, computed in prepare()
+        float breakupPeakLevel = 0.0f;        // slow-decaying "recent loudest point" reference
+        float breakupPeakDecayPerSample = 1.0f; // computed in prepare()
 
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> wetSmoother;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear> driveSmoother;

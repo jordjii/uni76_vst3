@@ -156,8 +156,13 @@ namespace uni76::dsp
             // t=0 forces motionLow==motionHigh==0.0 exactly, so both
             // thetas collapse to the fixed centre regardless of lfoSin -
             // the LFO's own phase never affects ORIGINAL's output.
-            const auto thetaLow  = panMotionThetaCentre + motionLow  * lfoSin * panMotionThetaRange;
-            const auto thetaHigh = panMotionThetaCentre + motionHigh * lfoSin * panMotionThetaRange;
+            // Each band uses its own independently-tunable theta range
+            // now (see PanoramaCurves.h's split-out comment) - bass stays
+            // anchored to its own smaller, previously-measured-safe
+            // swing regardless of how aggressive the high band's own
+            // swing gets.
+            const auto thetaLow  = panMotionThetaCentre + motionLow  * lfoSin * panMotionThetaRangeLow;
+            const auto thetaHigh = panMotionThetaCentre + motionHigh * lfoSin * panMotionThetaRangeHigh;
 
             // Equal-power rotation baked directly into each band's gain:
             // gainLow^2 + gainHigh^2 (same channel) == width^2 * ((sqrt2

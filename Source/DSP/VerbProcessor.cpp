@@ -46,10 +46,14 @@ namespace uni76::dsp
             lineLengthSamples[(size_t) k] = length;
             lineBuffers[(size_t) k].assign ((size_t) length, 0.0f);
             lineDamping[(size_t) k].setCutoffHz (sampleRate, verbDampingHz);
+            chorusLfoIncrement[(size_t) k] = twoPi * (double) verbLineChorusRateHz[(size_t) k] / sampleRate;
         }
 
         returnBandwidthL.setCutoffHz (sampleRate, verbReturnBandwidthHz);
         returnBandwidthR.setCutoffHz (sampleRate, verbReturnBandwidthHz);
+
+        breakupLevelAlpha = 1.0f - std::exp ((float) (-1.0 / (verbBreakupLevelReleaseSeconds * sampleRate)));
+        breakupPeakDecayPerSample = (float) std::exp (-1.0 / (verbBreakupPeakReleaseSeconds * sampleRate));
 
         wetSmoother.reset (sampleRate, verbSmoothingSeconds);
         driveSmoother.reset (sampleRate, verbSmoothingSeconds);
@@ -88,10 +92,17 @@ namespace uni76::dsp
             std::fill (lineBuffers[(size_t) k].begin(), lineBuffers[(size_t) k].end(), 0.0f);
             lineWritePos[(size_t) k] = 0;
             lineDamping[(size_t) k].reset();
+            // Staggered starting phases (not just staggered rates) so the
+            // 12 lines' own wobble never all cross zero together, even
+            // for the first cycle right after a reset.
+            chorusLfoPhase[(size_t) k] = twoPi * (double) k / (double) verbNumLines;
         }
 
         returnBandwidthL.reset();
         returnBandwidthR.reset();
+
+        breakupLevelSmoothed = 0.0f;
+        breakupPeakLevel = 0.0f;
     }
 
     void VerbProcessor::updateDecayDependentCoefficients (float wetForCoefficients) noexcept
@@ -172,8 +183,21 @@ namespace uni76::dsp
         const auto sendDriveGain    = verbSendDriveGain (driveForCoefficients);
         const auto sendAsymmetry    = verbSendAsymmetry (driveForCoefficients);
         const auto sendDriveNorm    = std::tanh (sendDriveGain);
-        const auto returnDriveGain  = verbReturnDriveGain (driveForCoefficients);
         const auto returnAsymmetry  = verbReturnAsymmetry (driveForCoefficients);
+
+        // Breakup boost (see VerbCurves.h's "Breakup" section) - reads the
+        // level/peak ratio settled at the *end of the previous block*
+        // (same one-block-lag pattern as every other coefficient here),
+        // so a decaying tail's own return-stage drive gradually rises as
+        // the tail fades relative to its own recent peak, then resets
+        // once a new, louder transient re-anchors that peak. Scaled by
+        // the raw DRIVE knob position (not verbReturnDriveGain itself) so
+        // DRIVE=0% is a true no-op regardless of the level/peak ratio.
+        const auto breakupRatio = breakupPeakLevel > 1.0e-6f
+                                       ? juce::jlimit (0.0f, 1.0f, breakupLevelSmoothed / breakupPeakLevel)
+                                       : 1.0f;
+        const auto breakupBoost = verbBreakupAmount * driveForCoefficients * (1.0f - breakupRatio);
+        const auto returnDriveGain = verbReturnDriveGain (driveForCoefficients) * (1.0f + breakupBoost);
         const auto returnDriveNorm  = std::tanh (returnDriveGain);
         driveSmoother.skip (numSamples);
 
@@ -192,6 +216,13 @@ namespace uni76::dsp
             const auto l = L[i];
             const auto r = stereo ? R[i] : l;
             const auto monoSum = 0.5f * (l + r);
+            // Real incoming stereo width (e.g. from PAN, if it runs before
+            // VERB in the chain order) - the tank itself is fed from
+            // monoSum alone (kept exactly as-is, for plate authenticity),
+            // but this is carried through separately into the wet output
+            // below so it isn't silently discarded - see VerbCurves.h's
+            // "Input stereo-width carry-through" section.
+            const auto side = 0.5f * (l - r);
 
             // ---- wet send HPF (4-pole, 2x cascaded 2-pole) ----------
             auto sent = wetSendHighpassA.processSample (monoSum);
@@ -245,9 +276,34 @@ namespace uni76::dsp
             preDelayWritePos = (preDelayWritePos + 1 == preDelayCapacity) ? 0 : preDelayWritePos + 1;
 
             // ---- FDN plate tank --------------------------------------
+            // Read position wobbles a little around the nominal "oldest
+            // sample" index (lineWritePos, about to be overwritten below)
+            // via a per-line LFO + linear interpolation - see VerbCurves.h's
+            // "Tail chorus/vibrato" section. At modulation depth 0 this
+            // collapses to exactly the original direct-index read (frac==0,
+            // idx0==lineWritePos).
             std::array<float, verbNumLines> rawLineOut {};
             for (int k = 0; k < verbNumLines; ++k)
-                rawLineOut[(size_t) k] = lineBuffers[(size_t) k][(size_t) lineWritePos[(size_t) k]];
+            {
+                const auto& buf = lineBuffers[(size_t) k];
+                const auto size = (int) buf.size();
+                const auto modOffset = verbChorusDepthSamples * (float) std::sin (chorusLfoPhase[(size_t) k]);
+
+                auto lineReadPosF = (float) lineWritePos[(size_t) k] + modOffset;
+                if (! std::isfinite (lineReadPosF))
+                    lineReadPosF = (float) lineWritePos[(size_t) k];
+                lineReadPosF = std::fmod (lineReadPosF, (float) size);
+                if (lineReadPosF < 0.0f)
+                    lineReadPosF += (float) size;
+                const auto idx0 = juce::jlimit (0, size - 1, (int) lineReadPosF);
+                const auto lineFrac = juce::jlimit (0.0f, 1.0f, lineReadPosF - (float) idx0);
+                const auto idx1 = (idx0 + 1 == size) ? 0 : idx0 + 1;
+                rawLineOut[(size_t) k] = buf[(size_t) idx0] * (1.0f - lineFrac) + buf[(size_t) idx1] * lineFrac;
+
+                chorusLfoPhase[(size_t) k] += chorusLfoIncrement[(size_t) k];
+                if (chorusLfoPhase[(size_t) k] >= twoPi)
+                    chorusLfoPhase[(size_t) k] -= twoPi;
+            }
 
             std::array<float, verbNumLines> dampedFeedback {};
             float feedbackSum = 0.0f;
@@ -281,6 +337,21 @@ namespace uni76::dsp
             tapL /= sqrtNumLines;
             tapR /= sqrtNumLines;
 
+            // ---- breakup envelope tracking (see VerbCurves.h's "Breakup"
+            // section) - updates the state this block's own returnDriveGain
+            // was computed from at the *start* of process() (one-block lag,
+            // same as every other coefficient here), for use on the *next*
+            // block. isfinite-guarded since this feeds a persistent gain
+            // multiplier across blocks, unlike the tank's own recirculating
+            // buffers - a poisoned value here would corrupt every future
+            // block's return-stage gain, not just this one's.
+            const auto breakupInstantLevel = 0.5f * (std::abs (tapL) + std::abs (tapR));
+            if (std::isfinite (breakupInstantLevel))
+            {
+                breakupLevelSmoothed += breakupLevelAlpha * (breakupInstantLevel - breakupLevelSmoothed);
+                breakupPeakLevel = std::max (breakupLevelSmoothed, breakupPeakLevel * breakupPeakDecayPerSample);
+            }
+
             // ---- analog return stage (tiny tanh + bandwidth ceiling, DRIVE-scaled) --
             const auto retXdL = tapL * returnDriveGain;
             const auto retShapedL = retXdL >= 0.0f ? std::tanh (retXdL) : std::tanh (retXdL * (1.0f - returnAsymmetry));
@@ -302,9 +373,17 @@ namespace uni76::dsp
             // plate tank's internal state - see the class comment in
             // VerbProcessor.h.
             const auto wetContribution = wetGain * mix;
-            L[i] = l + wetContribution * safeL;
+            // sideCarry preserves incoming stereo width in the wet output
+            // itself (see the `side` comment above and VerbCurves.h) -
+            // additive alongside the tank's own synthesised decorrelation,
+            // still gated by wetContribution so it is exactly zero
+            // whenever the rest of the wet path would be too (wetGain==0
+            // or disabled) - a mono input (side==0) leaves this formula
+            // identical to before.
+            const auto sideCarry = verbInputSideBlend * side;
+            L[i] = l + wetContribution * (safeL + sideCarry);
             if (stereo)
-                R[i] = r + wetContribution * safeR;
+                R[i] = r + wetContribution * (safeR - sideCarry);
         }
 
         // ---- final numeric safety net ------------------------------------

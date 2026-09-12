@@ -260,12 +260,99 @@ namespace uni76::dsp
         return verbDriveLerp (verbReturnAsymmetryBase, verbReturnAsymmetryMax, driveNormalised01);
     }
 
+    // ---- Input stereo-width carry-through (live-testing follow-up round) -----
+    //
+    // A real bug found via feedback: the FDN tank is (deliberately, for
+    // plate authenticity - see the class comment above) fed from a single
+    // mono sum, and its own stereo output comes entirely from the fixed
+    // decorrelated tap sign patterns - meaning genuine incoming stereo
+    // width (e.g. from PAN, if it runs before VERB in the chain order -
+    // see Core/ChainOrder.h) was silently discarded: VERB's own wet output
+    // carried no trace of it at all, however wide the input already was.
+    // verbInputSideBlend blends a portion of the *actual* input Side
+    // signal directly into the wet output (VerbProcessor.cpp), alongside
+    // (not instead of) the tank's own synthesised decorrelation - additive
+    // and scaled by the same wetGain*mix term everything else in the wet
+    // path already uses, so it is exactly zero whenever the module is
+    // bypassed or wetGain(0%)==0, same as every other wet-only term here.
+    inline constexpr float verbInputSideBlend = 0.5f;
+
+    // ---- Breakup (envelope-inverse return-stage character) --------------------
+    //
+    // A fixed-gain tanh alone (verbReturnDriveGain above) gets audibly
+    // *cleaner* as the tail decays - a quieter signal sits deeper in
+    // tanh's near-linear region - backwards from a real driven plate/tape
+    // system, where the decaying tail characteristically "breaks up"/gets
+    // grainier as it fades. Direct reference: Vynl Audio Voyager-Verb's
+    // own documented character - "a saturated reverb that adds space
+    // without losing character - the tail breaks up as it fades, harmonic
+    // warmth and subtle distortion that makes the room feel physical, not
+    // processed." VerbProcessor.cpp tracks the tank's own current level
+    // against a slow-decaying "recent peak" reference and boosts the
+    // return stage's drive gain in inverse proportion to that ratio - the
+    // boost is small right after a loud transient (current ~= peak) and
+    // grows as the tail fades toward silence (current << peak), then
+    // resets once a new, louder transient arrives and re-anchors the
+    // peak. Multiplied by the raw DRIVE knob position (not
+    // verbReturnDriveGain itself), so DRIVE=0% reproduces the exact
+    // original behaviour with zero boost, matching every other
+    // DRIVE-scaled constant's own t=0 identity requirement.
+    inline constexpr float verbBreakupAmount = 1.5f;
+    // Fast enough to track the tank's own decay envelope, slow enough not
+    // to react to individual FDN feedback-pass ripples.
+    inline constexpr double verbBreakupLevelReleaseSeconds = 0.06;
+    // Slower than any single macro's own RT60 (verbDecayAnchors above
+    // tops out at 6.0s at DEEP) would defeat the ratio entirely - this
+    // sits comfortably above that, so within one tail the peak reference
+    // stays anchored near the transient's own level while still resetting
+    // for genuinely new, separate material.
+    inline constexpr double verbBreakupPeakReleaseSeconds = 8.0;
+
     // Overall wet bandwidth ceiling (return stage) - soft, single-pole
     // rolloff, not brickwall. Sits well above the damping filter's own
     // cutoff so the two effects are both audible/measurable independently
     // (a static ceiling on top-end brightness vs. a progressively-
     // darkening tail).
-    inline constexpr float verbReturnBandwidthHz = 9500.0f;
+    //
+    // Lowered from 9500 during the "vintage character" round (direct
+    // reference: Valhalla VintageVerb's own tonal balance) - a smoother,
+    // less bright top end reads as an older digital reverb rack rather
+    // than a modern, extended-bandwidth algorithm, without needing a
+    // second explicit filter stage.
+    inline constexpr float verbReturnBandwidthHz = 7200.0f;
+
+    // ---- Tail chorus/vibrato (vintage-character round) -------------------
+    //
+    // Direct reference: Valhalla VintageVerb's own documented character -
+    // the characteristic "shimmer"/pitch-wobble a real vintage digital
+    // reverb rack's own fixed-point delay-line modulation produced,
+    // deliberately emulated rather than treated as a flaw. Implemented as
+    // a small, per-line LFO-modulated *read* offset into each FDN line's
+    // own circular buffer (VerbProcessor.cpp) - the buffer's own WRITE
+    // side and nominal length (and therefore the RT60/feedback-gain math
+    // above) are completely unaffected; only the fractional read position
+    // wobbles a little around its nominal (integer) index, requiring
+    // linear interpolation between two adjacent samples (same technique
+    // the pre-delay buffer already uses). Each line gets its own rate -
+    // spread across a narrow, slow, non-commensurate range (same
+    // "no small-integer ratios" principle verbLineLengthsMs already uses)
+    // so the 12 lines drift in and out of phase with each other rather
+    // than wobbling in lockstep (which would just read as a single slow
+    // pitch bend, not a chorused "shimmer").
+    // Deliberately more than a token vibrato amount - direct feedback was
+    // that DEEP/100% read as "metallic"/"iron", wanting it to "smear and
+    // recede into the distance" instead: a deeper, genuinely audible
+    // smear is what actually breaks up an FDN's own static comb-filter
+    // resonances (the physical cause of a "metallic ring" - a fixed set
+    // of resonant delay lengths reinforcing the same frequencies on every
+    // pass) into a continuously-shifting, non-metallic texture, not just
+    // a vintage-flavour garnish.
+    inline constexpr float verbChorusDepthSamples = 1.6f;
+    inline constexpr std::array<float, 12> verbLineChorusRateHz
+    {
+        0.113f, 0.147f, 0.181f, 0.209f, 0.233f, 0.271f,
+        0.298f, 0.331f, 0.362f, 0.401f, 0.437f, 0.479f
+    };
 
     // ---- Smoothing -------------------------------------------------------------
     inline constexpr double verbSmoothingSeconds = 0.03;

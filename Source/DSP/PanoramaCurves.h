@@ -155,22 +155,42 @@ namespace uni76::dsp
     // (gainL^2 + gainR^2 == 2 for *any* theta, algebraically, not just
     // measured) this angle-based formulation provides.
     //
-    // Restored to a full pi/4 (a full quarter-turn swing at depth=1) -
-    // an earlier round had reduced this to 0.55 specifically to keep
-    // correlation from going negative on correlated material, but direct
-    // listening feedback against a real reference (SoundToys PanMan) was
-    // that the result read as "basically nothing" at 100% width. This is
-    // a deliberate, explicit reversal of that earlier priority: audible
-    // ear-to-ear intensity now wins over strict mono-correlation safety
-    // at the top of the knob, the same trade-off panWidthMaxHigh above
-    // makes. At depth=1 (with panMotionDepthMaxHigh now also 1.0), theta
-    // swings the full [0, pi/2] range - gainHigh's L/R ratio reaches a
-    // genuinely hard pan (one side's high-band spatial gain hits exactly
-    // 0) at the LFO's extremes, not just a wide-but-never-silent ~8:1.
-    // See docs/DSP_PAN.md's "Correlation" section for the updated
-    // measured numbers this reopened.
-    inline constexpr float panMotionThetaCentre = 0.7853981633974483f; // pi/4
-    inline constexpr float panMotionThetaRange  = 0.7853981633974483f; // pi/4 - full swing, theta covers [0, pi/2]
+    // Restored to a full pi/4 (a full quarter-turn swing at depth=1) for
+    // the HIGH band specifically - an earlier round had reduced this to
+    // 0.55 specifically to keep correlation from going negative on
+    // correlated material, but direct listening feedback against a real
+    // reference (SoundToys PanMan) was that the result read as "basically
+    // nothing" at 100% width. This is a deliberate, explicit reversal of
+    // that earlier priority for the HIGH band: audible ear-to-ear
+    // intensity now wins over strict mono-correlation safety at the top
+    // of the knob, the same trade-off panWidthMaxHigh above makes. At
+    // depth=1 (with panMotionDepthMaxHigh now also 1.0), thetaHigh swings
+    // the full [0, pi/2] range - gainHigh's L/R ratio reaches a genuinely
+    // hard pan (one side's high-band spatial gain hits exactly 0) at the
+    // LFO's extremes, not just a wide-but-never-silent ~8:1. See
+    // docs/DSP_PAN.md's "Correlation" section for the updated measured
+    // numbers this reopened.
+    //
+    // panMotionThetaRangeLow was SPLIT OUT from a single shared
+    // panMotionThetaRange during this same intensity round - a real
+    // regression found via direct listening feedback ("низкочастотный
+    // прикол на больших значениях" - a low-frequency artefact at high
+    // width): panMotionThetaRange used to scale *both* bands' theta
+    // swing identically, so raising it for the high band's sake also
+    // widened the LOW band's own rotation swing by the same ~43%
+    // (0.55->0.785, the same ratio the high band's own widening used),
+    // even though panMotionDepthMaxLow (the low band's own *depth*
+    // ceiling, 0.12) was untouched - the two constants were coupled by
+    // construction, not by design intent. Bass gets a dedicated, small,
+    // independently-tunable swing range again (the project's own
+    // long-standing "bass gets much smaller width/motion ceilings than
+    // mid/high" rule - see the class comment above and docs/DSP_PAN.md's
+    // "Centre-bass isolation" section, whose own measured numbers this
+    // restores), fully decoupled from however aggressive the high band's
+    // own swing gets in the future.
+    inline constexpr float panMotionThetaCentre   = 0.7853981633974483f; // pi/4
+    inline constexpr float panMotionThetaRangeLow  = 0.55f;               // bass: same safe swing the crossover/correlation-fix round tuned
+    inline constexpr float panMotionThetaRangeHigh = 0.7853981633974483f; // pi/4 - full swing, theta covers [0, pi/2]
 
     // ---- Frequency-dependent gain shelf (WIDTH + MOTION) --------------------
     //
