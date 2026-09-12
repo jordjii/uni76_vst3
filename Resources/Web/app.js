@@ -136,26 +136,37 @@ function initModule({ id, control, name, defaultNormalised, formatValue, discret
 // field_pad.js), so the two controls stay in sync automatically with no
 // extra wiring: whichever one changes the parameter, both receive the
 // resulting valueChangedEvent.
-// PAN's nested RATE knob (9th public parameter, panRate - live-testing
-// follow-up round) - a second, genuinely independent, interactive knob
-// physically nested inside the WIDTH knob (knobs.css's --knob-size-inner),
-// the same "one deliberate exception" pattern IMAGE's FIELD pad already
-// established (see CLAUDE.md's HTML/CSS/JS UI rule). Drives the motion
-// LFO's own speed - referencing SoundToys PanMan's own Rate knob - not
-// folded into initModule()/MODULES above, which is built around exactly
-// one control per module. See docs/DSP_PAN.md's "Motion rate" section.
+// PAN's nested RATE knob (9th public parameter, panRate) - a second,
+// genuinely independent, interactive knob physically nested inside the
+// WIDTH knob (knobs.css's --knob-size-inner), the same "one deliberate
+// exception" pattern IMAGE's FIELD pad already established (see
+// CLAUDE.md's HTML/CSS/JS UI rule). Not folded into initModule()/MODULES
+// above, which is built around exactly one control per module.
 //
-// panRateHz() below is a presentation-only duplicate of
-// PanoramaCurves.h's own curve (same reasoning as formatEqPercent above -
-// no shared source across the JS/C++ boundary) so the readout shows the
-// real, audible speed rather than a bare percentage.
-const PAN_RATE_MIN_HZ = 0.05;
-const PAN_RATE_MAX_HZ = 8.0;
+// Tempo-sync redesign round: RATE now selects a quantized musical note
+// division (referencing Cableguys ShaperBox's Pan module - its own
+// "Beat" LFO mode Length dropdown, 1/128 up to 32 bars) resolved against
+// the host's current tempo, instead of a free-running Hz value - see
+// docs/DSP_PAN.md's "Motion rate" section and PanoramaCurves.h's "Tempo-
+// synced motion rate" section, whose own panRateDivisions table this is
+// a presentation-only duplicate of (same reasoning as formatEqPercent
+// above - no shared source across the JS/C++ boundary). The underlying
+// `panRate` parameter itself is still a plain 0..100% float (no schema
+// change) - `steps` below only adds drag/wheel/keyboard *snapping* to
+// the 23 division positions; ariaMin/ariaMax are deliberately left at
+// their 0..100 defaults (not remapped to a 0..22 index) so this stays
+// consistent with getScaledValue()'s own real (percent) units.
+const PAN_RATE_DIVISIONS = [
+  "1/128", "1/64", "1/32", "1/16T", "1/16", "1/16d", "1/8T", "1/8", "1/8d",
+  "1/4T", "1/4", "1/4d", "1/2T", "1/2", "1/2d",
+  "1 Bar", "1.5 Bars", "2 Bars", "3 Bars", "4 Bars", "8 Bars", "16 Bars", "32 Bars",
+];
+// Index 15 ("1 Bar") - matches PanoramaCurves.h's panRateDefaultDivisionIndex.
+const PAN_RATE_DEFAULT_NORMALISED = 15 / (PAN_RATE_DIVISIONS.length - 1);
 
-function formatPanRateHz(scaled) {
-  const t = scaled / 100;
-  const hz = PAN_RATE_MIN_HZ * Math.pow(PAN_RATE_MAX_HZ / PAN_RATE_MIN_HZ, t);
-  return `${hz.toFixed(2)} Hz`;
+function formatPanRateDivision(scaled) {
+  const index = Math.round((scaled / 100) * (PAN_RATE_DIVISIONS.length - 1));
+  return PAN_RATE_DIVISIONS[Math.max(0, Math.min(PAN_RATE_DIVISIONS.length - 1, index))];
 }
 
 function initPanRateKnob() {
@@ -171,12 +182,9 @@ function initPanRateKnob() {
     sliderState: getSliderState("panRate"),
     ariaLabel: "Panorama Rate",
     valueElement,
-    // Matches ParameterLayout.cpp's own default (35.303%) - the exact
-    // position that reproduces PAN's original fixed ~0.3Hz LFO speed, so
-    // a freshly opened instance's inner knob starts pointing at the same
-    // place its parameter default already is, not a generic 0/50%.
-    defaultNormalised: 0.35303,
-    formatValue: formatPanRateHz,
+    defaultNormalised: PAN_RATE_DEFAULT_NORMALISED,
+    formatValue: formatPanRateDivision,
+    steps: PAN_RATE_DIVISIONS.length - 1,
   });
 }
 

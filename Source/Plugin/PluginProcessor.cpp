@@ -3,6 +3,7 @@
 #include <cmath>
 
 #include "Core/PluginIdentity.h"
+#include "DSP/PanoramaCurves.h"
 #include "Parameters/ParameterIDs.h"
 #include "Parameters/ParameterLayout.h"
 #include "UI/WebUIEditor.h"
@@ -144,6 +145,23 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto panRate = panRateParameter != nullptr ? panRateParameter->load() / 100.0f : 0.35303f;
     const auto panoramaEnabled = moduleEnableState.isEnabled (4); // index 4 = panorama, see ModuleEnableState::propertyNames
 
+    // PAN's RATE knob is tempo-synced (see PanoramaCurves.h's "Tempo-
+    // synced motion rate" section) - the host's current BPM is read once
+    // per block here (AudioPlayHead::getPosition() is a plain read of
+    // host-provided state, safe to call from processBlock, no allocation/
+    // locking) and falls back to panRateFallbackBpm when a host doesn't
+    // report tempo (some hosts never do, or report 0 before transport
+    // ever starts).
+    auto hostBpm = uni76::dsp::panRateFallbackBpm;
+    if (auto* currentPlayHead = getPlayHead())
+    {
+        if (auto position = currentPlayHead->getPosition())
+        {
+            if (auto bpm = position->getBpm())
+                hostBpm = *bpm;
+        }
+    }
+
     const auto reverbWet = reverbParameter != nullptr ? reverbParameter->load() / 100.0f : 0.0f;
     // VERB's nested DRIVE knob (see docs/DSP_VERB.md's "Drive (nested
     // knob)" section) - shares reverbEnabled below (one bypass flag for
@@ -174,7 +192,7 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             case 1: eqProcessor.process (buffer, eqTone, eqEnabled); break;
             case 2: satProcessor.process (buffer, satHeat, satEnabled); break;
             case 3: pitchProcessor.process (buffer, pitchSemitones, pitchEnabled); break;
-            case 4: panoramaProcessor.process (buffer, panoramaWidth, panRate, panoramaEnabled); break;
+            case 4: panoramaProcessor.process (buffer, panoramaWidth, panRate, hostBpm, panoramaEnabled); break;
             case 5: verbProcessor.process (buffer, reverbWet, verbDrive, reverbEnabled); break;
             case 6: imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled); break;
             default: break; // unreachable for a validated permutation - see ChainOrder::isValidPermutation()

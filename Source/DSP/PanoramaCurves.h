@@ -147,6 +147,102 @@ namespace uni76::dsp
         return panRateMinHz * std::pow (panRateMaxHz / panRateMinHz, (double) t);
     }
 
+    // ---- Tempo-synced motion rate (redesign round) ---------------------------
+    //
+    // Replaces the free-running Hz sweep above with a fixed list of musical
+    // note divisions, matching a real reference plugin's own Length control
+    // (Cableguys ShaperBox's Pan module - "Beat" LFO mode, note-division
+    // dropdown from 1/128 up to 32 bars) - direct feedback was that a
+    // continuously-variable Hz knob doesn't let the motion actually lock to
+    // a song's tempo the way a real rhythmic pan effect needs to. The RATE
+    // knob (`ParamID::panRate`) keeps its existing type/range (0..100%
+    // AudioParameterFloat - no schema bump, no new parameter) but is now
+    // interpreted as a *quantized index* into this table rather than a
+    // continuous Hz curve - see panRateDivisionCount below for the knob's
+    // own discrete-step wiring (Resources/Web/app.js).
+    //
+    // beatsPerCycle is in quarter-note beats (the standard DAW tempo unit,
+    // independent of time signature) - a "triplet" division fits 3 notes in
+    // the space of 2 of the same name (2/3 the length); a "dotted" division
+    // is 1.5x the length. Actual LFO speed is solved from the *host's*
+    // current tempo (see panRateSyncedHz below), not baked in here.
+    struct PanRateDivision
+    {
+        const char* label;
+        double beatsPerCycle;
+    };
+
+    inline constexpr std::array<PanRateDivision, 23> panRateDivisions
+    { {
+        { "1/128",       0.03125  },
+        { "1/64",        0.0625   },
+        { "1/32",        0.125    },
+        { "1/16T",       0.166667 },
+        { "1/16",        0.25     },
+        { "1/16d",       0.375    },
+        { "1/8T",        0.333333 },
+        { "1/8",         0.5      },
+        { "1/8d",        0.75     },
+        { "1/4T",        0.666667 },
+        { "1/4",         1.0      },
+        { "1/4d",        1.5      },
+        { "1/2T",        1.333333 },
+        { "1/2",         2.0      },
+        { "1/2d",        3.0      },
+        { "1 Bar",       4.0      },
+        { "1.5 Bars",    6.0      },
+        { "2 Bars",      8.0      },
+        { "3 Bars",      12.0     },
+        { "4 Bars",      16.0     },
+        { "8 Bars",      32.0     },
+        { "16 Bars",     64.0     },
+        { "32 Bars",     128.0    },
+    } };
+
+    // Default lands on "1 Bar" (index 15) - a slow, considered, musically
+    // legible cycle, matching the reference plugin's own default and this
+    // module's original ~0.3Hz-at-120BPM ballpark (4 beats at 120BPM = 2s/
+    // cycle = 0.5Hz; close enough in character - the whole point of this
+    // redesign is that the exact old free-running speed no longer applies
+    // once motion is tempo-locked, so this is a deliberate new anchor, not
+    // a preserved one - see docs/DSP_PAN.md's "Motion rate" section).
+    inline constexpr int panRateDivisionCount = (int) panRateDivisions.size();
+    inline constexpr int panRateDefaultDivisionIndex = 15;
+    inline constexpr float panRateDefaultNormalised =
+        (float) panRateDefaultDivisionIndex / (float) (panRateDivisionCount - 1);
+
+    /** Quantizes a raw 0..1 knob position to the nearest division index -
+        the same step count the frontend knob snaps to (ParameterKnob's own
+        `steps` option, knob.js), so a value read back mid-drag (before the
+        host's own quantization round-trips through automation) still
+        resolves to the same division the user is looking at. */
+    inline int panRateDivisionIndex (float rateNormalised01) noexcept
+    {
+        const auto t = std::clamp (rateNormalised01, 0.0f, 1.0f);
+        const auto index = (int) std::lround ((double) t * (double) (panRateDivisionCount - 1));
+        return std::clamp (index, 0, panRateDivisionCount - 1);
+    }
+
+    inline const PanRateDivision& panRateDivisionAt (float rateNormalised01) noexcept
+    {
+        return panRateDivisions[(size_t) panRateDivisionIndex (rateNormalised01)];
+    }
+
+    // A non-finite or non-positive host tempo (some hosts report 0 before
+    // transport ever starts, or don't report tempo at all in certain
+    // configurations) falls back to a sane default rather than reaching
+    // a division-by-zero or NaN below.
+    inline constexpr double panRateFallbackBpm = 120.0;
+
+    /** The actual LFO Hz for the current RATE knob position at the given
+        host tempo - PanoramaProcessor.cpp's only call site. */
+    inline double panRateSyncedHz (float rateNormalised01, double hostBpm) noexcept
+    {
+        const auto safeBpm = (std::isfinite (hostBpm) && hostBpm > 1.0) ? hostBpm : panRateFallbackBpm;
+        const auto& division = panRateDivisionAt (rateNormalised01);
+        return (safeBpm / 60.0) / division.beatsPerCycle;
+    }
+
     // Equal-power motion: at depth=0, theta sits at the fixed centre
     // pi/4 (cos==sin==1/sqrt(2), i.e. the ordinary symmetric-width
     // gainL==gainR==1 case). As depth grows, theta swings further away

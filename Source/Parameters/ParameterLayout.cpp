@@ -1,5 +1,6 @@
 #include "ParameterLayout.h"
 #include "ParameterIDs.h"
+#include "../DSP/PanoramaCurves.h"
 
 namespace uni76
 {
@@ -95,14 +96,16 @@ namespace uni76
         params.push_back (makeImageTiltParameter());
 
         // PAN's nested RATE knob (see docs/DSP_PAN.md's "Motion rate"
-        // section, Source/DSP/PanoramaCurves.h's panRateHz()). 35.303% is
-        // not an arbitrary "middle" default - it is the exact normalised
-        // position that solves panRateHz(t) == 0.3Hz, the fixed LFO speed
-        // every PAN preset/session relied on before this parameter
-        // existed, so nothing that never touches the new RATE knob
-        // changes speed. Verified by a dedicated test in
-        // Tests/PluginTests.cpp against PanoramaCurves.h's own curve.
-        params.push_back (makePercentParameter (ParamID::panRate, "Pan Rate", 35.303f));
+        // section, Source/DSP/PanoramaCurves.h's "Tempo-synced motion
+        // rate" section) - tempo-sync redesign round: RATE now selects a
+        // quantized musical note division (1/128..32 Bars, matching a
+        // real reference plugin's own Length control) resolved against
+        // the host's current tempo, rather than a free-running Hz value.
+        // panRateDefaultNormalised lands on "1 Bar" - a deliberate new
+        // anchor, not a preserved one (see PanoramaCurves.h's own
+        // comment for why the previous ~0.3Hz-preserving 35.303% default
+        // no longer applies once motion is tempo-locked).
+        params.push_back (makePercentParameter (ParamID::panRate, "Pan Rate", uni76::dsp::panRateDefaultNormalised * 100.0f));
 
         // VERB's nested DRIVE knob (see docs/DSP_VERB.md's "Drive (nested
         // knob)" section, Source/DSP/VerbCurves.h). 0% default = exactly

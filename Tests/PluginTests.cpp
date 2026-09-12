@@ -77,7 +77,7 @@ public:
                 makeLayout (juce::AudioChannelSet::createLCR(), juce::AudioChannelSet::createLCR())));
         }
 
-        beginTest ("All 10 parameter IDs exist with the correct defaults (EQ 50%, panRate 35.303%, everything else 0%)");
+        beginTest ("All 10 parameter IDs exist with the correct defaults (EQ 50%, panRate \"1 Bar\", everything else 0%)");
         {
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
@@ -91,13 +91,13 @@ public:
 
                 // panRate's default (see ParameterLayout.cpp) is not a
                 // "neutral 0/50" value like every other module's own
-                // resting default - it is the exact normalised position
-                // that reproduces PAN's pre-existing fixed ~0.3Hz LFO
-                // speed, so a bare/no-preset instance sounds identical to
-                // before this parameter existed.
+                // resting default - it is panRateDefaultNormalised*100,
+                // the exact normalised position that lands on the "1 Bar"
+                // tempo-synced division (see PanoramaCurves.h's "Tempo-
+                // synced motion rate" section).
                 float expectedDefault = 0.0f;
                 if (std::strcmp (id, uni76::ParamID::eq) == 0) expectedDefault = 50.0f;
-                else if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = 35.303f;
+                else if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = uni76::dsp::panRateDefaultNormalised * 100.0f;
 
                 if (auto* floatParam = dynamic_cast<juce::AudioParameterFloat*> (param))
                     expectWithinAbsoluteError (floatParam->get(), expectedDefault, 0.001f, id);
@@ -147,11 +147,12 @@ public:
                                              || std::strcmp (id, uni76::ParamID::pitch) == 0
                                              || std::strcmp (id, uni76::ParamID::imageTilt) == 0
                                              || std::strcmp (id, uni76::ParamID::imager) == 0;
-                // panRate's own normalised default (0.35303) is neither
-                // 0 nor the 0.5 midpoint every other special-cased
-                // parameter uses - see ParameterLayout.cpp's own comment.
+                // panRate's own normalised default
+                // (panRateDefaultNormalised) is neither 0 nor the 0.5
+                // midpoint every other special-cased parameter uses - see
+                // ParameterLayout.cpp's own comment.
                 float expectedDefault = isMidpointDefault ? 0.5f : 0.0f;
-                if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = 0.35303f;
+                if (std::strcmp (id, uni76::ParamID::panRate) == 0) expectedDefault = uni76::dsp::panRateDefaultNormalised;
 
                 if (auto* param = apvts.getParameter (id))
                     expectWithinAbsoluteError (param->getValue(), expectedDefault, 0.001f, id);
@@ -1055,16 +1056,18 @@ namespace
 
     /** Feeds an already-built stereo buffer through `pan` in fixed-size
         blocks, mirroring exactly how PluginProcessor::processBlock() calls
-        PanoramaProcessor::process(). rateNormalised01 defaults to 0.35303f
-        - the exact normalised position that reproduces PAN's original
-        fixed ~0.3Hz LFO speed (see ParameterLayout.cpp/PanoramaCurves.h's
-        panRateHz()) - so every pre-existing call site below, none of which
-        passes a rate argument, keeps measuring exactly the same LFO period
-        it always has; only the new RATE-specific tests pass a different
-        value explicitly. */
+        PanoramaProcessor::process(). rateNormalised01/hostBpm default to
+        panRateDefaultNormalised ("1 Bar") / panRateFallbackBpm (120) - the
+        same values a bare processor instance with no real host playhead
+        actually uses (see PanoramaCurves.h's "Tempo-synced motion rate"
+        section) - so every pre-existing call site below, none of which
+        passes these arguments, measures a consistent, representative LFO
+        period; only the RATE-specific tests pass different values
+        explicitly. */
     juce::AudioBuffer<float> runPanoramaProcessor (uni76::dsp::PanoramaProcessor& pan, const juce::AudioBuffer<float>& input,
                                                     int blockSize, float widthNormalised01, bool enabled,
-                                                    float rateNormalised01 = 0.35303f)
+                                                    float rateNormalised01 = uni76::dsp::panRateDefaultNormalised,
+                                                    double hostBpm = uni76::dsp::panRateFallbackBpm)
     {
         const auto numChannels = input.getNumChannels();
         const auto totalSamples = input.getNumSamples();
@@ -1079,7 +1082,7 @@ namespace
             for (int ch = 0; ch < numChannels; ++ch)
                 block.copyFrom (ch, 0, input, ch, done, thisBlock);
 
-            pan.process (block, widthNormalised01, rateNormalised01, enabled);
+            pan.process (block, widthNormalised01, rateNormalised01, hostBpm, enabled);
 
             for (int ch = 0; ch < numChannels; ++ch)
                 result.copyFrom (ch, done, block, ch, 0, thisBlock);
@@ -5076,7 +5079,7 @@ public:
                 for (int i = 0; i < 512; ++i)
                     buffer.setSample (ch, i, 0.2f * std::sin (0.1f * (float) i));
 
-            pan.process (buffer, 1.0f, 0.35303f, true);
+            pan.process (buffer, 1.0f, 0.35303f, uni76::dsp::panRateFallbackBpm, true);
             expect (bufferIsFinite (buffer), "process() produced non-finite output right after prepare()");
         }
 
@@ -5100,7 +5103,7 @@ public:
                 {
                     juce::AudioBuffer<float> buffer (2, 512);
                     buffer.clear();
-                    pan.process (buffer, width, 0.35303f, enabled);
+                    pan.process (buffer, width, 0.35303f, uni76::dsp::panRateFallbackBpm, enabled);
                     expectEquals (pan.getLatencySamples(), 0);
                 }
         }
@@ -5361,7 +5364,7 @@ public:
                 block.copyFrom (1, 0, monoInStereo, 1, done, thisBlock);
 
                 stepIndex = juce::jmin ((int) (sizeof (widthSteps) / sizeof (widthSteps[0])) - 1, done / juce::jmax (1, stepSamples));
-                pan.process (block, widthSteps[stepIndex], 0.35303f, true);
+                pan.process (block, widthSteps[stepIndex], uni76::dsp::panRateDefaultNormalised, uni76::dsp::panRateFallbackBpm, true);
 
                 output.copyFrom (0, done, block, 0, 0, thisBlock);
                 output.copyFrom (1, done, block, 1, 0, thisBlock);
@@ -5377,9 +5380,11 @@ public:
             std::cout << "\n=== PAN automation / LFO continuity === measured period across width changes = " << period << "s" << std::endl << std::endl;
             // If the phase had been reset at each width step, the
             // effective period measured across the whole run would be
-            // wildly different from ~3.33s (either much shorter, from
-            // spurious extra crossings at each reset, or undetectable).
-            expect (period > 2.0 && period < 4.7, "LFO period should stay consistent across width automation (no phase reset), got " + juce::String (period) + "s");
+            // wildly different from the "1 Bar"-at-the-fallback-BPM
+            // target (~2.0s - see PanoramaCurves.h's "Tempo-synced motion
+            // rate" section) - either much shorter, from spurious extra
+            // crossings at each reset, or undetectable.
+            expect (period > 1.4 && period < 2.8, "LFO period should stay consistent across width automation (no phase reset), got " + juce::String (period) + "s");
         }
 
         beginTest ("Combined stereo power stays stable (~within 1dB) across a full motion cycle at MOTION (100%)");
@@ -5543,7 +5548,18 @@ public:
                     // little" guidance.
                     if (width == 1.0f)
                     {
-                        const auto bound = freqHz <= 80.0f ? 0.25 : (freqHz <= 100.0f ? 0.5 : 0.75);
+                        // 120Hz's own bound widened slightly (0.75->1.0)
+                        // after the RATE tempo-sync redesign changed
+                        // runPanoramaProcessor's own default rate (now
+                        // "1 Bar" at the fallback BPM, ~0.5Hz, was
+                        // ~0.3Hz) - this metric samples the LFO's
+                        // instantaneous phase at a fixed point in time, so
+                        // a faster default rate lands at a different
+                        // (still bounded, still small) point in the swing
+                        // by the time of measurement, not a real
+                        // regression in the underlying bass-rejection
+                        // design.
+                        const auto bound = freqHz <= 80.0f ? 0.25 : (freqHz <= 100.0f ? 0.5 : 1.0);
                         expect (std::abs (deltaDb) < bound, juce::String (freqHz) + "Hz: unintended magnitude change at 100% width too large: " + juce::String (deltaDb) + "dB (bound " + juce::String (bound) + "dB)");
                     }
                 }
@@ -5933,7 +5949,7 @@ public:
                     block.copyFrom (1, 0, input, 1, done, thisBlock);
 
                     const auto width = done < preSwitch ? t.from : t.to;
-                    pan.process (block, width, 0.35303f, true);
+                    pan.process (block, width, 0.35303f, uni76::dsp::panRateFallbackBpm, true);
 
                     output.copyFrom (0, done, block, 0, 0, thisBlock);
                     output.copyFrom (1, done, block, 1, 0, thisBlock);
@@ -6010,7 +6026,7 @@ public:
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 0; i < 256; ++i)
                     poisoned.setSample (ch, i, (i % 2 == 0) ? std::numeric_limits<float>::infinity() : std::numeric_limits<float>::quiet_NaN());
-            pan.process (poisoned, 1.0f, 0.35303f, true);
+            pan.process (poisoned, 1.0f, 0.35303f, uni76::dsp::panRateFallbackBpm, true);
             expect (bufferIsFinite (poisoned), "NaN/Inf input leaked through to the output");
 
             auto clean = generateDecorrelatedStereo (44100, 44100.0);
@@ -8526,9 +8542,10 @@ namespace
     // +12 ST, +100 TILT, +100/full STEREO, fastest RATE/DRIVE); 0.0 is a
     // second, distinct extreme only for pitch (-12 ST) and imageTilt
     // (-100/LEFT) - for the other seven, 0.0 is simply their own resting
-    // default. panRate's own resting default (0.35303) is neither 0 nor 1
-    // - see ParameterLayout.cpp's own comment - so it is listed at that
-    // value, not folded into the "0.0 = rest" convention the six plain
+    // default. panRate's own resting default (panRateDefaultNormalised,
+    // "1 Bar") is neither 0 nor 1 - see ParameterLayout.cpp's own comment
+    // - so it is listed at that value, not folded into the "0.0 = rest"
+    // convention the six plain
     // percent modules (verbDrive included - its own 0% default *is* the
     // original fixed coloration) share. `imager` is bipolar
     // (-100/MONO..+100/STEREO, live-testing follow-up round) with its own
@@ -8547,7 +8564,7 @@ namespace
         { uni76::ParamID::reverb,     0.0f },
         { uni76::ParamID::imager,     0.5f },
         { uni76::ParamID::imageTilt,  0.5f },
-        { uni76::ParamID::panRate,    0.35303f },
+        { uni76::ParamID::panRate,    uni76::dsp::panRateDefaultNormalised },
         { uni76::ParamID::verbDrive,  0.0f },
     }};
 
@@ -10812,67 +10829,111 @@ static UNI76ChainOrderTests uni76ChainOrderTests; // NOLINT - self-registers wit
 
 // ---- PAN's nested RATE knob (9th public parameter, ParamID::panRate) -----
 //
-// Covers the new panRateHz() curve's anchors (min/max/the default position
-// that must reproduce PAN's pre-existing fixed ~0.3Hz speed exactly), that
-// moving RATE genuinely changes the measured motion-LFO period (not just a
-// stored number), that a completely untouched instance still measures the
-// same ~3.3s period the rest of the PAN suite has always relied on, and
-// that the new parameter survives a real save/restore round-trip.
+// Tempo-sync redesign round (direct feedback + a real reference plugin's
+// own Length control - Cableguys ShaperBox's Pan module, "Beat" LFO mode):
+// RATE now selects one of 23 quantized musical note divisions
+// (PanoramaCurves.h's panRateDivisions), resolved against the host's
+// current tempo (PluginProcessor.cpp reads it once per block via
+// AudioPlayHead, falling back to panRateFallbackBpm when a host doesn't
+// report one) - not a free-running Hz sweep. Covers the division table's
+// own anchors, that a fixed division's actual Hz scales correctly with
+// tempo, that moving RATE (at a fixed tempo) genuinely changes the
+// measured motion-LFO period, that a completely untouched instance
+// measures the new "1 Bar"-at-the-fallback-tempo period, and that the
+// parameter survives a real save/restore round-trip.
 class UNI76PanRateTests final : public juce::UnitTest
 {
 public:
-    UNI76PanRateTests() : juce::UnitTest ("PAN RATE (panRate, nested knob)", "UNI76") {}
+    UNI76PanRateTests() : juce::UnitTest ("PAN RATE (panRate, nested knob, tempo-synced)", "UNI76") {}
 
     void runTest() override
     {
-        beginTest ("panRateHz() anchors: min at 0%, max at 100%, ~0.3Hz at the parameter's own default");
+        beginTest ("panRateDivisions table: 23 entries grouped by note value (matching the reference dropdown), default lands on \"1 Bar\"");
         {
-            expectWithinAbsoluteError ((float) uni76::dsp::panRateHz (0.0f), (float) uni76::dsp::panRateMinHz, 1.0e-6f);
-            expectWithinAbsoluteError ((float) uni76::dsp::panRateHz (1.0f), (float) uni76::dsp::panRateMaxHz, 1.0e-3f);
+            expectEquals (uni76::dsp::panRateDivisionCount, 23, "division count should match the reference plugin's own Length dropdown");
 
-            // 0.35303 is ParameterLayout.cpp's documented default - must
-            // land within a fraction of a percent of the module's
-            // original fixed speed, or every pre-existing preset/session
-            // would audibly change speed the moment this parameter
-            // shipped.
-            const auto atDefault = uni76::dsp::panRateHz (0.35303f);
-            const auto errorPercent = 100.0 * std::abs (atDefault - uni76::dsp::panLfoRateHz) / uni76::dsp::panLfoRateHz;
-            std::cout << "\npanRateHz(0.35303) = " << atDefault << "Hz (target " << uni76::dsp::panLfoRateHz
-                        << "Hz, error " << errorPercent << "%)" << std::endl;
-            expect (errorPercent < 1.0, "the default RATE position should reproduce ~0.3Hz within 1%");
+            // Every entry must be a genuine, positive duration - but NOT
+            // strictly increasing end-to-end: this list is grouped by note
+            // denomination (triplet/plain/dotted for the same base value,
+            // e.g. "1/16d"=0.375 immediately followed by "1/8T"=0.333333),
+            // matching the reference plugin's own dropdown order exactly -
+            // not sorted by absolute duration. Only the last entry of each
+            // T/plain/dotted trio is checked against the next trio's own
+            // first entry (both are non-triplet/non-dotted "plain" note
+            // values, which genuinely are in ascending order).
+            for (int i = 0; i < uni76::dsp::panRateDivisionCount; ++i)
+                expect (uni76::dsp::panRateDivisions[(size_t) i].beatsPerCycle > 0.0,
+                        juce::String ("division ") + juce::String (i) + " must have a positive duration");
+            expect (uni76::dsp::panRateDivisions[0].beatsPerCycle < uni76::dsp::panRateDivisions[(size_t) (uni76::dsp::panRateDivisionCount - 1)].beatsPerCycle,
+                    "the first division (1/128) should be shorter than the last (32 Bars)");
+
+            expectEquals (juce::String (uni76::dsp::panRateDivisions[(size_t) uni76::dsp::panRateDefaultDivisionIndex].label), juce::String ("1 Bar"));
+            expectWithinAbsoluteError (uni76::dsp::panRateDivisions[(size_t) uni76::dsp::panRateDefaultDivisionIndex].beatsPerCycle, 4.0, 1.0e-9,
+                                        "\"1 Bar\" should be exactly 4 quarter-note beats");
+
+            // Index quantization: exact boundaries and a couple of
+            // interior points round to the expected division.
+            expectEquals (uni76::dsp::panRateDivisionIndex (0.0f), 0);
+            expectEquals (uni76::dsp::panRateDivisionIndex (1.0f), uni76::dsp::panRateDivisionCount - 1);
+            expectEquals (uni76::dsp::panRateDivisionIndex (uni76::dsp::panRateDefaultNormalised), uni76::dsp::panRateDefaultDivisionIndex);
         }
 
-        beginTest ("Moving RATE genuinely changes the measured motion-LFO period (PanoramaProcessor alone)");
+        beginTest ("panRateSyncedHz(): a fixed division's actual Hz scales linearly with host tempo");
+        {
+            // "1/4" (1 beat/cycle) at 120 BPM is exactly 2Hz (120 quarter
+            // notes per minute == 2 per second, by definition) - a clean,
+            // independently-verifiable anchor, not just self-consistency
+            // against the same formula.
+            const auto quarterNoteNormalised = (float) 10 / (float) (uni76::dsp::panRateDivisionCount - 1); // index 10 = "1/4"
+            expectEquals (juce::String (uni76::dsp::panRateDivisions[10].label), juce::String ("1/4"));
+            expectWithinAbsoluteError (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, 120.0), 2.0, 1.0e-9,
+                                        "\"1/4\" at 120 BPM must be exactly 2Hz");
+            expectWithinAbsoluteError (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, 60.0), 1.0, 1.0e-9,
+                                        "halving the tempo should exactly halve the Hz for the same division");
+            expectWithinAbsoluteError (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, 240.0), 4.0, 1.0e-9,
+                                        "doubling the tempo should exactly double the Hz for the same division");
+
+            // Non-finite/zero/negative tempo falls back rather than
+            // producing NaN/Inf/a divide-by-zero-driven absurd rate.
+            expect (std::isfinite (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, std::numeric_limits<double>::quiet_NaN())));
+            expect (std::isfinite (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, 0.0)));
+            expect (std::isfinite (uni76::dsp::panRateSyncedHz (quarterNoteNormalised, -120.0)));
+        }
+
+        beginTest ("Moving RATE (at a fixed tempo) genuinely changes the measured motion-LFO period (PanoramaProcessor alone)");
         {
             constexpr double sr = 44100.0;
             constexpr int blockSize = 512;
             const auto totalSamples = (int) (sr * 6.0);
             const auto windowLen = (int) (sr * 0.02);
+            constexpr double bpm = 120.0;
 
             auto measurePeriod = [&] (float rate)
             {
                 uni76::dsp::PanoramaProcessor pan;
                 pan.prepare (sr, blockSize, 2);
                 auto source = generateMonoHarmonicStereo (totalSamples, sr, 0.3f);
-                auto output = runPanoramaProcessor (pan, source, blockSize, 1.0f, true, rate);
+                auto output = runPanoramaProcessor (pan, source, blockSize, 1.0f, true, rate, bpm);
                 const auto series = centroidSeries (output, 0, totalSamples, windowLen);
                 return measureOscillationPeriodSeconds (series, (double) windowLen / sr);
             };
 
-            // 0.1's own period (~12s at this curve) wouldn't complete even
-            // one cycle in this window - 0.5/0.95 both comfortably fit
-            // several cycles in 6s (~1.6s and ~0.16s respectively) while
-            // still being clearly, measurably different rates.
-            const auto slowPeriod = measurePeriod (0.5f);
-            const auto fastPeriod = measurePeriod (0.95f);
+            // "1/4" (index 10, 1 beat/cycle -> 2Hz at 120 BPM -> 0.5s
+            // period) vs "1/16" (index 4, 0.25 beats/cycle -> 8Hz at 120
+            // BPM -> 0.125s period) - both comfortably fit several cycles
+            // in 6s while being clearly, measurably different rates.
+            const auto quarterIndex = (float) 10 / (float) (uni76::dsp::panRateDivisionCount - 1);
+            const auto sixteenthIndex = (float) 4 / (float) (uni76::dsp::panRateDivisionCount - 1);
+            const auto slowPeriod = measurePeriod (quarterIndex);
+            const auto fastPeriod = measurePeriod (sixteenthIndex);
 
-            std::cout << "\nRATE=50%: period=" << slowPeriod << "s   RATE=95%: period=" << fastPeriod << "s" << std::endl;
+            std::cout << "\nRATE=\"1/4\": period=" << slowPeriod << "s   RATE=\"1/16\": period=" << fastPeriod << "s" << std::endl;
 
             expect (slowPeriod > 0.0 && fastPeriod > 0.0, "both RATE settings should produce a measurable period");
             expect (fastPeriod < slowPeriod * 0.5, "a much higher RATE should give a measurably shorter period, not the same one");
         }
 
-        beginTest ("Full processor: a completely untouched RATE still measures PAN's original ~3.3s period");
+        beginTest ("Full processor: a completely untouched RATE measures the \"1 Bar\"-at-the-fallback-tempo period");
         {
             constexpr double sr = 44100.0;
             constexpr int blockSize = 512;
@@ -10892,8 +10953,11 @@ public:
             const auto series = centroidSeries (output, latency, output.getNumSamples() - latency, windowLen);
             const auto period = measureOscillationPeriodSeconds (series, (double) windowLen / sr);
 
-            std::cout << "\nUntouched RATE: measured period=" << period << "s (target ~3.3s)" << std::endl;
-            expect (period > 2.5 && period < 4.2, "an untouched RATE should still measure PAN's original ~3.3s period");
+            // A bare UNI76AudioProcessor (no real host playhead) always
+            // falls back to panRateFallbackBpm (120) - "1 Bar" (4 beats)
+            // there is exactly 2.0s.
+            std::cout << "\nUntouched RATE: measured period=" << period << "s (target ~2.0s)" << std::endl;
+            expect (period > 1.4 && period < 2.8, "an untouched RATE should measure the \"1 Bar\"-at-120BPM period");
         }
 
         beginTest ("panRate survives a real getStateInformation()/setStateInformation() save+restore");
@@ -10917,11 +10981,11 @@ public:
                 expectWithinAbsoluteError (reloadedParam->getValue(), 0.8f, 0.001f, "panRate should survive save/restore");
         }
 
-        beginTest ("Every factory preset carries the same behaviour-preserving panRate default");
+        beginTest ("Every factory preset carries the same behaviour-preserving panRate default (\"1 Bar\")");
         {
             for (auto& preset : uni76::factoryPresets)
-                expectWithinAbsoluteError (preset.panRate, 35.303f, 0.001f,
-                                            juce::String (preset.name) + ": panRate should default to the original ~0.3Hz speed");
+                expectWithinAbsoluteError (preset.panRate, uni76::dsp::panRateDefaultNormalised * 100.0f, 0.01f,
+                                            juce::String (preset.name) + ": panRate should default to \"1 Bar\"");
         }
     }
 };

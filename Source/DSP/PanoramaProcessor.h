@@ -73,15 +73,19 @@ namespace uni76::dsp
         /** widthNormalised01, rateNormalised01 and enabled are read once
             per call - all smoothed internally (~20ms), so passing a raw
             (possibly jumpy) automation value each block is safe and
-            expected. rateNormalised01 drives the motion LFO's own speed
-            (see PanoramaCurves.h's panRateHz()) - the LFO's *phase* is
-            still a free-running clock, entirely independent of both
-            width and rate changes; only reset() (not a parameter change)
-            resets it, so changing RATE mid-motion smoothly retunes the
-            existing swing rather than restarting it. Mono buses
-            (numChannels < 2) are left untouched - there is no stereo
-            field to build. */
-        void process (juce::AudioBuffer<float>& buffer, float widthNormalised01, float rateNormalised01, bool enabled) noexcept;
+            expected. rateNormalised01 selects a tempo-synced note
+            division (see PanoramaCurves.h's "Tempo-synced motion rate"
+            section - panRateSyncedHz()), resolved against hostBpm (the
+            current host tempo, read once per block from
+            AudioPlayHead - see PluginProcessor.cpp; falls back to a sane
+            default when a host doesn't report one). The LFO's *phase* is
+            still a free-running clock, entirely independent of width/
+            rate/tempo changes; only reset() (not a parameter change)
+            resets it, so changing RATE or the host tempo mid-motion
+            smoothly retunes the existing swing rather than restarting it.
+            Mono buses (numChannels < 2) are left untouched - there is no
+            stereo field to build. */
+        void process (juce::AudioBuffer<float>& buffer, float widthNormalised01, float rateNormalised01, double hostBpm, bool enabled) noexcept;
 
         /** Always 0 - PAN is a pure gain/filter/rotation morph with no
             oversampling, no lookahead, no delay-based motion (no Haas).
