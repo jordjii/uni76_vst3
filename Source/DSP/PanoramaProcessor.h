@@ -22,16 +22,21 @@
     read as "doesn't throw between ears, bass never moves" - Mid carries
     essentially all of a mono/near-mono source's bass and overall energy,
     so leaving it untouched capped how strongly PAN could ever be felt).
-    The rotation shares the same theta swing the spatial term below uses
-    (one coherent motion, not two separate effects), is full-band
-    (deliberately no shelf - bass genuinely swings with everything else),
-    and is constant-power (gainMidL^2+gainMidR^2==2 for any theta), so it
-    never changes overall loudness, only redistributes it - and collapses
-    to an exact identity (gain 1.0 both channels) at ORIGINAL (t=0),
-    where theta sits at its fixed centre regardless of the LFO. On top of
-    that shared rotation, every watt of *width* (not just motion) still
-    comes from a *separate* "spatial" signal built from two distinct
-    kinds of content, kept conceptually distinct throughout process():
+    The rotation follows the same LFO phase the spatial term below uses,
+    driven through its own narrower theta range (panMidRotationThetaRange,
+    PanoramaCurves.h) - one coherent motion in time, not two separate
+    effects, but deliberately *not* the spatial term's own full-hard-pan
+    swing: applied full-band and directly (no shelf - bass genuinely
+    swings with everything else), that full swing read as an abrupt on/
+    off cut once it was Mid doing the swinging (direct feedback -
+    "резко"), not a smooth throw. Constant-power
+    (gainMidL^2+gainMidR^2==2 for any theta), so it never changes overall
+    loudness, only redistributes it - and collapses to an exact identity
+    (gain 1.0 both channels) at ORIGINAL (t=0), where theta sits at its
+    fixed centre regardless of the LFO. On top of that Mid rotation,
+    every watt of *width* (not just motion) still comes from a *separate*
+    "spatial" signal built from two distinct kinds of content, kept
+    conceptually distinct throughout process():
       - real Side content (0.5*(L-R)) - part of the actual input, so it
         IS required for an exact reconstruction at width=0 (see below);
       - a synthesised "induced" component (mono/near-mono sources' only

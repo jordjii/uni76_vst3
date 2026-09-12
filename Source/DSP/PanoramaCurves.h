@@ -47,15 +47,23 @@ namespace uni76::dsp
     // *adds* to the existing stereo image, never subtracts from it. Two
     // independently-tunable ceilings (high/low band, see the crossover
     // below) both share this same t=0 starting point.
-    // Raised again (2.6, was reduced to 1.6 during an earlier correlation-
-    // balancing pass, itself down from an original 1.9) after direct
-    // listening feedback that 100% width read as "basically nothing" next
-    // to a real reference (SoundToys PanMan) - a deliberate, explicit
-    // decision to prioritise audible ear-to-ear intensity over strict
-    // mono-correlation safety at the top of the knob, the same trade-off
-    // panMotionThetaRange below makes. See docs/DSP_PAN.md's "Correlation"
-    // section for the updated measured numbers this reopened.
-    inline constexpr float panWidthMaxHigh = 2.6f;
+    // Brought back down from 2.6 (itself raised from 1.6 during an
+    // earlier "hits like nothing" round) after direct feedback that the
+    // combination read as "резко" (harsh/abrupt) once PanoramaProcessor
+    // also gained a genuine Mid rotation (see PanoramaProcessor.cpp's own
+    // comment). The two effects share the same theta swing and peak at
+    // the *same instant* - at width=100%/MOTION's extreme, this gain
+    // multiplies the already-constant-power Mid rotation's own peak
+    // (sqrt2, a normal, expected hard-pan headroom figure) on top,
+    // compounding into a real, audible overshoot (roughly +10dB above
+    // the input's own level at the swing's peak with the old 2.6 value -
+    // not a "sounds different" complaint, a genuine hot/peaky transient
+    // once per LFO half-cycle). 1.6 keeps width clearly audible on its
+    // own while leaving the *panning* intensity to Mid's own rotation,
+    // which is now the more direct, better-behaved lever for "hits hard"
+    // - see docs/DSP_PAN.md's "Correlation" section for this constant's
+    // fuller history.
+    inline constexpr float panWidthMaxHigh = 1.6f;
     inline constexpr float panWidthMaxLow  = 1.15f; // low band ceiling at t=1.0 - bass barely widens (unchanged - bass stays centred by design)
 
     inline float panWidthGain (float t01, float maxAtFull) noexcept
@@ -287,6 +295,26 @@ namespace uni76::dsp
     inline constexpr float panMotionThetaCentre   = 0.7853981633974483f; // pi/4
     inline constexpr float panMotionThetaRangeLow  = 0.55f;               // bass: same safe swing the crossover/correlation-fix round tuned
     inline constexpr float panMotionThetaRangeHigh = 0.7853981633974483f; // pi/4 - full swing, theta covers [0, pi/2]
+
+    // Mid's own rotation range (PanoramaProcessor.cpp's gainMidL/gainMidR -
+    // see its class comment) - deliberately narrower than the high band's
+    // own full-hard-pan swing above. Direct feedback ("резко" - harsh/
+    // abrupt) traced to a real, meaningful difference from the reference
+    // plugin's own demonstrated setting: Cableguys ShaperBox's Pan module
+    // was shown in "Pan Mode: Balance 3dB" - a *bounded* pan law that
+    // never lets either channel reach true silence, unlike a full
+    // constant-power hard pan (theta reaching exactly 0 or pi/2, where
+    // sin/cos of the other hits exactly 0). panMotionThetaRangeHigh's own
+    // full pi/4 range does exactly that at full MOTION - fine for the
+    // *width* shelf's own high-frequency asymptote (a widening effect,
+    // not literally silencing a channel), but applied directly and
+    // full-band to Mid (which the width shelf isn't), that same full
+    // swing reads as a channel abruptly cutting out and back, not a
+    // smooth throw. 0.5 keeps Mid's own swing clearly, strongly audible
+    // (the whole point of giving Mid a rotation at all) while never
+    // reaching full silence on either side - the quiet channel stays
+    // measurably present throughout, avoiding the on/off character.
+    inline constexpr float panMidRotationThetaRange = 0.5f;
 
     // ---- Frequency-dependent gain shelf (WIDTH + MOTION) --------------------
     //

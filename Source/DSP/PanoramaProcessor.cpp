@@ -166,6 +166,13 @@ namespace uni76::dsp
             // swing gets.
             const auto thetaLow  = panMotionThetaCentre + motionLow  * lfoSin * panMotionThetaRangeLow;
             const auto thetaHigh = panMotionThetaCentre + motionHigh * lfoSin * panMotionThetaRangeHigh;
+            // Mid's own rotation (below) uses a third, narrower range -
+            // see panMidRotationThetaRange's comment in PanoramaCurves.h
+            // for why: applied full-band and directly (no shelf), the
+            // high band's own full-hard-pan swing reads as an abrupt on/
+            // off cut rather than a smooth throw once it's Mid doing the
+            // swinging, not just a widening shelf's asymptote.
+            const auto thetaMid = panMotionThetaCentre + motionHigh * lfoSin * panMidRotationThetaRange;
 
             // Equal-power rotation baked directly into each band's gain:
             // gainLow^2 + gainHigh^2 (same channel) == width^2 * ((sqrt2
@@ -207,19 +214,23 @@ namespace uni76::dsp
             // a mono/near-mono source's bass and overall energy - was
             // never touched, only the highpassed spatial/Side term above
             // was). A genuine constant-power rotation applied to Mid
-            // itself, using the same thetaHigh swing the spatial term
-            // already uses (so everything moves together, one coherent
-            // motion, not two separate effects) - gainMidL^2+gainMidR^2
-            // == 2 for any theta (same algebraic identity the shelves
-            // above already rely on), so this never changes overall
-            // loudness, only redistributes it L<->R. At t=0, thetaHigh ==
+            // itself, using its own narrower thetaMid swing (see
+            // PanoramaCurves.h's panMidRotationThetaRange comment for why
+            // this is deliberately *not* the same full-hard-pan thetaHigh
+            // the spatial term uses - a follow-up round found the full
+            // swing read as an abrupt on/off cut once applied directly,
+            // full-band, to Mid) - gainMidL^2+gainMidR^2==2 for any theta
+            // (same algebraic identity the shelves above already rely
+            // on), so this never changes overall loudness, only
+            // redistributes it L<->R. At t=0, thetaMid ==
             // panMotionThetaCentre (pi/4) exactly, so gainMidL==
             // gainMidR==1.0 - ORIGINAL stays an exact identity. No shelf,
             // no frequency split - deliberately full-band, so bass
             // genuinely swings with everything else instead of staying
-            // anchored.
-            const auto gainMidL = sqrt2 * std::cos (thetaHigh);
-            const auto gainMidR = sqrt2 * std::sin (thetaHigh);
+            // anchored, just within a gentler range than the width
+            // shelf's own high-frequency asymptote.
+            const auto gainMidL = sqrt2 * std::cos (thetaMid);
+            const auto gainMidR = sqrt2 * std::sin (thetaMid);
 
             const auto wetL = mid * gainMidL + toL;
             const auto wetR = mid * gainMidR - toR;
