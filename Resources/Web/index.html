@@ -261,7 +261,87 @@
         </div>
       </section>
 
-      <!-- 06 VERB -->
+      <!-- 06 DELAY (added 2026-09-14 - see docs/DSP_DELAY.md) -->
+      <section class="module" data-param="delay" style="--module-accent: var(--color-delay)">
+        <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Delay module"></button>
+        <div class="module__header" draggable="true" title="Drag to reorder">
+          <span class="module__name">DELAY</span>
+          <span class="module__tag">TAPE ECHO</span>
+        </div>
+
+        <!-- DELAY's knob-area and aux are grouped into ONE centred block
+             (unlike every other module, where aux is hidden and knob-area
+             alone is centred - see modules.css's own comment on
+             .module__delay-content) - real live-testing feedback: with the
+             two centred independently (knob-area on its own, aux pinned to
+             the panel's bottom edge), the large gap between FEEDBACK's
+             readout and the division/toggle buttons looked like broken/
+             dead space, not an intentional layout, even though nothing was
+             actually overlapping. Grouping them keeps the whole DELAY
+             control cluster visually cohesive - the trade-off (explicit,
+             not hidden) is that the knob itself sits a bit higher than
+             PAN's/VERB's, since the group being centred is taller than a
+             lone knob-area. -->
+        <div class="module__delay-content">
+          <div class="module__knob-area">
+            <div class="knob-module">
+              <div class="knob-wrap">
+                <div class="knob" data-param="delay" style="--knob-angle: -135deg">
+                  <div class="knob__ticks"></div>
+                  <div class="knob__collar" aria-hidden="true"></div>
+                  <div class="knob__body">
+                    <div class="knob__indicator"></div>
+                    <div class="knob__center-dot"></div>
+                  </div>
+                  <!-- Nested FEEDBACK knob - same concentric second-control
+                       pattern PAN's RATE / VERB's DRIVE knobs already
+                       established (see CLAUDE.md's HTML/CSS/JS UI rule).
+                       Drives the new delayFeedback parameter (0..95%). -->
+                  <div class="knob knob--inner" data-param="delayFeedback" style="--knob-angle: -49.74deg; --knob-size: var(--knob-size-inner)">
+                    <div class="knob__collar" aria-hidden="true"></div>
+                    <div class="knob__body">
+                      <div class="knob__indicator"></div>
+                      <div class="knob__center-dot"></div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="knob__value">0%</div>
+              <div class="knob__label">MIX</div>
+              <div class="knob-module__inner-readout">
+                <span class="knob__value knob__value--inner">30%</span>
+                <span class="knob__label knob__label--inner">FEEDBACK</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="module__aux module__aux--delay">
+            <div class="delay-division" data-role="delay-division" role="group" aria-label="Delay time division">
+              <button type="button" class="delay-division__btn" data-division="0">1/4</button>
+              <button type="button" class="delay-division__btn is-active" data-division="1">1/8</button>
+              <button type="button" class="delay-division__btn" data-division="2">1/8D</button>
+              <button type="button" class="delay-division__btn" data-division="3">1/8T</button>
+              <button type="button" class="delay-division__btn" data-division="4">1/16</button>
+            </div>
+            <!-- MONO/STEREO and PING PONG - both real on/off parameters
+                 (delayStereo/delayPingPong), same button look and the same
+                 click-to-toggle interaction, side by side - MONO/STEREO used
+                 to live as a clickable text label inside the knob face
+                 (real bug found via live testing: it silently hijacked the
+                 outer knob's own drag gesture, since a bare button nested
+                 inside .knob bubbles pointerdown up to the knob's own
+                 listener - see knob.js's own comment on why nested KNOBS
+                 call stopPropagation(); a nested plain button never did).
+                 Moved out here so it switches exactly like PING PONG. -->
+            <div class="delay-toggle-row">
+              <button type="button" class="delay-mode-btn" data-role="delay-stereo" aria-pressed="false">MONO</button>
+              <button type="button" class="delay-mode-btn" data-role="delay-pingpong" aria-pressed="false">PING PONG</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- 07 VERB -->
       <section class="module" data-param="reverb" style="--module-accent: var(--color-reverb)">
         <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Reverb module"></button>
         <div class="module__header" draggable="true" title="Drag to reorder">
@@ -321,7 +401,7 @@
         </div>
       </section>
 
-      <!-- 07 IMAGE -->
+      <!-- 08 IMAGE -->
       <section class="module" data-param="imager" style="--module-accent: var(--color-imager)">
         <button class="module__power" type="button" aria-pressed="true" aria-label="Toggle Imager module"></button>
         <div class="module__header" draggable="true" title="Drag to reorder">

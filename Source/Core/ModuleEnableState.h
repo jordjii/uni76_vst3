@@ -26,7 +26,7 @@ namespace uni76
     class ModuleEnableState
     {
     public:
-        static constexpr int numModules = 7;
+        static constexpr int numModules = 8;
 
         bool isEnabled (int index) const noexcept
         {
@@ -45,14 +45,19 @@ namespace uni76
         }
 
         /** Property names used to persist each flag on the saved state
-            ValueTree - order matches Source/Parameters/ParameterIDs.h's
-            ParamID::all (preamp, eq, saturation, pitch, panorama, reverb,
-            imager), which is also the order the frontend uses.
+            ValueTree - order matches the first 7 entries of
+            Source/Parameters/ParameterIDs.h's ParamID::all (preamp, eq,
+            saturation, pitch, panorama, reverb, imager), which is also
+            the order the frontend uses; index 7 ("delayEnabled") is the
+            8th module, added 2026-09-14 - see docs/DSP_DELAY.md. Role
+            index 7 is a new, appended identifier, not a renumbering of
+            any existing role - same "append, never renumber" precedent
+            imageTilt/panRate/verbDrive already established for parameters.
         */
         static constexpr std::array<const char*, numModules> propertyNames
         {
             "preampEnabled", "eqEnabled", "saturationEnabled", "pitchEnabled",
-            "panoramaEnabled", "reverbEnabled", "imagerEnabled"
+            "panoramaEnabled", "reverbEnabled", "imagerEnabled", "delayEnabled"
         };
 
     private:
@@ -67,7 +72,11 @@ namespace uni76
             enabled; EQ no longer has such a position, which is exactly
             why it gets the opposite default. (The "Default" factory
             preset - see Core/FactoryPresets.h - disables everything for
-            the same family of reasons.) */
-        std::array<std::atomic<bool>, numModules> flags { { true, false, true, true, true, true, true } };
+            the same family of reasons.) DELAY (index 7) also defaults
+            enabled - its own `delay` (MIX) parameter already defaults to
+            0%, its own true no-op/identity position, matching every
+            other non-EQ module's own "identity value -> safe to default
+            enabled" reasoning. */
+        std::array<std::atomic<bool>, numModules> flags { { true, false, true, true, true, true, true, true } };
     };
 }

@@ -5,6 +5,7 @@
 #include "Core/MeterEnvelope.h"
 #include "Core/FactoryPresets.h"
 #include "Core/UserPresets.h"
+#include "DSP/DelayCurves.h"
 
 #include <cmath>
 #include <iostream>
@@ -34,6 +35,11 @@ namespace
         juce::WebSliderRelay& imageTilt,
         juce::WebSliderRelay& panRate,
         juce::WebSliderRelay& verbDrive,
+        juce::WebSliderRelay& delay,
+        juce::WebSliderRelay& delayFeedback,
+        juce::WebComboBoxRelay& delayDivision,
+        juce::WebToggleButtonRelay& delayStereo,
+        juce::WebToggleButtonRelay& delayPingPong,
         juce::WebControlParameterIndexReceiver& indexReceiver,
         UNI76AudioProcessor& processor,
         UNI76AudioProcessorEditor& editor)
@@ -64,6 +70,11 @@ namespace
             .withOptionsFrom (imageTilt)
             .withOptionsFrom (panRate)
             .withOptionsFrom (verbDrive)
+            .withOptionsFrom (delay)
+            .withOptionsFrom (delayFeedback)
+            .withOptionsFrom (delayDivision)
+            .withOptionsFrom (delayStereo)
+            .withOptionsFrom (delayPingPong)
             .withOptionsFrom (indexReceiver)
             // The 7 module-enabled flags are persistent but NOT DAW
             // automation parameters (see Core/ModuleEnableState.h), so
@@ -168,10 +179,18 @@ namespace
                             const auto& preset = uni76::factoryPresets[(size_t) index];
                             auto& apvts = processor.getValueTreeState();
 
-                            const float rawValues[10] {
+                            // See ParamID::all's own comment for why this
+                            // is deliberately sized at compile time to
+                            // match, not hardcoded independently - a
+                            // previous round found a real stack-corruption
+                            // bug from exactly this array size drifting
+                            // out of sync with the parameter count.
+                            const float rawValues[uni76::ParamID::all.size()] {
                                 preset.preamp, preset.eq, preset.saturation, preset.pitch,
                                 preset.panorama, preset.reverb, preset.imager, preset.imageTilt,
-                                preset.panRate, preset.verbDrive
+                                preset.panRate, preset.verbDrive,
+                                preset.delay, preset.delayFeedback, (float) preset.delayDivision,
+                                preset.delayStereo ? 1.0f : 0.0f, preset.delayPingPong ? 1.0f : 0.0f
                             };
 
                             for (size_t i = 0; i < uni76::ParamID::all.size(); ++i)
@@ -349,7 +368,9 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       processor (p),
       webView (makeWebViewOptions (preampRelay, eqRelay, saturationRelay, pitchRelay,
                                     panoramaRelay, reverbRelay, imagerRelay, imageTiltRelay,
-                                    panRateRelay, verbDriveRelay, controlParameterIndexReceiver, p, *this)),
+                                    panRateRelay, verbDriveRelay,
+                                    delayRelay, delayFeedbackRelay, delayDivisionRelay, delayStereoRelay, delayPingPongRelay,
+                                    controlParameterIndexReceiver, p, *this)),
       preampAttachment     (*processor.getValueTreeState().getParameter (uni76::ParamID::preamp),
                              preampRelay, processor.getValueTreeState().undoManager),
       eqAttachment         (*processor.getValueTreeState().getParameter (uni76::ParamID::eq),
@@ -369,23 +390,34 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
       panRateAttachment    (*processor.getValueTreeState().getParameter (uni76::ParamID::panRate),
                              panRateRelay, processor.getValueTreeState().undoManager),
       verbDriveAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::verbDrive),
-                             verbDriveRelay, processor.getValueTreeState().undoManager)
+                             verbDriveRelay, processor.getValueTreeState().undoManager),
+      delayAttachment          (*processor.getValueTreeState().getParameter (uni76::ParamID::delay),
+                                 delayRelay, processor.getValueTreeState().undoManager),
+      delayFeedbackAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::delayFeedback),
+                                 delayFeedbackRelay, processor.getValueTreeState().undoManager),
+      delayDivisionAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::delayDivision),
+                                 delayDivisionRelay, processor.getValueTreeState().undoManager),
+      delayStereoAttachment    (*processor.getValueTreeState().getParameter (uni76::ParamID::delayStereo),
+                                 delayStereoRelay, processor.getValueTreeState().undoManager),
+      delayPingPongAttachment  (*processor.getValueTreeState().getParameter (uni76::ParamID::delayPingPong),
+                                 delayPingPongRelay, processor.getValueTreeState().undoManager)
 {
     addAndMakeVisible (webView);
     webView.goToURL (juce::WebBrowserComponent::getResourceProviderRoot());
 
-    // Fixed 3:2 aspect ratio across the whole resize range: 600x400 (min),
-    // 960x640 (default), 1350x900 (max). The UI itself is laid out in
-    // relative CSS units (see Resources/Web/tokens.css and responsive.css),
-    // so it reflows to fill whatever size the host allows within these
-    // limits rather than being pinned to a fixed pixel canvas.
-    setResizable (true, true);
-    setResizeLimits (600, 400, 1350, 900);
-
-    if (auto* editorConstrainer = getConstrainer())
-        editorConstrainer->setFixedAspectRatio (3.0 / 2.0);
-
-    setSize (960, 640);
+    // ONE fixed size (2026-09-14 round: DELAY's own 8th module column made
+    // the previous 960x640 default feel cramped, and direct feedback asked
+    // for the window to no longer be user-resizable at all - a single,
+    // slightly larger canvas instead of a 600x400..1350x900 range). Still
+    // 3:2, still laid out in relative CSS units (Resources/Web/tokens.css/
+    // responsive.css), so "adaptive to different monitors" is handled the
+    // same way every JUCE desktop window already gets it for free: the
+    // *logical* size stays fixed at 1200x800, and the OS/JUCE's own DPI
+    // scaling renders that logical size correctly on any monitor's actual
+    // pixel density - no extra code needed here for that part, only
+    // `setResizable (false, false)` for "no drag-to-resize at all".
+    setResizable (false, false);
+    setSize (1200, 800);
 
     // Meter telemetry only - reads the processor's lock-free LevelMeters
     // and forwards a smoothed value to the WebView. Purely a UI concern;
@@ -397,6 +429,22 @@ UNI76AudioProcessorEditor::UNI76AudioProcessorEditor (UNI76AudioProcessor& p)
     // toggle simply flips to an editable copy of the same sound, not to
     // silence/defaults.
     abSlotA = abSlotB = captureSnapshot();
+
+    // Restore the active-preset name from the processor (not just reset to
+    // "none") - see PluginProcessor::getActivePresetKind()/
+    // getActivePresetName()'s doc comment for why this lives on the
+    // processor now: a fresh editor instance (created every time the
+    // plugin window is closed and reopened) used to always start at
+    // PresetKind::none, silently reverting the displayed name to "Default"
+    // even though the actual preset's parameter values were untouched and
+    // already restored via the APVTS state. The snapshot compared against
+    // for the "dirty" (Name *) marker is deliberately the *current* live
+    // values, not whatever they were at the moment the preset was first
+    // applied in a previous editor instance - a small, deliberate
+    // simplification (see the processor method's own doc comment).
+    activePresetKind = static_cast<PresetKind> (juce::jlimit (0, 2, processor.getActivePresetKind()));
+    activePresetName = processor.getActivePresetName();
+    activePresetSnapshot = abSlotA;
 }
 
 UNI76AudioProcessorEditor::~UNI76AudioProcessorEditor() = default;
@@ -456,12 +504,18 @@ void UNI76AudioProcessorEditor::setActivePreset (PresetKind kind, const juce::St
     activePresetKind = kind;
     activePresetName = name;
     activePresetSnapshot = captureSnapshot();
+
+    // Mirrored onto the processor so the name survives this editor
+    // instance's own destruction (see the constructor's restore code and
+    // PluginProcessor::setActivePresetInfo()'s doc comment).
+    processor.setActivePresetInfo (static_cast<int> (kind), name);
 }
 
 void UNI76AudioProcessorEditor::clearActivePreset()
 {
     activePresetKind = PresetKind::none;
     activePresetName.clear();
+    processor.setActivePresetInfo (static_cast<int> (PresetKind::none), {});
 }
 
 UNI76AudioProcessorEditor::ActivePresetInfo UNI76AudioProcessorEditor::getActivePresetInfo() const

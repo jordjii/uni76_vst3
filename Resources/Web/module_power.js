@@ -24,8 +24,11 @@
 import { getNativeFunction } from "./juce_webview.js";
 
 // Matches Source/Parameters/ParameterIDs.h's ParamID::all order, which is
-// also the order Core/ModuleEnableState.h persists the flags in.
-const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager"];
+// also the order Core/ModuleEnableState.h persists the flags in. "delay"
+// (index 7, added 2026-09-14 - see docs/DSP_DELAY.md) is APPENDED, not
+// inserted at its default chain *position* - role index and default chain
+// position are independent (see Core/ChainOrder.h's own class comment).
+const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "delay"];
 
 let setModuleEnabled = null;
 let getModuleEnabledStates = null;

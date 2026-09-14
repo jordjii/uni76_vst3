@@ -64,6 +64,7 @@
   --color-panorama: #5f6f7a;    /* darker slate blue-grey, not blue */
   --color-reverb: #806a53;      /* warm DARK taupe */
   --color-imager: #3a5850;      /* dark desaturated teal, not turquoise */
+  --color-delay: #5c6b4a;       /* dusty vintage olive-green, distinct from preamp's khaki/imager's teal */
 
   --focus-ring: rgba(32, 26, 19, 0.65); /* for controls sitting on a light panel */
   --focus-ring-on-dark: rgba(236, 231, 220, 0.65); /* for controls in the dark chassis */

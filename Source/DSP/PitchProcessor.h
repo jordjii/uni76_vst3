@@ -14,15 +14,53 @@
     Pure pitch-shift only - duration is always preserved (every process()
     call hands the underlying engine equal input/output sample counts, so
     there is never any time-stretching): no saturation, no coloration, no
-    modulation. Wraps two fully independent mono instances of the vendored
-    Signalsmith Stretch engine (ThirdParty/signalsmith-stretch, MIT) - one
-    per channel, deliberately not one shared multi-channel instance, so
-    that bit-identical stereo input is guaranteed (by construction, not by
-    luck) to produce bit-identical stereo output. See docs/DSP_PITCH.md's
-    "Stereo coherence" section for the measured evidence behind that
-    choice. The vendored engine itself is kept out of this header (PIMPL)
-    so this file doesn't leak ThirdParty/ include paths into every
-    consumer (notably Tests/PluginTests.cpp).
+    modulation, no added delay/reverb-like tail.
+
+    **Architecture (root-cause fix, live-testing round 3)** - this module
+    used to wrap TWO fully independent mono Signalsmith Stretch engines
+    (one per channel), on the theory that independence was needed to
+    guarantee bit-identical stereo output for bit-identical stereo input.
+    That guarantee held, but it had a real, audible cost for genuinely
+    correlated (not bit-identical) stereo material: each channel's STFT
+    phase-vocoder resynthesis evolved its own phase completely
+    independently of the other, which read as extra, synthetic width and
+    a diffuse "room"-like smear - not present in the reference (Waves
+    SoundShifter). Two rounds of downstream Side-channel filtering
+    (frequency-flat, then frequency-shaped) reduced the symptom without
+    removing the mechanism, and both were reported back as insufficient.
+
+    This module now wraps a **single** `SignalsmithStretch<float>`
+    instance configured for the real channel count (see
+    `ThirdParty/signalsmith-stretch/signalsmith-stretch.h`'s own
+    multi-channel design, read directly rather than assumed): its STFT
+    analysis/synthesis grid (window position, hop) is shared across
+    channels by construction, and - critically - its phase-vocoder
+    re-prediction step picks the *highest-energy* channel per frequency
+    band as that band's phase reference and explicitly **locks every
+    other channel's phase to it** (`processSpectrum()`'s "all other bins
+    are locked in phase" step), carrying over the *original* input's
+    inter-channel phase relationship (via a computed twist between the
+    two channels' own input phases) rather than letting each channel's
+    phase drift on its own. This is the library's own designed answer to
+    exactly this problem - not a workaround built on top of it. For
+    genuinely identical (dual-mono) input, both channels' energy is
+    always equal, so the tie always resolves to channel 0 as the
+    reference and channel 1 is locked to it via a twist that collapses to
+    unity for identical inputs - keeping Mono strictly in Mono is a
+    property of the shared engine's own phase-locking, not a separate
+    mono-detection path bolted on afterward.
+
+    The previous downstream Side-narrowing filter (a frequency-shaped
+    low-shelf attenuating the wet signal's own Side component) has been
+    **removed** - it treated the symptom of independent per-channel phase
+    evolution, and with that root cause gone, narrowing Side further
+    would only shrink genuine, source-provided stereo width the plugin
+    has no business touching. See docs/DSP_PITCH.md's "Stereo coherence"
+    section for the measured before/after.
+
+    The vendored engine is kept out of this header (PIMPL) so this file
+    doesn't leak ThirdParty/ include paths into every consumer (notably
+    Tests/PluginTests.cpp).
 
     Enable/disable behaviour - a deliberate exception to the delay-aligned
     crossfade bypass every other latency-owning module (PREAMP, SAT) uses.

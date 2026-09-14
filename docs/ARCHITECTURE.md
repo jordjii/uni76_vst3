@@ -7,7 +7,8 @@ sound-calibration pass - see [docs/DSP_PREAMP.md](DSP_PREAMP.md)) + EQ DSP
 [docs/DSP_PITCH.md](DSP_PITCH.md)) + PAN DSP (see
 [docs/DSP_PAN.md](DSP_PAN.md)) + VERB DSP (see
 [docs/DSP_VERB.md](DSP_VERB.md)) + IMAGE DSP (see
-[docs/DSP_IMAGE.md](DSP_IMAGE.md)). All 7 modules now have real DSP.
+[docs/DSP_IMAGE.md](DSP_IMAGE.md)) + DELAY DSP (added 2026-09-14, see
+[docs/DSP_DELAY.md](DSP_DELAY.md)). All 8 modules now have real DSP.
 See root [CLAUDE.md](../CLAUDE.md) for the living project log and the
 rules this architecture exists to enforce, and
 [docs/FULL_DSP_AUDIT.md](FULL_DSP_AUDIT.md) for the full pre-release
@@ -27,11 +28,14 @@ Source/
   Parameters/   Centralised parameter IDs and the APVTS parameter layout.
                 The only place parameter defaults/ranges are defined.
   DSP/          PreampProcessor + EqProcessor + SatProcessor + PitchProcessor
-                + PanoramaProcessor + VerbProcessor + ImagerProcessor (real
-                DSP, chained in that order - see docs/DSP_PREAMP.md /
-                docs/DSP_EQ.md / docs/DSP_SAT.md / docs/DSP_PITCH.md /
-                docs/DSP_PAN.md / docs/DSP_VERB.md / docs/DSP_IMAGE.md).
-                See "DSP modules" below.
+                + PanoramaProcessor + DelayProcessor + VerbProcessor +
+                ImagerProcessor (real DSP; the default chain order - see
+                Core/ChainOrder.h - runs them PREAMP->EQ->SAT->PITCH->PAN->
+                DELAY->VERB->IMAGE, user-reorderable via drag-and-drop - see
+                docs/DSP_PREAMP.md / docs/DSP_EQ.md / docs/DSP_SAT.md /
+                docs/DSP_PITCH.md / docs/DSP_PAN.md / docs/DSP_DELAY.md /
+                docs/DSP_VERB.md / docs/DSP_IMAGE.md). See "DSP modules"
+                below.
   UI/           The WebView editor and the C++ <-> JS bridge
                 (WebSliderRelay / WebSliderParameterAttachment wiring,
                 resource provider for the embedded HTML/CSS/JS).
@@ -82,15 +86,26 @@ these values. See CLAUDE.md for the current fixed values.
 
 ## Parameters
 
-Exactly 7 public parameters, IDs centralised in
+15 public parameters (started at 7; `imageTilt`, `panRate`, `verbDrive`,
+and DELAY's own five - `delay`, `delayFeedback`, `delayDivision`,
+`delayStereo`, `delayPingPong` - were each added later, as deliberate,
+documented exceptions rather than a redesign of the original contract -
+see CLAUDE.md's history), IDs centralised in
 [`Source/Parameters/ParameterIDs.h`](../Source/Parameters/ParameterIDs.h).
-Six are `AudioParameterFloat` in a `0..100` (%) range (`50%` default for
-`eq`, `0%` for the rest, including `panorama`); `pitch` is the one
-exception - a discrete `AudioParameterInt` (`-12..+12` semitones, step 1,
-default 0) rather than a percentage, since PITCH's musically meaningful
-values are integer semitones, not a continuous 0-100% range (see
-[docs/DSP_PITCH.md](DSP_PITCH.md)'s "Parameter and state migration"
-section for why, and how the old percent-based `pitch` state migrates).
+Most are `AudioParameterFloat` in a `0..100` (%) range (`50%` default for
+`eq`, `0%` for most of the rest); `pitch` is a discrete `AudioParameterInt`
+(`-12..+12` semitones, step 1, default 0) rather than a percentage, since
+PITCH's musically meaningful values are integer semitones, not a
+continuous 0-100% range (see [docs/DSP_PITCH.md](DSP_PITCH.md)'s
+"Parameter and state migration" section for why, and how the old percent-
+based `pitch` state migrates). DELAY (added 2026-09-14, see
+[docs/DSP_DELAY.md](DSP_DELAY.md)) introduced this project's first two
+other parameter *shapes*: `delayDivision` is an `AudioParameterChoice`
+(5 fixed musical note divisions) and `delayStereo`/`delayPingPong` are
+`AudioParameterBool`s, bridged to the WebView via JUCE's own
+WebComboBoxRelay/WebToggleButtonRelay rather than the WebSliderRelay every
+float parameter uses - the same already-vendored JS bridge module, not a
+new dependency.
 `panorama` briefly defaulted to `50%` under an earlier, retired
 MONO/NATURAL/WIDE contract; it is back to `0%` under the current
 ORIGINAL/WIDE/MOTION contract - a fresh instance's stereo field is

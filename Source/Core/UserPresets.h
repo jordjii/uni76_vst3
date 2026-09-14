@@ -4,6 +4,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 
 #include "ChainOrder.h"
+#include "../DSP/DelayCurves.h"
 
 #include <array>
 #include <optional>
@@ -25,17 +26,19 @@ namespace uni76
 {
     struct UserPresetData
     {
-        std::array<float, 10> values {};       // ParamID::all order, real units
-        std::array<bool, 7> moduleEnabled {};
+        std::array<float, 15> values {};       // ParamID::all order, real units
+        std::array<bool, 8> moduleEnabled {};
         // Processing-chain order (drag-and-drop pedalboard round - see
         // Core/ChainOrder.h) - a preset that doesn't also capture its own
         // module order isn't fully reproducing "the sound" a user saved,
         // since reordering genuinely changes the processed audio. Defaults
-        // to the factory identity order, NOT value-initialised zeros
-        // (which would be role 0 repeated 7 times - not a valid
-        // permutation) - matters for a preset saved before this field
-        // existed, whose file has no ChainOrder node to read back.
-        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
+        // to the current factory identity order (DELAY added 2026-09-14,
+        // see docs/DSP_DELAY.md), NOT value-initialised zeros (which would
+        // be role 0 repeated 8 times - not a valid permutation) - matters
+        // for a preset saved before this field (or before DELAY) existed,
+        // whose file has no ChainOrder node, or an old 7-token one, to
+        // read back - see loadUserPreset()'s own migration for the latter.
+        std::array<int, 8> chainOrder { 0, 1, 2, 3, 4, 7, 5, 6 };
     };
 
     inline juce::File getUserPresetsDirectory()
@@ -155,20 +158,23 @@ namespace uni76
         root.setAttribute ("name", name);
 
         auto* params = root.createNewChildElement ("Parameters");
-        static const char* paramNames[10] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate", "verbDrive" };
-        for (int i = 0; i < 10; ++i)
+        static const char* paramNames[15] {
+            "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate", "verbDrive",
+            "delay", "delayFeedback", "delayDivision", "delayStereo", "delayPingPong"
+        };
+        for (int i = 0; i < 15; ++i)
             params->setAttribute (paramNames[i], (double) data.values[(size_t) i]);
 
         auto* modules = root.createNewChildElement ("ModulesEnabled");
-        static const char* moduleNames[7] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager" };
-        for (int i = 0; i < 7; ++i)
+        static const char* moduleNames[8] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "delay" };
+        for (int i = 0; i < 8; ++i)
             modules->setAttribute (moduleNames[i], data.moduleEnabled[(size_t) i]);
 
         // Same comma-joined-string convention ChainOrder::stateProperty
         // already uses for the plugin's own saved state.
         auto* chain = root.createNewChildElement ("ChainOrder");
         juce::StringArray orderTokens;
-        for (int i = 0; i < 7; ++i)
+        for (int i = 0; i < 8; ++i)
             orderTokens.add (juce::String (data.chainOrder[(size_t) i]));
         chain->setAttribute ("order", orderTokens.joinIntoString (","));
 
@@ -191,44 +197,69 @@ namespace uni76
             return std::nullopt;
 
         UserPresetData data;
-        static const char* paramNames[10] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate", "verbDrive" };
-        // A preset saved before PAN's RATE / VERB's DRIVE knobs existed
-        // has no such attribute at all - getDoubleAttribute's own default
-        // (0.0) would silently read panRate as division index 0 (1/128,
-        // absurdly fast), not "the module's own default" (0.0 is the
-        // correct fallback for verbDrive, though - its own base values
-        // already *are* the original coloration). 68.182 is
-        // panRateDefaultNormalised*100 - see PanoramaCurves.h's "Tempo-
-        // synced motion rate" section - the same fallback-to-current-
-        // default pattern ModuleEnableState/imageTilt migrations already
-        // use.
-        static const double paramDefaults[10] { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 68.182, 0.0 };
-        for (int i = 0; i < 10; ++i)
+        static const char* paramNames[15] {
+            "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "imageTilt", "panRate", "verbDrive",
+            "delay", "delayFeedback", "delayDivision", "delayStereo", "delayPingPong"
+        };
+        // A preset saved before PAN's RATE / VERB's DRIVE knobs (or,
+        // 2026-09-14, DELAY's own five parameters) existed has no such
+        // attribute at all - getDoubleAttribute's own default (0.0) would
+        // silently read panRate as division index 0 (1/128, absurdly
+        // fast), not "the module's own default" (0.0 is the correct
+        // fallback for verbDrive/delay/delayStereo/delayPingPong, though -
+        // their own base values already *are* their identity/off state).
+        // 68.182 is panRateDefaultNormalised*100 (PanoramaCurves.h); 30.0
+        // is delayFeedback's own default (DelayCurves.h has no
+        // "normalised" form of this one - 30% is the real unit directly,
+        // same as every other plain percent parameter); 20.0 is
+        // delayDivision's own default index (1, "1/8") expressed as the
+        // 0..100 percent-of-choice-range getDoubleAttribute expects here
+        // (1 of 4 steps = 25%... but see the note below - this reads back
+        // through convertTo0to1 elsewhere, so the RAW value stored here
+        // must be the real choice index, 1.0, not a percentage). Same
+        // fallback-to-current-default pattern ModuleEnableState/imageTilt
+        // migrations already use.
+        static const double paramDefaults[15] {
+            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 68.182, 0.0,
+            0.0, 30.0, (double) uni76::dsp::delayDefaultDivisionIndex, 0.0, 0.0
+        };
+        for (int i = 0; i < 15; ++i)
             data.values[(size_t) i] = (float) params->getDoubleAttribute (paramNames[i], paramDefaults[i]);
 
-        static const char* moduleNames[7] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager" };
-        for (int i = 0; i < 7; ++i)
+        static const char* moduleNames[8] { "preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "delay" };
+        for (int i = 0; i < 8; ++i)
             data.moduleEnabled[(size_t) i] = modules->getBoolAttribute (moduleNames[i], true);
 
         // A preset saved before chain reordering existed has no
         // ChainOrder node at all - data.chainOrder already defaults to
-        // the factory identity order (see the struct's own comment), so
-        // leave it untouched rather than reading back a missing/invalid
-        // attribute. A hand-edited or corrupt "order" string is rejected
-        // the same way ChainOrder itself rejects a bad saved state -
-        // fall back to identity rather than apply a partial/duplicate
-        // permutation.
+        // the current factory identity order (see the struct's own
+        // comment), so leave it untouched rather than reading back a
+        // missing/invalid attribute. A preset saved before DELAY existed
+        // has exactly 7 tokens - inserted safely before VERB, same
+        // backward-compatibility rule PluginProcessor::setStateInformation()
+        // applies to the plugin's own saved chain order. A hand-edited or
+        // corrupt "order" string of either length is rejected the same
+        // way ChainOrder itself rejects a bad saved state - fall back to
+        // identity rather than apply a partial/duplicate permutation.
         if (auto* chain = xml->getChildByName ("ChainOrder"))
         {
             const auto tokens = juce::StringArray::fromTokens (chain->getStringAttribute ("order"), ",", "");
-            if (tokens.size() == 7)
+            if (tokens.size() == 8)
             {
-                std::array<int, 7> candidate {};
-                for (int i = 0; i < 7; ++i)
+                std::array<int, 8> candidate {};
+                for (int i = 0; i < 8; ++i)
                     candidate[(size_t) i] = tokens[i].getIntValue();
 
                 if (uni76::ChainOrder::isValidPermutation (candidate))
                     data.chainOrder = candidate;
+            }
+            else if (tokens.size() == 7)
+            {
+                std::array<int, 7> legacyCandidate {};
+                for (int i = 0; i < 7; ++i)
+                    legacyCandidate[(size_t) i] = tokens[i].getIntValue();
+
+                data.chainOrder = uni76::ChainOrder::insertDelayIntoLegacyOrder (legacyCandidate);
             }
         }
 

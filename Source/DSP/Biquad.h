@@ -1,5 +1,6 @@
 #pragma once
 
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -171,6 +172,64 @@ namespace uni76::dsp
         std::vector<float> buffer;
         int delay = 0;
         int writeIndex = 0;
+    };
+
+    /** First-order allpass fractional-delay ("Thiran"-style) interpolator
+        - unlike a plain 2-tap linear interpolation, this has an EXACTLY
+        flat magnitude response at every frequency for any fractional
+        delay D (a true allpass: |H(e^jw)| == 1 for all w, only the
+        phase/group delay is D-dependent), so it does not attenuate
+        high-frequency/decorrelated content the way linear interpolation
+        does - and does not compound a per-pass loss inside a
+        recirculating feedback loop the way linear interpolation's own
+        frequency-dependent attenuation does (see VerbCurves.h's "Tank
+        line modulation" section for the history this exists to fix).
+
+        Transfer function H(z) = (a1 + z^-1) / (1 + a1*z^-1), with
+        a1 = (1-D)/(1+D). Verified algebraically at both ends of the
+        [0,1] range this is used over: D=0 gives a1=1, and H(z) collapses
+        to EXACTLY 1 (numerator == denominator) - a true identity, not an
+        approximate one, which is what makes "modulation depth 0 collapses
+        to an exact direct read" hold by construction, the same guarantee
+        the 2-tap linear interpolator it replaces already had. D=1 gives
+        a1=0, and H(z) = z^-1, an exact single-sample delay. In between,
+        this is a time-varying filter (D changes every sample as the
+        caller's own modulation LFO moves) rather than a fixed one, so the
+        fixed-coefficient transfer function above is only a good
+        approximation of the *instantaneous* delay when D changes slowly
+        relative to the sample rate - true for any deliberately slow (sub-
+        1Hz) modulation LFO, which is the only use case this class is
+        designed for.
+
+        D must be the caller's own FRACTIONAL remainder in [0,1] of a
+        desired delay (the integer part is handled by the caller's own
+        buffer indexing, matching the existing idx0/frac convention used
+        elsewhere in this codebase for linear interpolation) - callers
+        should keep D just inside (0,1), not exactly at either endpoint:
+        D=0 puts a pole exactly on the unit circle (z=-1), which is
+        marginally stable if D ever dwells there for a sustained interval
+        (harmless for an instantaneously-crossing continuous modulation,
+        but callers whose D could rest at exactly 0 - e.g. a disabled/
+        zero-depth modulation - should clamp D to a small epsilon instead,
+        which processSample() does internally so callers never need to
+        think about this themselves). */
+    class AllpassFractionalDelay
+    {
+    public:
+        void reset() noexcept { xPrev = 0.0f; yPrev = 0.0f; }
+
+        float processSample (float x, float d) noexcept
+        {
+            const auto safeD = std::clamp (d, 1.0e-4f, 1.0f - 1.0e-4f);
+            const auto a1 = (1.0f - safeD) / (1.0f + safeD);
+            const auto y = a1 * x + xPrev - a1 * yPrev;
+            xPrev = x;
+            yPrev = y;
+            return y;
+        }
+
+    private:
+        float xPrev = 0.0f, yPrev = 0.0f;
     };
 
     // ---- RBJ Audio EQ Cookbook coefficient generators -----------------

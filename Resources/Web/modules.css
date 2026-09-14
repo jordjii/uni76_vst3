@@ -227,3 +227,156 @@
   margin-top: auto;
   margin-bottom: auto;
 }
+
+/* ---- DELAY's own aux controls (added 2026-09-14 - see docs/DSP_DELAY.md) --
+   Unlike every other module's aux zone (a purely derived, non-interactive
+   tri-scale, currently hidden - see the class comment above), this one is
+   genuinely interactive: a compact 5-way division switcher plus MONO/
+   STEREO + PING PONG toggles.
+
+   Two earlier layout attempts were tried and rejected via direct
+   screenshots before this one:
+   1. Centre `.module__knob-area` alone (the same rule every other module
+      uses) and let `.module__aux--delay` sit in normal flow, pinned to
+      the panel's bottom edge via its own `margin-top: auto`. Rejected:
+      three auto-margins (knob-area's own top+bottom, plus aux's top)
+      end up sharing the module's free space instead of two, pushing the
+      knob visibly higher than every other module's.
+   2. Centre knob-area using the exact same two-margin arithmetic as
+      every other module by taking aux OUT of flow (`position: absolute`,
+      pinned to the panel's bottom edge) - this DID land the knob at the
+      exact same pixel position as PAN's/VERB's, confirmed by direct
+      measurement. Rejected anyway, on its own separate live-testing
+      round: with the knob centred using the *full* available height and
+      aux pinned all the way at the bottom, the result was a large, inert-
+      looking gap between the FEEDBACK readout and the division/toggle
+      buttons - visually read as broken empty space, not a considered
+      layout, even though nothing was technically overlapping.
+
+   This round's fix: group `.module__knob-area` and `.module__aux--delay`
+   inside one wrapper, `.module__delay-content` (see index.html), and
+   centre THAT wrapper as a single unit with a small, fixed gap between
+   its two children - keeping the whole DELAY control cluster visually
+   tight and cohesive. The explicit, disclosed trade-off: the knob no
+   longer lands at the exact same pixel row as PAN's/VERB's (the group is
+   taller than a lone knob-area, so centering it moves the knob up by
+   roughly half of aux's own height) - a deliberate choice of "looks like
+   one considered block" over "pixel-identical to modules with no aux
+   content at all", which is what live testing actually asked for across
+   both earlier attempts. */
+.module__delay-content {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: var(--space-sm);
+  min-height: 0;
+  margin-top: auto;
+  margin-bottom: auto;
+  width: 100%;
+}
+
+/* Both children stop trying to centre/pin *themselves* - the wrapper
+   above now owns that job as a single unit. */
+.module__delay-content .module__knob-area {
+  margin-top: 0;
+  margin-bottom: 0;
+}
+
+/* `.knob-module__inner-readout` is `position: absolute` everywhere else
+   (see its own class comment above) specifically so it adds no height to
+   `.knob-module` - which is exactly wrong here: `.module__delay-content`'s
+   `gap` is computed from `.module__knob-area`'s own layout height, and an
+   absolutely-positioned readout is invisible to that calculation, so the
+   division-button row started overlapping FEEDBACK's own text (confirmed
+   by direct measurement, not just visual inspection - a real bug, not a
+   spacing nitpick). Back to normal flow for DELAY specifically, so its
+   knob-module's own height genuinely includes the readout and the gap
+   after it is correct. */
+.module__delay-content .knob-module__inner-readout {
+  position: static;
+  margin-top: var(--space-xs);
+}
+
+.module__aux--delay {
+  margin-top: 0;
+  align-items: center;
+  gap: calc(var(--space-xs) * 0.5);
+}
+
+.delay-division {
+  display: flex;
+  justify-content: center;
+  border: 1.5px solid var(--ink-hairline-strong);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+}
+
+.delay-division__btn {
+  flex: 1 1 auto;
+  font-family: var(--font-mono);
+  font-size: calc(var(--fs-knob-label) * 0.62);
+  font-weight: 800;
+  letter-spacing: 0.02em;
+  color: var(--ink-mid);
+  background: transparent;
+  border: none;
+  padding: 0.3em 0.2em;
+  cursor: pointer;
+}
+
+.delay-division__btn + .delay-division__btn {
+  border-left: 1.5px solid var(--ink-hairline-strong);
+}
+
+.delay-division__btn.is-active {
+  color: var(--knob-face);
+  background: rgba(32, 26, 19, 0.22);
+}
+
+.delay-division__btn:hover:not(.is-active) {
+  color: var(--ink-strong);
+}
+
+.delay-division__btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: -2px;
+}
+
+/* MONO/STEREO and PING PONG - both real on/off parameters, same button
+   look, side by side (see index.html's own comment on why MONO/STEREO
+   moved out of the knob face and into this row - it used to hijack the
+   outer knob's own drag gesture). */
+.delay-toggle-row {
+  display: flex;
+  justify-content: center;
+  gap: calc(var(--space-xs) * 0.6);
+}
+
+.delay-mode-btn {
+  flex: 1 1 0;
+  font-size: calc(var(--fs-knob-label) * 0.64);
+  font-weight: 800;
+  letter-spacing: var(--tracking-wide);
+  color: var(--ink-mid);
+  background: transparent;
+  border: 1.5px solid var(--ink-hairline-strong);
+  border-radius: var(--radius-sm);
+  padding: 0.3em 0.4em;
+  cursor: pointer;
+}
+
+.delay-mode-btn.is-active {
+  color: var(--knob-face);
+  background: var(--meter-green);
+  border-color: var(--meter-green);
+}
+
+.delay-mode-btn:hover:not(.is-active) {
+  color: var(--ink-strong);
+}
+
+.delay-mode-btn:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 1px;
+}

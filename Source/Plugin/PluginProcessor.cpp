@@ -4,6 +4,7 @@
 
 #include "Core/PluginIdentity.h"
 #include "DSP/PanoramaCurves.h"
+#include "DSP/DelayCurves.h"
 #include "Parameters/ParameterIDs.h"
 #include "Parameters/ParameterLayout.h"
 #include "UI/WebUIEditor.h"
@@ -25,6 +26,11 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     imageTiltParameter = apvts.getRawParameterValue (uni76::ParamID::imageTilt);
     panRateParameter = apvts.getRawParameterValue (uni76::ParamID::panRate);
     verbDriveParameter = apvts.getRawParameterValue (uni76::ParamID::verbDrive);
+    delayParameter = apvts.getRawParameterValue (uni76::ParamID::delay);
+    delayFeedbackParameter = apvts.getRawParameterValue (uni76::ParamID::delayFeedback);
+    delayDivisionParameter = apvts.getRawParameterValue (uni76::ParamID::delayDivision);
+    delayStereoParameter = apvts.getRawParameterValue (uni76::ParamID::delayStereo);
+    delayPingPongParameter = apvts.getRawParameterValue (uni76::ParamID::delayPingPong);
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -41,16 +47,19 @@ void UNI76AudioProcessor::prepareToPlay (double sampleRate, int samplesPerBlock)
     panoramaProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     verbProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
     imagerProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
+    delayProcessor.prepare (sampleRate, samplesPerBlock, numChannels);
 
-    // EQ, PAN, VERB and IMAGE all add no algorithmic latency
+    // EQ, PAN, VERB, IMAGE and DELAY all add no algorithmic latency
     // (getLatencySamples() == 0 for each - PAN is a pure gain/filter
     // morph, no oversampling, no lookahead, no delay-based widening;
     // VERB's pre-delay/tank are wet-path effects, not a lookahead on the
     // direct signal - see docs/DSP_VERB.md; IMAGE is likewise a pure
     // gain/filter morph with no oversampling/lookahead/Haas-style delay
-    // - see docs/DSP_IMAGE.md). PREAMP, SAT and PITCH each own
+    // - see docs/DSP_IMAGE.md; DELAY's own buffered echo is a wet-path
+    // effect the same way VERB's tank is, never a lookahead on the direct
+    // signal - see docs/DSP_DELAY.md). PREAMP, SAT and PITCH each own
     // independent processing with their own real latency - the plugin's
-    // total declared latency is their sum, since all seven run in series
+    // total declared latency is their sum, since all eight run in series
     // in the signal chain and a host's plugin-delay-compensation needs
     // the combined delay, not just one stage's. See
     // updateReportedLatency() for why PITCH's own contribution is
@@ -80,7 +89,8 @@ void UNI76AudioProcessor::updateReportedLatency() noexcept
                         + (pitchEnabled ? pitchProcessor.getLatencySamples() : 0)
                         + panoramaProcessor.getLatencySamples()
                         + verbProcessor.getLatencySamples()
-                        + imagerProcessor.getLatencySamples());
+                        + imagerProcessor.getLatencySamples()
+                        + delayProcessor.getLatencySamples());
 }
 
 void UNI76AudioProcessor::releaseResources()
@@ -92,6 +102,7 @@ void UNI76AudioProcessor::releaseResources()
     panoramaProcessor.reset();
     verbProcessor.reset();
     imagerProcessor.reset();
+    delayProcessor.reset();
 }
 
 bool UNI76AudioProcessor::isBusesLayoutSupported (const BusesLayout& layouts) const
@@ -179,6 +190,20 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
     const auto imageTilt = imageTiltParameter != nullptr ? imageTiltParameter->load() / 100.0f : 0.0f;
     const auto imagerEnabled = moduleEnableState.isEnabled (6); // index 6 = imager, see ModuleEnableState::propertyNames
 
+    // DELAY (added 2026-09-14, see docs/DSP_DELAY.md) - `delayDivision`
+    // is a genuine AudioParameterChoice, so its raw parameter value is
+    // already the real choice index (0..4), not a 0..100 percent the way
+    // every plain-float module's own raw value is; `delayStereo`/
+    // `delayPingPong` are genuine AudioParameterBools, whose raw value is
+    // already 0.0/1.0. hostBpm (read just below, shared with PAN's own
+    // RATE knob) is what resolves the division to a real time.
+    const auto delayMix = delayParameter != nullptr ? delayParameter->load() / 100.0f : 0.0f;
+    const auto delayFeedbackAmount = delayFeedbackParameter != nullptr ? delayFeedbackParameter->load() / 100.0f : 0.3f;
+    const auto delayDivisionIndex = delayDivisionParameter != nullptr ? (int) std::lround (delayDivisionParameter->load()) : uni76::dsp::delayDefaultDivisionIndex;
+    const auto delayStereo = delayStereoParameter != nullptr && delayStereoParameter->load() >= 0.5f;
+    const auto delayPingPong = delayPingPongParameter != nullptr && delayPingPongParameter->load() >= 0.5f;
+    const auto delayEnabled = moduleEnableState.isEnabled (7); // index 7 = delay, see ModuleEnableState::propertyNames
+
     // Dispatch through the user's chosen chain order (drag-and-drop
     // pedalboard reordering - see Core/ChainOrder.h). Role indices match
     // ModuleEnableState::propertyNames' order, same as every `isEnabled()`
@@ -195,6 +220,7 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
             case 4: panoramaProcessor.process (buffer, panoramaWidth, panRate, hostBpm, panoramaEnabled); break;
             case 5: verbProcessor.process (buffer, reverbWet, verbDrive, reverbEnabled); break;
             case 6: imagerProcessor.process (buffer, imageAmount, imageTilt, imagerEnabled); break;
+            case 7: delayProcessor.process (buffer, delayMix, delayFeedbackAmount, delayDivisionIndex, delayStereo, delayPingPong, hostBpm, delayEnabled); break;
             default: break; // unreachable for a validated permutation - see ChainOrder::isValidPermutation()
         }
     }
@@ -269,6 +295,13 @@ void UNI76AudioProcessor::getStateInformation (juce::MemoryBlock& destData)
         state.setProperty (uni76::ChainOrder::stateProperty, parts.joinIntoString (","), nullptr);
     }
 
+    // Active-preset identity - same outside-the-APVTS-tree persistence
+    // pattern as the module-enabled flags/chain order above. This is what
+    // makes the displayed preset name survive editor close/reopen - see
+    // PluginIdentity.h's activePresetKindProperty/activePresetNameProperty.
+    state.setProperty (uni76::activePresetKindProperty, activePresetKind, nullptr);
+    state.setProperty (uni76::activePresetNameProperty, activePresetName, nullptr);
+
     if (auto xml = state.createXml())
         copyXmlToBinary (*xml, destData);
 }
@@ -341,29 +374,57 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
 
         // Chain order - a missing property (state saved before this round,
         // or from a corrupt/hand-edited file) falls back to the original
-        // factory order rather than a partial/garbage permutation.
+        // factory order rather than a partial/garbage permutation. A
+        // state saved before DELAY existed has exactly 7 tokens (the old
+        // ChainOrder::numModules) - per the product brief's own explicit
+        // backward-compatibility rule, DELAY is safely inserted right
+        // before VERB (role 5) in that case, preserving the relative
+        // order of every other module a user may have already
+        // reordered, rather than discarding it for the full default.
         {
             const auto saved = newState.getProperty (uni76::ChainOrder::stateProperty, juce::String()).toString();
             juce::StringArray parts;
             parts.addTokens (saved, ",", "");
 
-            std::array<int, uni76::ChainOrder::numModules> parsed {};
-            bool ok = parts.size() == uni76::ChainOrder::numModules;
-            for (int i = 0; ok && i < uni76::ChainOrder::numModules; ++i)
+            const auto allDigits = [&] (int count)
             {
-                if (! parts[i].containsOnly ("0123456789"))
-                {
-                    ok = false;
-                    break;
-                }
-                parsed[(size_t) i] = parts[i].getIntValue();
-            }
+                if (parts.size() != count) return false;
+                for (int i = 0; i < count; ++i)
+                    if (! parts[i].containsOnly ("0123456789"))
+                        return false;
+                return true;
+            };
 
-            if (ok && uni76::ChainOrder::isValidPermutation (parsed))
-                chainOrder.setOrder (parsed);
+            if (allDigits (uni76::ChainOrder::numModules))
+            {
+                std::array<int, uni76::ChainOrder::numModules> parsed {};
+                for (int i = 0; i < uni76::ChainOrder::numModules; ++i)
+                    parsed[(size_t) i] = parts[i].getIntValue();
+
+                if (uni76::ChainOrder::isValidPermutation (parsed))
+                    chainOrder.setOrder (parsed);
+                else
+                    chainOrder.resetToDefault();
+            }
+            else if (allDigits (7))
+            {
+                std::array<int, 7> legacyParsed {};
+                for (int i = 0; i < 7; ++i)
+                    legacyParsed[(size_t) i] = parts[i].getIntValue();
+
+                chainOrder.setOrder (uni76::ChainOrder::insertDelayIntoLegacyOrder (legacyParsed));
+            }
             else
+            {
                 chainOrder.resetToDefault();
+            }
         }
+
+        // Active-preset identity - a missing property (state saved before
+        // this fix, or a plain non-preset session) correctly falls back to
+        // "no active preset" (kind 0, empty name), same as a fresh instance.
+        activePresetKind = (int) newState.getProperty (uni76::activePresetKindProperty, 0);
+        activePresetName = newState.getProperty (uni76::activePresetNameProperty, juce::String()).toString();
 
         apvts.replaceState (newState);
 

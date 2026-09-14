@@ -7,7 +7,7 @@
 // here is either a direct user gesture or a valueChangedEvent callback
 // fired by the native backend.
 
-import { getSliderState, getNativeFunction } from "./juce_webview.js";
+import { getSliderState, getToggleState, getComboBoxState, getNativeFunction } from "./juce_webview.js";
 import { ParameterKnob } from "./knob.js";
 import { FieldPad } from "./field_pad.js";
 import { bindTriScale, bindPreampFilterLines } from "./aux_visuals.js";
@@ -75,6 +75,14 @@ const MODULES = [
   // the source of truth this must stay in sync with, and docs/DSP_PAN.md.
   { id: "panorama", control: "WIDTH", name: "Panorama", defaultNormalised: 0 },
   { id: "reverb", control: "SPACE", name: "Reverb", defaultNormalised: 0 },
+  // DELAY (8th module, added 2026-09-14 - see docs/DSP_DELAY.md). MIX is
+  // the plain outer knob, same shape as every other module's own single
+  // 0..100% control; FEEDBACK (nested inner knob), the MONO/STEREO text
+  // toggle, the DIVISION switcher, and PING PONG are all wired separately
+  // below (initDelayFeedbackKnob/initDelayStereoToggle/initDelayDivision/
+  // initDelayPingPong) - the same "not folded into MODULES" precedent
+  // PAN's RATE and VERB's DRIVE nested knobs already established.
+  { id: "delay", control: "MIX", name: "Delay", defaultNormalised: 0 },
   // Bipolar (live-testing follow-up round: MONO<->STEREO redesign, see
   // docs/DSP_IMAGE.md's "Bipolar redesign" section) - -100%..+100%, not
   // the old plain 0..100%, so CENTER (real 0, the module's own identity
@@ -218,6 +226,134 @@ function initVerbDriveKnob() {
   });
 }
 
+// DELAY's nested FEEDBACK knob (added 2026-09-14 - see docs/DSP_DELAY.md) -
+// same concentric second-control pattern PAN's RATE / VERB's DRIVE knobs
+// already established. 0..95% range (not 0..100% - matches
+// ParameterLayout.cpp's own makePercentParameter(..., 95.0f) call), so the
+// knob's own default (30%) sits at 30/95 of its travel, not 30/100 -
+// getSliderState's own normalised value already accounts for this
+// (SliderState reads the real APVTS range from the backend), the caller
+// just needs to pass the matching *normalised* default here.
+const DELAY_FEEDBACK_DEFAULT_NORMALISED = 30 / 95;
+
+function initDelayFeedbackKnob() {
+  const section = document.querySelector('.module[data-param="delay"]');
+  if (!section) return;
+
+  const knobElement = section.querySelector(".knob--inner");
+  const valueElement = section.querySelector(".knob__value--inner");
+  if (!knobElement) return;
+
+  new ParameterKnob({
+    element: knobElement,
+    sliderState: getSliderState("delayFeedback"),
+    ariaLabel: "Delay Feedback",
+    valueElement,
+    defaultNormalised: DELAY_FEEDBACK_DEFAULT_NORMALISED,
+  });
+}
+
+// MONO/STEREO - a real button in the aux row, right next to PING PONG
+// (moved out of the knob face - a real bug found via live testing: a
+// plain button nested inside .knob bubbled its pointerdown up to the
+// knob's own drag handler, since only nested KNOBS call stopPropagation()
+// there, silently hijacking the outer knob's rotation on every click).
+// Bound to the new delayStereo boolean parameter via JUCE's
+// WebToggleButtonRelay (getToggleState) - a genuinely different bridge
+// mechanism from every other module's WebSliderRelay-based knob, since
+// this is a real on/off parameter, not a continuous value. Per the
+// product brief's own explicit conflict rule: turning STEREO off (back to
+// MONO) while PING PONG is on must also turn PING PONG off, since "MONO +
+// PING PONG ON" is not a representable combination - enforced here, on the
+// message thread via a second setValue() call, never by mutating anything
+// from the audio thread (see DelayProcessor.cpp's own effective-mode
+// derivation for the complementary DSP-side safety net).
+function initDelayStereoToggle() {
+  const button = document.querySelector('[data-role="delay-stereo"]');
+  if (!button) return;
+
+  const stereoState = getToggleState("delayStereo");
+  const pingPongState = getToggleState("delayPingPong");
+
+  const render = () => {
+    const isStereo = stereoState.getValue();
+    button.textContent = isStereo ? "STEREO" : "MONO";
+    button.classList.toggle("is-active", isStereo);
+    button.setAttribute("aria-pressed", String(isStereo));
+  };
+
+  button.addEventListener("click", () => {
+    const goingToMono = stereoState.getValue();
+    stereoState.setValue(! goingToMono);
+    if (goingToMono && pingPongState.getValue())
+      pingPongState.setValue(false);
+  });
+
+  stereoState.valueChangedEvent.addListener(render);
+  render();
+}
+
+// PING PONG (added 2026-09-14) - a real on/off parameter (delayPingPong),
+// same WebToggleButtonRelay bridge as MONO/STEREO above. Turning it ON also
+// turns STEREO on (Ping Pong cannot run in actual Mono) - the complementary
+// half of the same conflict rule initDelayStereoToggle() enforces.
+function initDelayPingPong() {
+  const button = document.querySelector('[data-role="delay-pingpong"]');
+  if (!button) return;
+
+  const pingPongState = getToggleState("delayPingPong");
+  const stereoState = getToggleState("delayStereo");
+
+  const render = () => {
+    const isOn = pingPongState.getValue();
+    button.classList.toggle("is-active", isOn);
+    button.setAttribute("aria-pressed", String(isOn));
+  };
+
+  button.addEventListener("click", () => {
+    const turningOn = ! pingPongState.getValue();
+    pingPongState.setValue(turningOn);
+    if (turningOn && ! stereoState.getValue())
+      stereoState.setValue(true);
+  });
+
+  pingPongState.valueChangedEvent.addListener(render);
+  render();
+}
+
+// DIVISION (added 2026-09-14) - a genuine AudioParameterChoice (5 fixed
+// musical note divisions, never a free millisecond value - see
+// DelayCurves.h's delayDivisions table, which this label list is a
+// presentation-only duplicate of, same reasoning as PAN_RATE_DIVISIONS
+// above), bridged via JUCE's WebComboBoxRelay (getComboBoxState).
+const DELAY_DIVISION_LABELS = ["1/4", "1/8", "1/8D", "1/8T", "1/16"];
+
+function initDelayDivision() {
+  const group = document.querySelector('[data-role="delay-division"]');
+  if (!group) return;
+
+  const buttons = Array.from(group.querySelectorAll(".delay-division__btn"));
+  const divisionState = getComboBoxState("delayDivision");
+
+  const render = () => {
+    const index = divisionState.getChoiceIndex();
+    buttons.forEach((btn) => {
+      const isActive = Number(btn.dataset.division) === index;
+      btn.classList.toggle("is-active", isActive);
+      btn.setAttribute("aria-pressed", String(isActive));
+    });
+  };
+
+  buttons.forEach((btn) => {
+    btn.addEventListener("click", () => {
+      divisionState.setChoiceIndex(Number(btn.dataset.division));
+    });
+  });
+
+  divisionState.valueChangedEvent.addListener(render);
+  render();
+}
+
 // Currently hidden (see index.html's own comment on .module__aux--imager)
 // - `imager` went bipolar this round (live-testing follow-up, see
 // docs/DSP_IMAGE.md's "Bipolar redesign" section) but the pad's own Y-axis
@@ -264,6 +400,10 @@ function preventButtonFocusStealing() {
 MODULES.forEach(initModule);
 initPanRateKnob();
 initVerbDriveKnob();
+initDelayFeedbackKnob();
+initDelayStereoToggle();
+initDelayPingPong();
+initDelayDivision();
 initImageField();
 initMeters();
 initModulePower();

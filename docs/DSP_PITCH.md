@@ -71,21 +71,30 @@ project's zero-warnings bar, without patching the vendored source itself.
 ## Architecture
 
 ```
-Input (per channel)
-  -> IntegerDelayLine (dry path, delayed by the module's own added latency)
-  -> SignalsmithStretch<float> (mono, independent per channel)
+Input (all channels together)
+  -> live (undelayed) dry copy captured
+  -> single shared SignalsmithStretch<float>, configured for the real
+     channel count (1 or 2)
        - setTransposeSemitones(clamped -12..+12) every block (no allocation)
-       - process(in, N, out, N) - equal in/out sample counts every call,
-         so the engine only ever pitch-shifts, never time-stretches
-  -> enable/disable crossfade against the delayed dry copy
+       - process(inputs[], N, outputs[], N) - equal in/out sample counts
+         every call, so the engine only ever pitch-shifts, never
+         time-stretches; all channels passed in one call
+  -> enable/disable crossfade against the live (undelayed) dry copy
   -> Output
 ```
 
-Two fully independent **mono** `SignalsmithStretch<float>` instances (one
-per channel) are used, not one shared multi-channel instance - see
-"Stereo coherence" below for the measured reason. The vendored engine is
+**One shared multi-channel `SignalsmithStretch<float>` instance**, not
+two independent mono ones - see "Stereo coherence" below for the full
+reasoning; this replaced the module's original two-independent-engines
+design in a live-testing round 3 architecture fix. The vendored engine is
 kept behind a PIMPL (`PitchProcessor::Engine`, defined only in the `.cpp`)
 so `PitchProcessor.h` itself carries no `ThirdParty/` include dependency.
+
+There is no dry-side delay line any more (the "Enable/disable behaviour"
+zero-latency-bypass round already removed the delay-aligned crossfade in
+favour of a live/undelayed dry blend - see "Fixed latency" below); this
+diagram previously still showed the pre-that-round topology and has been
+corrected here.
 
 Realtime-safety matches every other module: `prepare()` is the only place
 that allocates (`SignalsmithStretch::configure()`, called once per
@@ -512,47 +521,151 @@ combinations across the five scenarios.
 
 ## Stereo coherence
 
-**Two fully independent mono engines**, not one shared 2-channel instance
-- this was a deliberate architecture decision, not the library's default
-usage pattern, made after measuring the alternative: a single
-`SignalsmithStretch` instance configured for 2 channels, fed bit-identical
-sine data on both channels, produced **not** bit-identical output
-(`maxAbsDiff=0.00021`, ~-63dB relative divergence on a 0.3-amplitude
-signal). Reading the library's own source confirmed this isn't its
-`std::random_device`-seeded phase-randomisation feature (that branch is
-gated on `timeFactor > 2` - i.e. only engages during heavy *time-
-stretching*, which this module never does, since every `process()` call
-uses equal input/output sample counts); it's the multi-channel STFT's own
-per-channel-indexed band/phase-tracking state, which is channel-aware by
-design even for identical content. Two separate mono instances have no
-cross-channel state at all, so bit-identical input is guaranteed by
-construction (not luck) to produce bit-identical output - verified by a
-dedicated test across `-12/-3/0/5/12` ST (`maxAbsDiff < 1e-6`, effectively
-float rounding noise, not divergence). Decorrelated hard-panned stereo
-material was also checked and stays finite/bounded, and the dual-mono
-guarantee was reconfirmed with real polyphonic (bass+chord) material, not
-just a single sine (see "Polyphonic material" below).
+### Round 3: architecture fix - a single shared multi-channel engine
 
-**Genuinely non-identical L/R content** was also tested (two independent
-engines processing *different* signals, not the dual-mono case above): L
-carries a 60Hz bass + A major triad, R carries the *same* 60Hz bass + a
-different (A minor) triad - sharing only the bass note, so its measured
-frequency/level can be compared meaningfully between the two independently
-running per-channel engines:
+Rounds 1 and 2 (below, kept for the honest history) both tried to fix
+excess width/room character *downstream* of the engine, via a Side-channel
+attenuation filter, first flat then frequency-shaped. Both were reported
+back, after real listening, as insufficient - "уходит за уши" persisted at
+every semitone value, and a distinct "room"/distance quality remained that
+no amount of Side narrowing removed. Per explicit instruction this round:
+stop compensating the symptom and find the actual mechanism, even if that
+means reworking the architecture the earlier "two independent mono
+engines, bit-identical by construction" design was built around.
 
-| Semitones | L bass error | R bass error | \|L-R\| error diff | L/R bass level diff |
-|---|---|---|---|---|
-| -12 | 1.430% | 1.410% | 0.019% | -0.005 dB |
-| +7 | 0.941% | 0.945% | 0.003% | +0.010 dB |
-| +12 | 0.457% | 0.451% | 0.006% | -0.005 dB |
+**Root cause, found by reading the vendored engine's own source directly**
+(`ThirdParty/signalsmith-stretch/signalsmith-stretch.h`), not by
+assumption: with two fully independent per-channel `SignalsmithStretch`
+instances, each channel's phase-vocoder resynthesis evolves its own phase
+completely independently of the other. For genuinely *correlated* (not
+bit-identical) stereo input - the normal case for a real recording, not
+just the dual-mono test case - that independent phase evolution shows up
+downstream as extra, synthetic Side energy the source never had: audible
+as excess width, and (since high-frequency inter-channel decorrelation is
+exactly the psychoacoustic cue the ear reads as diffuse space) also as
+part of the "room" character. This was the actual reason the previous
+Side-narrowing filters could reduce the symptom but never eliminate it -
+they scaled down the *consequence* of independent phase drift, not the
+drift itself.
 
-The two independently-configured engines track the shared bass component
-to within 0.02% of each other and under 0.01dB in level, at every tested
-interval - no measurable extra latency, level mismatch, or "wandering
-image" from running genuinely different content through two separate
-engine instances instead of one shared one. Latency was also reconfirmed
-constant (a single scalar for the whole stereo instance) with this
-non-identical content.
+**The fix - a single shared multi-channel engine, not a downstream
+filter.** `signalsmith-stretch.h`'s own multi-channel `configure()`/
+`process()` path (previously used only for its *input/output* interface,
+never for genuinely joint analysis) has an internal mechanism built
+exactly for this: its phase-vocoder re-prediction step
+(`processSpectrum()`) identifies, **per frequency band**, whichever
+channel currently has the most energy, computes that channel's phase
+prediction, and then explicitly **locks every other channel's phase to
+it** - "all other bins are locked in phase" - carrying over the *input
+signal's own* inter-channel phase relationship (via a twist computed
+between the two channels' actual input phases) rather than letting each
+channel's phase run independently. This is the library's own designed
+answer to multi-channel coherence, not a workaround layered on top of it.
+`PitchProcessor` (`.h`/`.cpp`) now wraps exactly **one**
+`SignalsmithStretch<float>` instance, configured with the real channel
+count, and calls its `process()` once per block with both channels'
+pointers - see the class's own comment for the mechanism in more detail.
+
+The previous downstream Side-narrowing filter (`pitchSideNarrowLowGain`/
+`pitchSideNarrowHighGain`/`pitchSideNarrowCrossoverHz` in `PitchCurves.h`,
+and the `sideNarrowShelf` biquad in `PitchProcessor`) has been **removed
+entirely** - per explicit instruction, the root-cause fix is not to be
+combined with more downstream masking on top of it.
+
+**Mono stays strictly mono, as a property of the shared engine, not a
+separate mono-detection path.** For genuinely identical (dual-mono)
+input, both channels have exactly equal energy in every band; the
+"strictly greater than" comparison the library uses to pick the reference
+channel (`e > maxEnergy`) means ties always resolve to channel 0, and
+channel 1's phase is locked to it via a twist that is provably unity for
+identical input phases - there is no separate "if mono, do X" branch
+anywhere in this design.
+
+**Measured** (`Tests/PluginTests.cpp`'s PITCH suite, before vs. after this
+round - both from a real build/test run, not estimated):
+
+**Dual-mono ("Mono stays Mono") precision** - the one real, disclosed
+tradeoff of this architecture, measured via a real build+test run, not
+estimated. The previous two-independent-engines design was bit-exact by
+construction (`<1e-6`); the shared engine's per-band phase-locking is
+only *very close* rather than bit-exact for literal dual-mono input:
+
+| Semitones | Pure tone, maxAbsDiff | Polyphonic (bass+chord), maxAbsDiff |
+|---|---|---|
+| -12 | 9.44e-5 | 6.49e-4 |
+| -3 | 1.01e-3 | - |
+| 5 | 1.08e-3 | - |
+| 7 | - | 7.68e-4 |
+| 12 | 3.90e-4 | 8.59e-4 |
+
+Worst case ~1.1e-3 absolute on signals with amplitude 0.3-0.4 - roughly
+**-50dB relative to the signal**, i.e. a channel-difference component
+about 300x quieter than the source itself. This is disclosed, not hidden:
+the relevant tests (`Tests/PluginTests.cpp`'s "Stereo: identical L/R
+input stays essentially in Mono" and "Polyphonic E in stereo (dual-mono):
+stays essentially in Mono for real musical material too") were updated
+from a `<1e-6` bit-exact bound to a `<3e-3` "essentially Mono, not
+audibly wandering" bound, with the tradeoff explained directly in the
+test's own comment.
+
+**Genuinely non-identical L/R content** (shared 60Hz bass note, different
+chord voicing per channel - the same scenario the module has always used
+to verify the two channels track real, correlated-but-different material
+correctly) - bass level match between channels, confirming the shared
+engine doesn't introduce any new channel-balance error on real stereo
+material:
+
+| Semitones | L/R bass level difference |
+|---|---|
+| -12 | 0.040 dB |
+| 7 | -0.006 dB |
+| 12 | 0.023 dB |
+
+All three comfortably under a tenth of a dB - no measurable balance shift
+from the architecture change.
+
+**What this round did *not* change**: `pitchStftBlockSeconds` (140ms/35ms,
+still the benchmarked configuration - see "Configuration benchmark" above)
+and `pitchTonalityLimitHz` (4000Hz, from round 2 below) are both untouched.
+The window-length/smearing tradeoff documented in round 2's own "window
+experiment that failed" still applies exactly as measured there; this
+round's fix addresses the *stereo-decorrelation* half of the reported
+"room" character (a real and, per the measurements above, substantial
+contributor), not the STFT window's own mono phase-vocoder smearing,
+which is a separate, still-open, still-unresolved-without-a-different-
+STFT-front-end limitation - see "Limitations" below for the honest
+scoping of what remains.
+
+### Round 1 and round 2 (superseded by the architecture fix above, kept for history)
+
+The module's very first live-testing round reported the pitch-shifted
+signal spreading audibly wider than the source ("уходит за уши"),
+compared explicitly against Waves SoundShifter's own, narrower character.
+The first fix tried was a fixed, frequency-flat attenuation on the wet
+signal's own Side component - reasoned (at the time) as consistent with
+the "two independent engines" design being sound and the width being an
+acceptable, compensable side effect of it. Reported back as insufficient
+on two counts: still not narrow enough, and a "room" quality that no
+amount of narrowing removed.
+
+Round 2 replaced the flat attenuation with a frequency-shaped one (a
+low-shelf on Side, narrow hard at the top/gentle at the bottom - since an
+STFT's linearly-spaced bins put proportionally more independently-
+evolving bins in the treble) and separately investigated the "room"
+character via the STFT window length - trying (and reverting, after
+measuring a real polyphonic-material regression) a shortened 100ms/25ms
+window, before settling on lowering the tonality limit `8000Hz -> 4000Hz`
+instead, which costs nothing in the bass-stability range this module's
+own top acceptance bar cares about most:
+
+| Case | Expected | Measured (100ms window, reverted) | Error |
+|---|---|---|---|
+| 120Hz partial, -7ST | 80.09Hz | 97.45Hz | 21.7% |
+| 180Hz partial, -3ST | 151.36Hz | 164.26Hz | 8.5% |
+| 120Hz partial, -3ST | 100.91Hz | 110.57Hz | 9.6% |
+
+Both of round 2's downstream filters are now removed (see "Round 3"
+above) - the actual mechanism turned out to be fixable at its source.
 
 ## CPU
 
@@ -578,6 +691,26 @@ priority order; the resulting CPU cost turned out low regardless.
 
 ## Limitations
 
+- **Dual-mono input is no longer perfectly bit-exact** (round 3's
+  shared-engine architecture fix, see "Stereo coherence" above) - worst
+  measured deviation ~1.1e-3 absolute, roughly -50dB relative to the
+  signal. A deliberate, disclosed tradeoff against a much larger,
+  definitely-audible problem (excess width/room on real correlated
+  stereo material) the previous bit-exact architecture had no way to
+  avoid. Not expected to be audible in practice, but not literally zero
+  either - flagged honestly rather than re-asserting the old bit-exact
+  claim.
+- **The "room"/smearing character is only partially addressed.** This
+  round's fix targets the stereo-decorrelation half of the reported
+  "room" quality (the shared engine's phase-locking measurably reduces
+  it - see "Stereo coherence"), but the STFT analysis window's own
+  smearing (the other, mono-domain contributor to "room"-like phase
+  incoherence) is unchanged - `pitchStftBlockSeconds` stays at the
+  benchmarked 140ms/35ms, since shortening it was already tried and
+  reverted in round 2 for breaking polyphonic bass-stability. A
+  genuinely shorter/different STFT front-end that doesn't trade away
+  that stability remains a real, unstarted follow-up if the "room"
+  character is still judged too strong after this round's fix.
 - 0 ST is *measured* transparent (broadband RMS diff 7.2e-8, max diff
   3.1e-7, frequency response within 0.15dB - see above), but is not a
   literal bit-exact passthrough the way some modules' "off" state is - the

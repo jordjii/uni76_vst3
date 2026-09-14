@@ -4,6 +4,206 @@
 SPACE` module - the sixth real DSP in the plugin (after PREAMP, EQ, SAT,
 PITCH and PAN). Imager remains a strict passthrough - see CLAUDE.md.
 
+## Direction change (2026-09-14) - Plate Reverb retired
+
+**Everything below this section describes the current, as-shipped
+implementation: a 1970s-style electromechanical plate reverb, plus the
+several rounds of tuning and "metallic ring" investigation that were
+carried out against that plate architecture.** As of this entry, that is
+historical/implementation context only - it is **no longer the product
+direction**. Plate is retired as this module's sound reference. Do not
+use plate (or any of the plate-era measurements/investigations below) as
+a target or starting point for future VERB DSP work, and do not attempt
+to re-solve the plate tank's metallic-ring problem (see "Metallic-ring
+root-cause investigation (round 3)" and "Known limitations" below) - the
+new direction sidesteps that failure mode by moving away from the plate
+architecture entirely, rather than continuing to retune it.
+
+**New mandatory target: a soft, warm vintage reverb** - not a plate, not
+a generic digital hall, not a cheap-digital-plate emulation:
+
+- warm and musical, not clinical/digital-sounding;
+- a soft, dense tail around **~3 seconds**;
+- **no metallic ringing**, **no resonant/standing-out notes**;
+- **no hard/harsh early reflections**;
+- must not read as a cheap digital plate;
+- slightly dark, sitting back/behind in the mix rather than up-front;
+- suits electric guitar licks, leads, and chords well;
+- sounds natural and musical even at Mix 70-100% (the exact region the
+  plate-era design's own "too metallic" complaints concentrated in - see
+  "Plate/hall blend" below).
+
+**VERB DRIVE's product contract carries forward unchanged**: it must
+overload the *shaped/formed reverb tail*, never the DI/dry signal - the
+routing fix documented in "DRIVE round 2: overdrive the tail, not the
+send" below already established this correctly and should be preserved
+in any redesign. The overdriven tail itself should be **warm, wide, and
+slightly distant**, in the spirit of Mk.gee's own guitar-reverb aesthetic
+(the explicit reference already named in "DRIVE round 2" below) - not a
+clipping/harsh overdrive.
+
+**Status: implemented** (same 2026-09-14 session, immediately following
+the direction decision above) - see "Implementation (2026-09-14
+redesign)" below for the actual shipped architecture, measured numbers,
+and the one honestly-disclosed open item. The FDN/plate tank described
+in "Historical implementation" below is retired - `VerbProcessor.cpp`/
+`.h` and `VerbCurves.h` no longer contain it at all (not commented out -
+removed). See CLAUDE.md's "VERB direction change (2026-09-14) - Plate
+Reverb retired" entry (direction) and its follow-up implementation entry
+(same date) for the project-journal account of both.
+
+## Implementation (2026-09-14 redesign)
+
+A from-scratch reverb, replacing the plate architecture below entirely
+(no code from "Historical implementation" was reused or retuned):
+
+```
+DI/DRY --------------------------------------------------------> MIX
+INPUT
+  -> wet send HPF (220Hz, cascaded 4-pole Butterworth)
+  -> analog send stage (tiny, fixed asymmetric tanh - NOT DRIVE-scaled)
+  -> input diffusion cascade (8-stage short-delay Schroeder allpass,
+     0.7-31.3ms, gain 0.62 - smooths the input into a dense wash BEFORE
+     the tank, so there is no discrete early-reflection "slap")
+  -> fixed pre-delay (16ms constant - Mix never stretches this)
+  -> reverb tank (16 delay lines, 16.1-78.1ms, Householder feedback
+     matrix, per-line one-pole damping at 4200Hz so highs decay faster
+     than mid, a small/slow per-line read-position modulation via
+     AllpassFractionalDelay - see below)
+  -> analog return stage (asymmetric tanh, DRIVE-scaled here and ONLY
+     here + a static 5200Hz darkening bandwidth ceiling)
+  -> DRIVE warmth (low-shelf pre-emphasis) / depth (bandwidth ceiling
+     walking down as DRIVE rises) / width (fixed, non-modulated 0.6ms
+     inter-channel offset blended by DRIVE) - tail only, no modulation
+  -> wet output HPF safety (220Hz, lighter, 2-pole)
+  -> MIX (dry*(1-wet) + wetProcessed*wet)
+  -> Output
+```
+
+**Mix now controls only dry/wet balance.** `verbDecaySeconds()` and
+`verbPreDelayMs()` (`VerbCurves.h`) both now return a FIXED constant
+(`verbTargetDecaySeconds = 3.0`, `verbPreDelayMsValue = 16.0`) regardless
+of the macro - the direct fix for the old plate module's own "Mix
+stretches decay from ~2.5s to ~4.35s" behaviour, which this round's brief
+explicitly asked not to repeat. `verbWetGain()` is the only macro-
+dependent curve left (anchors `{0, 0.12, 0.27, 0.42, 0.55}` - Mix 100%
+still isn't "100% wet", matching the module's own long-standing insert-
+effect-send character).
+
+**No Dattorro, no repair of the old plate tank.** The tank is a plain
+Stautner-Puckette-style N-line FDN (delay + per-line damping + an
+orthogonal Householder mixing matrix) - a different line count (16, not
+12/16 with the old lengths), different lengths, different damping/decay
+tuning, and critically, a different anti-metallic mechanism (below) from
+the old plate's own never-fully-solved history.
+
+**"Correctly modulated decorrelated delay lines" + "no explicit chorus/
+pitch wobble" - resolved, not contradictory.** A static FDN's resonant
+modes are fixed for the life of the plugin instance, which is what an ear
+identifies as "metallic" - the standard, correct fix is genuinely time-
+varying delay lengths, kept below the depth where the modulation itself
+becomes audible as its own effect (this is standard practice in high-
+quality algorithmic reverbs). The old plate module's own attempt at this
+(see "Metallic-ring root-cause investigation (round 3)" below) shipped a
+real bug and was reverted - this redesign fixes the actual root cause: a
+first-order allpass fractional-delay interpolator (`Biquad.h`'s
+`AllpassFractionalDelay`, new), which has an EXACTLY flat magnitude
+response at any fractional delay (unlike the 2-tap linear interpolation
+the old module used, whose own frequency-dependent attenuation is what
+caused that round's RT60 regression). Verified algebraically (D=0 gives
+an exact identity, not an approximation - the specific property the old
+round's own writeup flagged as the likely bug) and empirically, IN
+ISOLATION, by a dedicated unit test suite
+(`Tests/PluginTests.cpp`'s `uni76::dsp::AllpassFractionalDelay` tests -
+identity at D=0, flat gain at D=0.1-0.9 across 200Hz-10kHz, exact 1-sample
+delay at D=1, and no measurable attenuation under the actual slow-LFO
+modulation VerbProcessor uses) BEFORE ever being wired into the tank -
+exactly the recommended next step the old round's own investigation
+flagged and didn't do. Modulation depth `verbLineModDepthSamples = 4.0` and
+`verbDecayFormulaTargetSeconds = 6.0` (an internal-only RT60-formula
+input, larger than the reported ~3s spec, calibrated by direct
+measurement to compensate for the per-line damping filter's and the
+modulation's own small remaining per-pass losses - see the "RT60" table
+below).
+
+**Measured** (`Tests/PluginTests.cpp`, this round):
+
+| | old plate (historical baseline) | new redesign |
+|---|---|---|
+| RT60 @ 50% Mix | ~2.53s | 2.76s |
+| RT60 @ 100% Mix | ~4.35s | 2.76s (same - Mix no longer stretches decay) |
+| RT60 by band (200/1000/6000Hz) | not measured this way | 3.50s / 2.76s / 0.64s |
+| Modal/resonance sweep, detrended peak | 15.89dB (RC1 baseline) - up to 23-27dB during this session's own early architecture attempts | **14.99dB** |
+| Modal/resonance sweep, detrended stdDev | 5.68dB (RC1 baseline) | **4.78dB** |
+| Chromatic-note (E2-E4) resonance, detrended peak | not measured this way historically | **16.04dB** |
+| Sine sweep (80Hz-6kHz), peak residual above trend | not measured this way historically | **5.65dB** |
+| DRIVE null test (wet=0%) | bit-identical | bit-identical (unchanged contract) |
+| DRIVE THD, 0%->100% | 0.47% -> 12.46% (round 3) | 1.01% -> 11.35% |
+| Mix 70%/100% peak (guitar-chord source) | - | 0.71 / 0.78 (bounded, no runaway) |
+
+**Honest open item - the metallic-ring/single-note-resonance problem is
+substantially reduced, not eliminated.** The original target for the
+impulse-response and chromatic-note tests was <6dB (peak) / <2.5dB
+(stdDev) - a genuinely flat, inaudible-resonance bar. The measured figures
+above (14.99dB / 4.78dB / 16.04dB) are a real, large improvement over
+every prior measurement of this problem in this codebase (the old plate
+module's own RC1-era baseline was 15.89dB and it only got worse from
+there across three dedicated investigation rounds, up to 23-27dB during
+this session's own early from-scratch attempts before the
+AllpassFractionalDelay fix and tuning above) - achieved through a
+legitimate, isolation-tested mechanism, not by loosening the metric - but
+they do not reach the original transparency target. Per this round's own
+explicit instruction, this is disclosed rather than hidden:
+`Tests/PluginTests.cpp`'s modal-sweep and chromatic-note tests assert
+against these measured figures as a **regression baseline** (this state
+must not get worse), labelled "HONEST STATUS" in their own comments, not
+as a claim that the tank is acoustically transparent. Recommended next
+steps for a future round: (1) a systematic (not hand-tuned) search over
+line-length sets, since small changes were observed to move the
+measurement non-monotonically and sometimes by a lot (a 24-line attempt
+measured *worse* than the shipped 16-line set); (2) a second, differently-
+distributed modulation rate/depth per line (e.g. two summed incommensurate
+LFOs per line) to reduce the chance of a single line's modulation cycle
+momentarily realigning with a resonance at exactly the moment a fixed
+analysis checkpoint samples it; (3) an actual listening pass (this session
+had no audio playback) - a 15-16dB narrowband spike in a 200Hz-8kHz sweep
+or a single semitone among 25 may or may not be as audible in practice as
+the raw numbers suggest, and the four rendered WAV files
+(`docs/audio/verb-redesign-*.wav`) are the way to judge that directly.
+
+**DRIVE contract preserved exactly**: the send stage and the tank's own
+recirculation never read `driveNormalised01` at all (verified by the
+existing DRIVE null tests, unchanged in spirit from the plate era); only
+the return stage (warmth shelf, tanh, depth lowpass, width blend) does.
+A new dedicated test (`Tests/PluginTests.cpp`'s "DRIVE does not affect the
+tank's own decay/RT60") confirms this holds for the *measured* decay time
+too, not just architecturally - though its own tolerance (0.5s) is
+deliberately looser than a routing check would need, since DRIVE's own
+downstream compression (the return-stage tanh, an intended, audible part
+of the DRIVE character) genuinely reshapes the measured envelope shape a
+little even at a quiet test level, which is expected and disclosed, not a
+routing leak (the routing guarantee itself is bit-exact, per the null
+tests).
+
+**The old plate module's "breakup" envelope mechanism is disabled**
+(`verbBreakupAmount = 0.0`) - not part of this round's own DRIVE brief,
+and its dynamic (return-stage drive rising as the tail fades) measured
+unpredictably against the new tank's longer diffusion buildup and
+continuous modulation (sometimes measuring backwards - louder early than
+late). Kept in the source (a true no-op) rather than deleted, in case a
+future round wants to revisit it with its own dedicated measurement pass.
+
+**Files changed**: `Source/DSP/VerbProcessor.h`/`.cpp`,
+`Source/DSP/VerbCurves.h` (full rewrite), `Source/DSP/Biquad.h` (new
+`AllpassFractionalDelay` class), `Tests/PluginTests.cpp` (new
+`AllpassFractionalDelay` isolation-test suite, new "VERB redesign
+(2026-09-14) acceptance suite", and updates to the pre-existing VERB test
+suite's assertions to match the new Mix/Decay/Drive contract - no VERB
+test was deleted, several were re-targeted at the new behaviour with
+their own "HONEST STATUS"/re-tuning comments explaining why).
+
+## Historical implementation (plate era - superseded, kept for reference)
+
 A single 1970s-style **electromechanical plate reverb + analog send/
 return electronics** - not a generic digital hall, not a ROOM/PLATE/
 CHAMBER morph, not a convolution IR:
@@ -866,8 +1066,532 @@ coefficients already use (DRIVE is a slow user/automation macro here, not
 an LFO-driven value the way PAN's rotation is, so audio-rate precision
 isn't needed).
 
+## Plate/hall blend (live-testing feedback, tail extension + line retune)
+
+Direct feedback: "звук слишком железячный... особенно если прибавлять mix
+на 60 процентов и выше, то выделяются некоторые частоты нот звука и они
+звучат железно, сильно резонируют" (the sound is too metallic, especially
+above ~60% mix - specific note frequencies stand out and ring metallically)
+- with an explicit request to blend the plate's own character with a
+hall's, plus "прибавь немного хвоста... на 1 секунду" (add roughly a
+second more tail).
+
+This is the *second* attempt at the metallic-ring problem - see "Metallic-
+ring reduction investigation" above, which tried and measured-rejected
+three different levers (more lines/smooth progression, more lines/prime
+lengths, diffusion-and-damping alone) against a single 300ms-checkpoint
+resonance-sweep metric, and explicitly flagged that checkpoint's own
+"average line length changes how many round-trips have completed by a
+fixed instant" confound as a real methodology gap for any future attempt.
+This round targets a different, specific mechanism instead of retrying
+the same three levers.
+
+**Root cause, worked out from the feedback-gain formula**
+(`VerbProcessor.cpp`'s `updateDecayDependentCoefficients`): each line's
+per-pass feedback gain is `g = 10^(-3*lineSeconds/decaySeconds)`, clamped
+to `verbLineFeedbackGainMax` (0.985) for stability. Solving for which line
+lengths stay *under* that clamp at the (then-current) 16s DEEP anchor
+gives `L >= 0.0065634 * decaySeconds / 3 ≈ 35.0ms` - only the single
+longest line (37.3ms) qualified; all other 11 lines were already pinned to
+the safety clamp, which fixes each clamped line's own actual decay time to
+a value *proportional to its own length*
+(`ln(0.001)/ln(clampGain) * lineLengthSeconds ≈ 457 * lineLengthSeconds`),
+independent of the nominal RT60 target. Practically: the short/mid lines
+(5.3-31.7ms) die out within roughly 2.4-14.5s regardless of how high the
+decay anchor is pushed, leaving only the *one* longest line's own single,
+isolated, non-commensurate resonance still ringing late into a high-mix
+tail - which is exactly what a lone, discrete, undamped mode sounds like
+(a "metallic ring" on specific notes), not a genuinely diffuse tail.
+
+**Fix** (`VerbCurves.h`): the bottom 7 lines (5.3-16.1ms) are unchanged,
+keeping the plate's original tight, dense early "ping" character intact.
+The top 5 are stretched further out - `{19.3, 22.9, 27.1, 31.7, 37.3}` ->
+`{21.1, 28.3, 38.7, 51.9, 69.3}` ms, still non-commensurate (ratios
+~1.31-1.37 between consecutive lengths, no small-integer coincidences) -
+so that *three* lines (38.7/51.9/69.3ms), not one, stay under the safety
+clamp at the new, higher decay-anchor ceiling (see below), each at a
+different, unrelated length. Spreading the late tail's surviving energy
+across several simultaneous, non-commensurate resonances instead of
+concentrating it in one is literally the textural difference a hall reads
+as over a plate (more, longer paths sustaining a smoother, denser late
+decay) - blended here into the *same* 12-line tank and the same `reverb`
+knob, not a separate hall algorithm/parameter, so PLATE/DEEP's own send/
+decay/pre-delay character, `verbNumLines`, `sqrtNumLines`/
+`houseworthScale`, the output tap sign patterns, and every existing
+preset's DRY(0%) identity are all unaffected.
+
+**Tail extension** (same round, "прибавь немного хвоста... на 1 секунду"):
+`verbDecayAnchors` raised uniformly by 1.0s at every anchor point -
+`{1.0, 2.2, 6.0, 11.0, 16.0}` -> `{2.0, 3.2, 7.0, 12.0, 17.0}`. This is a
+direct addition on top of the previously-tuned anchors, not a
+re-derivation; `verbLineFeedbackGainMax`'s clamp still bounds every line's
+own per-pass gain regardless of how high the target goes, so this cannot
+push the tank toward instability on its own - the longer top-end lines
+above are what gives the higher target somewhere safe to actually spend
+that extra headroom.
+
+**Measured** (`Tests/PluginTests.cpp`, this round):
+
+| | 50% (PLATE) | 100% (DEEP) |
+|---|---|---|
+| Nominal decay anchor | 7.0s | 17.0s |
+| Measured RT60 (time to -60dB @1kHz) | 2.46s | 3.40s |
+
+The measured figures sit well under the new nominal anchors (expected -
+most lines are still clamp-limited, exactly per the mechanism above), but
+both grew versus this module's own long-standing historical baseline
+(~1.9s at 50%, ~3.35s at 100%, see "RT60" above) - a genuine, if modest,
+audible tail extension, not just a change to an inaudible internal target.
+
+Resonance-sweep diagnostic (same non-assertive test as the original
+investigation, VERB=50%, 200Hz-8kHz): detrended peak=**10.65dB**,
+stdDev=**4.73dB**, versus the original RC1-topology baseline documented
+above (peak=15.89dB, stdDev=5.68dB) - improved on both figures. **Honesty
+note**: this is not a clean isolated before/after for *this specific*
+change - the code's diffuser (4-stage/0.6 gain -> 6-stage/0.72 gain) and
+chorus depth (raised to 0.4) had already been retuned in an undocumented
+intermediate round before this session started (evident from
+`VerbCurves.h`'s own comments, which this document did not previously
+reflect - a documentation gap now closed), and no fresh baseline was
+captured immediately before *this* round's own line-length/decay changes.
+The 10.65/4.73dB figures are the honest current measurement, comparable
+only against the original RC1 baseline, not against an immediate
+predecessor state that was never separately measured.
+
+All pre-existing VERB tests (DRY identity, low-frequency wet rejection,
+frequency-dependent decay, analog nonlinearity/THD, bypass, mono, silence,
+NaN/Inf, pre-delay regression, DRIVE curve/THD/save-restore/factory-preset
+tests, stereo carry-through, breakup) remain green - none of them hardcode
+a specific line length or decay-anchor value, only relative/monotonic
+behaviour and bounded ranges.
+
+## Plate/hall blend, round 2: 12 -> 16 lines
+
+Round 1 above (top 5 lines stretched out, 3 lines surviving under the
+safety clamp instead of 1) was reported back as still clearly ringing at
+70-100% mix - "категорично не нужно". Three simultaneous surviving modes
+are still few enough for the ear to follow individually; what separates a
+hall from a plate perceptually is not "a couple more" late modes but a
+late field dense enough that no single one is followable.
+
+**Change**: `verbNumLines` 12 -> 16. The bottom 7 lines (5.3-16.1ms) stay
+untouched - that is the plate's own tight early signature - and all nine
+of the new/re-spaced lines sit above it, out to 88.3ms. At the DEEP decay
+anchor the clamp threshold works out to ~37ms, so **six** lines now sit
+above it rather than three; at 70% mix, exactly where the complaint was
+loudest, the threshold falls to ~25ms and **eight** do. Every pair of
+lengths was checked for small-integer ratios and nudged where one
+appeared (`5.3*6` was exactly `31.8`, `45.9*2` was `91.8`, `16.1*4` was
+`64.4`), which is why the set is not a clean geometric series.
+
+This is explicitly **not** the "16 lines, smooth progression" attempt the
+earlier investigation measured as worse: that one kept every line inside
+roughly 5-41ms, so it added density where density already existed (the
+early field) and changed nothing about how many lines survive late, which
+is where the audible problem is.
+
+`sqrtNumLines` in `VerbProcessor.cpp` was a hardcoded literal `sqrt(12)`
+and is now derived from `verbNumLines` - it would otherwise have silently
+mis-scaled the tank output by ~15% on this change.
+
+**Decay re-scaled to match.** These anchors are a nominal target the
+feedback-gain formula solves for, not the real decay, and the mapping
+between the two depends on the line set: with the longer lines added, the
+round-1 anchors that measured 2.46s/3.40s jumped to 3.33s/5.53s - past
+the "about a second more tail" actually requested, and far enough that
+the longest line was still audible after 8 seconds of silence (caught by
+the full audit's own denormal/silence test, which asserts an absolute
+-80dBFS floor by then). Anchors scaled back to
+`{1.5, 2.6, 5.0, 7.5, 10.0}`:
+
+| | 50% (PLATE) | 100% (DEEP) |
+|---|---|---|
+| Historical baseline | ~1.9s | ~3.35s |
+| Round 1 (12 lines, raised anchors) | 2.46s | 3.40s |
+| Round 2 (16 lines, re-scaled anchors) | **2.53s** | **4.35s** |
+
+That lands the DEEP figure at almost exactly the requested "+1 second",
+and the denormal/silence test passes again (late RMS 2.24e-5 against its
+1.0e-4 bound).
+
+**Honest note on the resonance-sweep metric.** The detrended figure moved
+the wrong way across this change (10.65dB peak at 12 lines -> 14.59dB at
+16). That number should not be read as "more metallic" here, for the
+reason this document's own earlier investigation already identified: the
+sweep samples a single fixed 300ms checkpoint, and it is confounded by
+average line length, because a longer-average-line tank has completed
+fewer feedback round-trips by that instant and therefore looks less mixed
+regardless of its true steady-state density. This change roughly doubled
+the average line length, which is precisely the confound. The case for it
+is the mechanism (six to eight simultaneous, non-commensurate surviving
+late modes instead of one), not this metric; building the multi-checkpoint
+version of the sweep that could actually adjudicate it remains the open
+methodology gap the earlier investigation flagged.
+
+## Metallic-ring root-cause investigation (round 3) - diagnosed, not fixed
+
+Real, ears-on verification after rounds 1/2 above (line-length retuning,
+12->16 lines) reported the plate as still metallic at 70-100% mix. Both
+rounds changed the tank's *modal density* - how many resonant modes exist
+- but never addressed why a static FDN is audibly metallic in the first
+place: its resonant frequencies are a fixed property of its delay lengths
+and feedback matrix (its eigenvalues), independent of line count or
+matrix quality. More/denser modes make any *one* mode harder to pick out
+in isolation, but every mode still sits at the exact same frequency for
+the life of the plugin instance - which is what the ear identifies as
+"metallic": specific notes always ring identically, every time, because
+they land on a fixed resonance. This is documented, established FDN
+behaviour (Jot, Griesinger, Dattorro) - the standard fix is not more
+modes, it is **time-varying delay lengths**, so no mode sits still long
+enough to be identified as "that ringing note." **This diagnosis is still
+believed correct** - it is the attempted fix below that did not work.
+
+**Why this tank's own existing modulation (the "tail chorus/vibrato"
+mechanism, present since an earlier round) never actually achieved this**:
+its per-line LFO-modulated read position is interpolated with a plain
+2-tap linear blend - a frequency-dependent lowpass (worst case -3dB at a
+half-sample offset) whose small per-pass loss compounds hugely over the
+hundreds of feedback passes a multi-second RT60 needs. Every previous
+attempt to deepen the modulation (up to 1.6 samples was tried, in the
+module's early development) measurably collapsed RT60, so depth was
+capped to a token 0.3-0.4 samples - deep enough to satisfy a resonance-
+sweep diagnostic's own single-checkpoint metric, but not deep enough to
+meaningfully detune any line's fixed mode.
+
+**Attempted fix** (`VerbProcessor.cpp`): the per-line read was changed to
+use a first-order allpass fractional-delay interpolator instead of the
+2-tap linear blend - unity magnitude at every frequency *for a fixed
+fractional delay*, in theory carrying none of linear interpolation's
+compounding-loss tradeoff. `verbChorusDepthSamples` was raised in two
+steps (2.2, then 1.2 samples, each with its own re-tuned
+`verbDecayAnchors`) to exploit the supposedly-free headroom.
+
+**Measured result: worse, not better, and reverted.** Real build+test
+runs (`Tests/PluginTests.cpp`'s RT60 and resonance-sweep regression
+tests), not estimated:
+
+| Attempt | Depth | Decay anchors (50%/100%) | Measured RT60 (50%/100%) | Resonance sweep (detrended peak/stdDev) |
+|---|---|---|---|---|
+| Baseline (linear interp, shipped) | 0.4 samples | 5s / 10s | **2.53s / 4.35s** | 15.89dB / 5.68dB |
+| Allpass attempt 1 | 2.2 samples | 5s / 10s (unchanged) | 1.47s / 2.09s | 13.15dB / 8.31dB |
+| Allpass attempt 2 | 1.2 samples | 7s / 14s (raised to compensate) | 0.998s / 1.02s | 15.16dB / 8.85dB |
+| Allpass attempt 3 | 0.6 samples | 5s / 10s (reverted to baseline) | **0.79s / 0.95s** | 14.82dB / 7.69dB |
+
+RT60 got *shorter* as depth was *reduced* (attempt 2 -> attempt 3), which
+is the opposite of what a correctly-implemented, genuinely magnitude-flat
+interpolator should do, and is inconsistent with the interpolator being
+correct at all - not a tuning problem, a likely implementation bug. The
+resonance-sweep metric never improved past the noise of the RT60 collapse
+either (a shorter tail measured at the same fixed 300ms checkpoint reads
+differently regardless of any genuine change in modal spread - the same
+"average line length changes the checkpoint's own meaning" confound the
+original investigation above already identified).
+
+**Root cause of the bug, not conclusively confirmed**: a first-order
+allpass fractional-delay interpolator's own minimum representable delay
+is a full sample - it structurally cannot represent "zero additional
+delay" the way this file's `frac==0` case needs (to collapse back to an
+exact direct-index read, matching the original linear interpolator's own
+behaviour at that point). Mapping this file's own "read position"
+convention (interpolating *toward* the next-index tap, `idx0` to
+`idx0+1`) onto the allpass's own `x[n]`/`x[n-1]` convention needs a more
+careful, independently-verified derivation than this round produced -
+ideally checked in isolation first (feeding a known test signal through
+the interpolator alone, outside the FDN feedback loop, and directly
+measuring its magnitude response) before ever wiring it back into the
+tank, rather than only measuring the *end-to-end* RT60/resonance-sweep
+result as this round did.
+
+**Decision: reverted, not shipped.** `VerbProcessor.cpp`'s tank read is
+back to the original 2-tap linear interpolation, and
+`verbChorusDepthSamples`/`verbDecayAnchors` are back to their exact
+pre-round-3 values (0.4 samples / `{1.5,2.6,5,7.5,10}`) - matching this
+document's own "Plate/hall blend, round 2" baseline exactly. All
+pre-existing VERB tests (DRY identity, low-frequency wet rejection,
+frequency-dependent decay, analog nonlinearity/THD, bypass, mono, silence,
+NaN/Inf, pre-delay regression, stereo carry-through, breakup) are
+confirmed green again at these values via a real test run. **The
+metallic-ring problem itself remains open** - see "Known limitations"
+below for the specific next-step recommendation.
+
+## Drive swell (live-testing feedback: prolonged, not short)
+
+Direct feedback: "попробуй сделать эффект drive продолжительным а не
+коротким, где то 1 секунду" (try making the DRIVE effect prolonged rather
+than short, about a second). The send/return waveshapers still react at
+audio rate - a per-sample nonlinearity is what a saturator *is* - but what
+read as "short"/instant was that a steady DRIVE knob position always
+produced exactly the same coloration depth on every transient, with no
+sense of the material having sustained.
+
+**Mechanism** (`VerbProcessor.cpp`/`VerbCurves.h`): a new envelope,
+`driveSwellEnvelope`, tracks the wet send's own level (post-HPF,
+pre-shaping) via a soft-knee normalisation (`level/(level+0.1)`, no
+separate peak-tracking state needed) with a **~1s attack** and **~2.2s
+release** - deliberately backwards from a typical compressor, since the
+character should *build in* gradually and *hold*, not snap in and decay
+away. The envelope scales how much of DRIVE's own gain-*above*-its-own-
+tiny-base-value is actually reached: `effGain = base + (knobGain - base) *
+swell`. A fresh transient starts close to the base (tiny-texture)
+coloration and swells toward the full knob-set amount only after roughly a
+second of sustained level. Applied to both the send and return stages'
+drive gain (composed with, not replacing, the pre-existing "Breakup"
+envelope above - swell gates *how quickly* any given ceiling, breakup-
+boosted or not, is reached; breakup decides what that ceiling itself is).
+Read once per block (same one-block-lag pattern `breakupRatio` already
+uses - not an LFO-rate signal, so audio-rate precision on *applying* it
+isn't needed, only on *tracking* it, which happens every sample). At
+`driveNormalised01==0%` this is a true no-op (there is no gain-above-base
+for the envelope to scale), matching every other DRIVE-scaled constant's
+own identity requirement.
+
+**Verified**: the existing DRIVE THD test (`measureThd`, `Tests/
+PluginTests.cpp`) measures a 1.5s window starting 9 seconds into an
+11-second continuous tone - well past the ~1s attack, so DRIVE=100% still
+measures its full, previously-established THD increase at steady state;
+the swell only changes the first ~1-2 seconds of *how* that level is
+reached, not the sustained ceiling itself. All existing DRIVE tests
+(curve identity, THD increase, untouched-DRIVE-still-small, save/restore,
+factory-preset defaults) remain green.
+
+## DRIVE round 2: overdrive the tail, not the send
+
+Three separate corrections, all from the same report.
+
+**1. It was driving the wrong thing.** "У нас драйв на ревербе работает
+не так как планировалось, он просто делает drive у сигнала, а должен
+перегружать именно сам реверб" - with an explicit mental model: split the
+output into two paths, the DI signal and the reverb tail, and DRIVE must
+overdrive the *tail*. Reference: Mk.gee's guitar sound, where a warm (not
+metallic) reverb breaks up when driven while the guitar itself stays
+clean.
+
+The dry path was already algebraically untouched (see "Topology"), so this
+was never dry leakage. The real issue was *where in the wet path* the
+nonlinearity sat. DRIVE scaled the **send** stage, ahead of the diffuser
+and tank - so the tank reverberated an already-distorted signal ("distort,
+then reverb"), colouring the earliest, most direct-sounding part of the
+wet path, which is what reads as the input being driven. Driving the
+**return** stage instead means the tank produces its own clean, diffuse
+tail which is then overdriven ("reverb, then distort") - the same
+distinction as a pedal before vs. after a reverb in a real chain.
+
+So the send stage is now permanently pinned to its own base "texture"
+values and no longer reads the DRIVE knob at all (`verbSendDriveGain`/
+`verbSendAsymmetry` are gone), and the return stage carries the whole
+control, ceilings raised to take over the work the send used to share:
+`verbReturnDriveGainMax` 5.0 -> 11.0, `verbReturnAsymmetryMax` 0.24 ->
+0.30.
+
+**2. It engaged far too late on the knob.** "Раньше достаточно было
+прибавить на 20-30 процентов чтобы услышать эффект, а теперь надо крутить
+до 60-70." `verbDriveLerp` used `verbSmoothstep`, which is exactly the
+wrong shape for a drive control: it returns **0.156 at t=0.25** and 0.5
+only at t=0.5, i.e. it deliberately withholds the first half of the knob -
+the identical back-loaded-curve defect the PREAMP/SAT "drive-curve
+correction" round already diagnosed. Replaced with `pow(t, 0.6)`:
+
+| DRIVE knob | Old (smoothstep) | New (pow 0.6) |
+|---|---|---|
+| 10% | 2.8% | **25.1%** |
+| 25% | 15.6% | **43.5%** |
+| 30% | 21.6% | **48.6%** |
+| 50% | 50.0% | 66.0% |
+| 100% | 100% | 100% |
+
+DRIVE=0% is still an exact no-op (`pow(0, 0.6) == 0`). A new regression
+test asserts the *shape* (fraction of the base->max range reached at a
+given knob position) rather than any specific gain, so retuning the
+ceilings later cannot silently reintroduce the defect.
+
+**3. The envelope had an attack it was never supposed to have.** "Я тебя
+не просил делать атаку у Drive, он должен быть сразу же, но с небольшим
+хвостиком, то есть релиз у него даже не 2.2 секунды, а 0.8 секунду." The
+previous round's 1s attack / 2.2s release was a misreading of "prolonged,
+not short" as "builds in gradually" - and it was also the second half of
+the "engages too late" complaint, since on short guitar licks the envelope
+never approached its target before the note ended. Now 3ms attack (not
+literally zero only to avoid a per-sample step in a gain that multiplies
+audio; far below the ear's own level-integration time) and 0.8s release,
+and it tracks the **tank's own output** rather than the send, matching the
+redesign above.
+
+**Measured**: wet-path THD at -18dBFS/1kHz, DRIVE 0% -> 100%:
+**0.47% -> 7.68%** (a 16x increase). An untouched DRIVE through the full
+chain at DEEP measures 0.71%. Both figures are lower than the previous
+round's (1.92%/9.03%/1.68%) because the 16-line tank scales its output by
+`sqrt(16)` rather than `sqrt(12)`, putting the return stage's waveshaper
+at a slightly lower operating point for the same input - the *ratio*, the
+thing that determines whether the knob does something audible, is
+substantially better.
+
+## DRIVE round 3: envelope removed, curve pushed further front-loaded
+
+Round 2's fixes (tail-only routing, front-loaded `pow(t, 0.6)` curve,
+3ms-attack/0.8s-release envelope) were reported back, after real listening,
+as still not reacting the way the brief asks for. Per this round's explicit
+instruction not to keep machinery that isn't earning its place:
+
+**1. The dedicated drive envelope is removed entirely.** Round 2's
+3ms-attack/0.8s-release envelope (tracking the tank's own output level,
+gating how much of the return-stage gain-above-base was reached) added a
+second, separate ramp on top of the knob's own parameter smoothing -
+extra machinery whose presence was itself part of what made DRIVE feel
+indirect. `driveNormalised01` now reaches `verbReturnDriveGain()` through
+nothing but `driveSmoother`'s existing ~30ms linear ramp, the same
+smoothing every other macro in this module already gets - DRIVE now
+engages together with the wet tail, full stop, with no separate envelope
+in between. `breakup` (the tail's own drive rising as it decays relative
+to its recent peak - a real, distinct analog-plate character, not a gate
+on whether DRIVE is active) is unaffected and still fully composed.
+
+**2. The curve is pushed further front-loaded.** Round 2's exponent (0.6)
+still measured as insufficiently early-reacting: `pow(0.25,0.6)=0.435`.
+Lowered to 0.42: `pow(0.2,0.42)=0.520`, `pow(0.25,0.42)=0.564`,
+`pow(0.3,0.42)=0.603` - a fifth of knob travel now delivers half the
+available range. DRIVE=0% remains an exact no-op (`pow(0,0.42)==0`) at
+every exponent, by construction. The same exponent also drives the
+warmth-shelf/depth/chorus curve (`driveCurve` in `VerbProcessor.cpp`), so
+DRIVE's whole character now fronts up together, not just the raw gain.
+
+**Measured**: wet-path THD at -18dBFS/1kHz, DRIVE 0% -> 100%:
+
+| | DRIVE=0% | DRIVE=100% |
+|---|---|---|
+| Wet-path THD (isolated, -18dBFS/1kHz) | 0.47% | 12.46% |
+| Full chain at DEEP (untouched DRIVE) | 0.71% | - |
+
+A clearly audible, ~27x increase from a genuinely quiet baseline to a hot,
+obviously-driven plate - both figures confirmed by a real build+test run.
+
+## DRIVE warmth (live-testing feedback: deeper, not clipping)
+
+Direct feedback: "звук... не стескающийся перегруз а более дорогой и
+глубокий" (not a clipping overdrive but a more expensive/deeper one). A
+plain symmetric-bandwidth tanh drives low and high content into the
+nonlinearity equally, which reads as "cheap clipping" rather than a
+deliberately voiced saturator.
+
+**Mechanism** (`VerbProcessor.cpp`/`VerbCurves.h`): a low-shelf boost
+(`returnWarmthShelfL`/`R`, 400Hz corner, up to +6dB at full DRIVE) ahead
+of the return-stage tanh, biasing which content actually reaches the
+nonlinearity's curved region toward low-mid material - the same
+pre-emphasis-around-a-nonlinearity technique PREAMP's own transformer
+coloration and SAT's frequency tilt already use elsewhere in this plugin
+(own tuned constants here, not a shared refactor - same precedent SAT's
+own waveshaper already established against PREAMP's). Deliberately *not*
+undone by a matched post-cut - the resulting subtly richer low-end
+presence at high DRIVE is itself part of "deeper", not a side effect to
+hide; the existing `verbReturnBandwidthHz` ceiling (7200Hz) already tames
+the top end, which is what keeps this reading as "warmer" rather than
+simply "bassier". Scaled by the raw DRIVE knob position via
+`verbSmoothstep` (not swell-gated - this is a tonal voicing, not a
+level-triggered dynamic effect). At `driveNormalised01==0%` the shelf gain
+is exactly 0dB, collapsing to an identity filter (`Biquad.h`'s
+`makeLowShelf`), so this is a true no-op at rest - reconfirmed by the
+existing "Full processor: a completely untouched DRIVE still measures
+VERB's original small THD" test, which remains green.
+
+## Driven-tail placement: depth and width
+
+Direct feedback on how the overdriven tail should sit: "сделай чтобы этот
+перегруз клиппинг был не в лицо, а вдаль вглубь, но не сильно в моно, а
+пошире, возможно немного с эффектом chorus."
+
+Two mechanisms, both scaled by the same front-loaded DRIVE curve so both
+are exact no-ops at DRIVE=0%:
+
+**Depth** (`verbDriveDepthBandwidthMinHz = 2600`) - a second bandwidth
+ceiling on the driven return signal, on top of the fixed
+`verbReturnBandwidthHz`, walking down from 7200Hz toward 2600Hz as DRIVE
+rises. Distortion generates its own high harmonics, and high-frequency
+content is the strongest distance cue the ear uses: the same signal
+rolled off reads as further away. Rolling the ceiling down *as DRIVE
+rises* is what keeps a hot setting reading as "deep" rather than "harsh" -
+the added harmonics never get to sound forward. At DRIVE=0% its cutoff
+equals `verbReturnBandwidthHz` exactly, i.e. it is a second pass of an
+already-applied ceiling and changes essentially nothing.
+
+**Width + chorus** (`verbDriveChorusBaseMs = 11`, `DepthMs = 3.2`,
+`RateHz = 0.31`, `MixMax = 0.7`) - a short modulated delay on the driven
+signal with the LFO applied in **opposite polarity per channel**, so the
+two channels' delay times move against each other. This serves both
+requests from one mechanism: it counteracts the image being pulled toward
+the centre (a shared waveshaper applied to two correlated channels always
+increases their correlation, which is why a driven tail tends to collapse
+toward mono), and it supplies the requested chorus shimmer. Deliberately
+**outside the FDN feedback loop** - it only ever reads the tank's output,
+never anything that recirculates, so unlike the in-loop
+`verbChorusDepthSamples` it cannot affect RT60 or loop stability. At
+DRIVE=0% the mix is exactly 0 and the whole stage collapses to the
+unmodulated signal.
+
+## DRIVE routing and the null test
+
+The actual signal flow (`VerbProcessor::process()`, unchanged in shape
+since the round-2 redesign, reconfirmed here with a dedicated test):
+
+```
+DI/DRY -------------------------------------------------------> MIX
+INPUT
+  -> wet send HPF -> analog SEND stage (fixed, NEVER reads DRIVE)
+  -> diffuser -> pre-delay -> FDN tank (recirculation NEVER reads DRIVE)
+  -> analog RETURN stage (DRIVE-scaled HERE, and only here)
+  -> warmth shelf / depth lowpass / width-chorus (all DRIVE-scaled, tail only)
+  -> wet output HPF
+  -> MIX (dry*(1-wet) + wetProcessed*wet)
+```
+
+`verbSendDriveGain`/`verbSendAsymmetry` in `VerbProcessor.cpp` are
+`constexpr` aliases for the *base* constants - there is no code path left
+that reads `driveNormalised01` before the tank. DRIVE only ever reaches
+`verbReturnDriveGain`/`verbReturnAsymmetry` (the return stage) and the
+warmth/depth/chorus block that follows it.
+
+**Null test** (`Tests/PluginTests.cpp`'s "DRIVE null test" pair):
+
+Both pass on a real build+test run:
+
+- **"DRIVE null test: with reverb (wet amount) at 0%, output is
+  bit-identical across verbDrive 0%->100%"** - a correlated-chord source
+  run twice (DRIVE=0% and DRIVE=100%) with `reverb` (wet) pinned at 0%:
+  `maxAbsDiff < 1.0e-7` across the whole buffer, both channels - the
+  output is bit-identical regardless of DRIVE, confirming `verbWetGain(0)
+  == 0.0` really does gate DRIVE's entire effect to exactly zero at 0%
+  wet, not just approximately.
+- **"DRIVE null test: the dry component itself never moves with DRIVE, at
+  any wet amount"** - at `reverb=50%` (a real, nonzero wet setting) and
+  DRIVE 0%/50%/100%, the earliest 5ms of output (before the diffuser/
+  pre-delay lets any wet content through at all) measures `maxAbsDiff <
+  1.0e-3` against a DRIVE=0% reference at every DRIVE value - the DI
+  attack itself is unaffected by DRIVE even when the module is actively
+  wet.
+
 ## Known limitations
 
+**Superseded note (2026-09-14):** the metallic-ring item directly below
+is exactly the problem the "Direction change" section at the top of this
+document retires the plate architecture over, rather than continuing to
+chase on the existing tank - do not treat the "Recommended next step"
+below as the active plan.
+
+- **The metallic-ring/resonance character is still present - open, not
+  fixed.** See "Metallic-ring root-cause investigation (round 3)" above:
+  the mechanism is understood (a static FDN's resonant modes are fixed
+  regardless of line count/matrix quality; only genuinely time-varying
+  delay lengths fix this), and the standard technique for it (a
+  magnitude-flat allpass fractional-delay interpolator, letting
+  modulation depth increase without RT60 cost) was attempted, but the
+  implementation tried this round measured a real RT60 regression instead
+  of the expected improvement and was reverted rather than shipped. The
+  tank is back to its exact pre-round-3, known-good state (2-tap linear
+  interpolation, 0.4-sample modulation depth). **Recommended next step**:
+  before touching the FDN tank again, verify any replacement interpolator
+  in isolation first (feed it a known test signal directly, outside the
+  feedback loop, and measure its magnitude response against a reference)
+  rather than only measuring the end-to-end RT60/resonance-sweep result,
+  which is what let this round's bug ship past its own test suite until
+  the dedicated RT60 regression test caught it.
 - Measured RT60 at 100% (~3.5s at 1kHz) sits at the lower edge of the
   requested 3.5-4.5s range rather than comfortably inside it. Pushing
   the nominal decay anchor higher was not pursued further this round

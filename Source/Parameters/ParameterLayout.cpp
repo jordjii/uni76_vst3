@@ -1,19 +1,51 @@
 #include "ParameterLayout.h"
 #include "ParameterIDs.h"
 #include "../DSP/PanoramaCurves.h"
+#include "../DSP/DelayCurves.h"
 
 namespace uni76
 {
     namespace
     {
-        std::unique_ptr<juce::AudioParameterFloat> makePercentParameter (const char* id, const juce::String& name, float defaultPercent)
+        std::unique_ptr<juce::AudioParameterFloat> makePercentParameter (const char* id, const juce::String& name, float defaultPercent,
+                                                                          float maxPercent = 100.0f)
         {
             return std::make_unique<juce::AudioParameterFloat> (
                 juce::ParameterID { id, ParamID::parameterVersionHint },
                 name,
-                juce::NormalisableRange<float> { 0.0f, 100.0f, 0.01f },
+                juce::NormalisableRange<float> { 0.0f, maxPercent, 0.01f },
                 defaultPercent,
                 juce::AudioParameterFloatAttributes{}.withLabel ("%"));
+        }
+
+        // DELAY (see docs/DSP_DELAY.md) - DIVISION is a genuine
+        // AudioParameterChoice (5 fixed musical note divisions, never a
+        // free millisecond value - see DelayCurves.h's delayDivisions
+        // table, which this reads its labels from directly rather than
+        // duplicating them). STEREO/PING PONG are genuine
+        // AudioParameterBools - both bridged to the WebView through
+        // JUCE's own WebComboBoxRelay/WebToggleButtonRelay (see
+        // WebUIEditor.cpp), not the WebSliderRelay every other parameter
+        // in this file uses.
+        std::unique_ptr<juce::AudioParameterChoice> makeDelayDivisionParameter()
+        {
+            juce::StringArray choices;
+            for (auto& division : uni76::dsp::delayDivisions)
+                choices.add (division.label);
+
+            return std::make_unique<juce::AudioParameterChoice> (
+                juce::ParameterID { ParamID::delayDivision, ParamID::parameterVersionHint },
+                "Delay Division",
+                choices,
+                uni76::dsp::delayDefaultDivisionIndex);
+        }
+
+        std::unique_ptr<juce::AudioParameterBool> makeDelayBoolParameter (const char* id, const juce::String& name)
+        {
+            return std::make_unique<juce::AudioParameterBool> (
+                juce::ParameterID { id, ParamID::parameterVersionHint },
+                name,
+                false);
         }
 
         // PITCH is genuinely discrete (see docs/DSP_PITCH.md): 25 fixed
@@ -113,6 +145,21 @@ namespace uni76
         // session/preset that never touches DRIVE sounds identical to
         // before this parameter existed.
         params.push_back (makePercentParameter (ParamID::verbDrive, "Verb Drive", 0.0f));
+
+        // DELAY (8th DSP module, added 2026-09-14 - see docs/DSP_DELAY.md).
+        // MIX defaults to 0% (identity, no audible effect) and FEEDBACK to
+        // 30% (0..95% range - never reaches unity gain, a hard safety
+        // ceiling - see DelayCurves.h's delayFeedbackMaxGain), matching
+        // the product brief's own defaults exactly. A project saved
+        // before DELAY existed has none of these five parameters at all,
+        // so APVTS falls back to these same defaults automatically -
+        // exactly the "delay=0% (i.e. inaudible) in old projects" the
+        // brief requires, no separate migration code needed.
+        params.push_back (makePercentParameter (ParamID::delay, "Delay", 0.0f));
+        params.push_back (makePercentParameter (ParamID::delayFeedback, "Delay Feedback", 30.0f, 95.0f));
+        params.push_back (makeDelayDivisionParameter());
+        params.push_back (makeDelayBoolParameter (ParamID::delayStereo, "Delay Stereo"));
+        params.push_back (makeDelayBoolParameter (ParamID::delayPingPong, "Delay Ping Pong"));
 
         return { params.begin(), params.end() };
     }

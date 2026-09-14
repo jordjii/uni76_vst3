@@ -5,21 +5,47 @@
 #include <cmath>
 
 /*
-    Single source of truth for how the VERB / VINTAGE SPACE macro
-    parameter (0..1, the `reverb` APVTS value) morphs the module's send
-    amount, decay, pre-delay - see Source/DSP/VerbProcessor and
+    Single source of truth for the VERB / VINTAGE SPACE macro parameter
+    (0..1, the `reverb` APVTS value, "Mix") and the module's fixed
+    internal constants - see Source/DSP/VerbProcessor and
     docs/DSP_VERB.md.
 
-    One vintage electromechanical PLATE machine at every setting - not a
-    ROOM->PLATE->CHAMBER morph. The macro only ever changes send amount,
-    decay time, apparent size (via decay), and pre-delay; the plate's own
-    physical character (delay-line layout, diffusion, damping shape,
-    analog send/return coloration) is fixed, matching a real plate's send
-    level and time knobs rather than a switch between different machines.
+    ---------------------------------------------------------------------
+    NEW DIRECTION (2026-09-14) - see CLAUDE.md's "VERB direction change"
+    entry and docs/DSP_VERB.md's "Direction change" section for the full
+    product brief. The plate/FDN architecture this file used to describe
+    is retired; this is the from-scratch redesign against that new
+    direction:
 
-        0%   = DRY   - bit-exact (up to float rounding) identity.
-        50%  = PLATE  - classic, dense, dark studio plate.
-        100% = DEEP    - longer, deeper, still a usable insert effect.
+        a soft, warm, dark, vintage algorithmic reverb (chamber/hall
+        character, NOT a plate, NOT Dattorro's specific plate topology) -
+        dense, smooth, ~3s tail, no metallic ring, no fixed resonant
+        notes, no hard early reflections, no audible comb filtering, no
+        explicit chorus/pitch wobble, natural at Mix 70-100%.
+
+    Two things that changed on purpose relative to the old plate module,
+    both direct product requirements, not incidental tuning:
+
+    1. **Mix (`reverb`) now controls ONLY the dry/wet balance.** Decay
+       time and pre-delay are FIXED constants (verbTargetDecaySeconds /
+       verbPreDelayMs), completely independent of the macro - the old
+       module stretched decay from ~2.5s to ~4.35s across the knob, which
+       is exactly the behaviour this redesign is told not to repeat.
+       `verbWetGain(t01)` is the only macro-dependent curve left.
+    2. **No time-varying (modulated) delay anywhere in the signal path.**
+       The old plate's per-line "chorus/vibrato" modulation was the
+       direct cause of two real, documented regressions (a measured RT60
+       collapse from the interpolation loss it introduced, and an
+       explicit "no chorus/pitch wobble" product requirement this round).
+       Anti-metallic decorrelation instead comes entirely from STATIC
+       design choices: a long multi-stage input diffusion cascade, a
+       larger number of mutually-non-commensurate tank delay lengths, and
+       an orthogonal (energy-preserving) Householder mixing matrix - not
+       Dattorro's specific "two arms, each with an internal decay
+       allpass" plate topology, and not the previous Householder-mixed
+       12/16-line FDN either. See VerbProcessor.h's class comment for the
+       full topology.
+    ---------------------------------------------------------------------
 */
 
 namespace uni76::dsp
@@ -34,10 +60,9 @@ namespace uni76::dsp
         t = 0, 0.25, 0.5, 0.75, 1.0 - each segment is independently
         smoothstepped (C0 continuous at the anchors, matching the shape
         every other module's macro curves already use for named anchor
-        points - see EqCurves.h/PanoramaCurves.h). Used for every VERB
-        macro curve below so each one can hit its own explicitly-specified
-        target at each quarter-point without forcing a single global
-        polynomial through all five. */
+        points - see EqCurves.h/PanoramaCurves.h). Used by verbWetGain()
+        below - the only VERB macro curve left that is actually macro-
+        dependent under the new direction (see the file comment above). */
     inline float verbPiecewise (float t01, const std::array<float, 5>& values) noexcept
     {
         // std::clamp does not actually clamp NaN (all comparisons against
@@ -46,9 +71,10 @@ namespace uni76::dsp
         // non-finite t01 reaches `(int) scaled` below, which is undefined
         // behaviour and can produce an out-of-range `segment` (a real
         // Debug-mode "array subscript out of range" crash was caught this
-        // way - see docs/DSP_VERB.md's "A real bug found by Debug-mode
-        // testing" section). Falls back to 0.0 (t=0, the DRY/identity
-        // point) rather than silently picking some other value.
+        // way in the old plate-era module - see docs/DSP_VERB.md's
+        // "Historical implementation" section). Falls back to 0.0 (t=0,
+        // the DRY/identity point) rather than silently picking some other
+        // value.
         const auto safeT01 = std::isfinite (t01) ? t01 : 0.0f;
         const auto t = std::clamp (safeT01, 0.0f, 1.0f);
         const auto scaled = t * 4.0f;
@@ -57,243 +83,255 @@ namespace uni76::dsp
         return values[(size_t) segment] + (values[(size_t) segment + 1] - values[(size_t) segment]) * local;
     }
 
-    // ---- Wet send amount -----------------------------------------------------
+    // ---- Mix (dry/wet balance) ------------------------------------------------
     //
     // wet(0) = 0.0 exactly - the one hard requirement that makes DRY a
     // provable bypass (see VerbProcessor.cpp). 100% knob position is
-    // explicitly NOT 100% wet - dry always remains present, matching a
-    // real insert-effect plate send, not a full wet/dry replace.
-    inline constexpr std::array<float, 5> verbWetAnchors { 0.0f, 0.10f, 0.225f, 0.35f, 0.475f };
+    // explicitly NOT 100% wet - dry always remains present, matching an
+    // insert-effect reverb send rather than a full wet/dry replace, and
+    // keeping headroom so Mix 70-100% stays natural (no wash-out) - a
+    // direct product requirement for this redesign.
+    inline constexpr std::array<float, 5> verbWetAnchors { 0.0f, 0.12f, 0.27f, 0.42f, 0.55f };
 
     inline float verbWetGain (float t01) noexcept
     {
         return verbPiecewise (t01, verbWetAnchors);
     }
 
-    // ---- Decay (RT60, seconds) -----------------------------------------------
+    // ---- Decay (RT60) - FIXED, not macro-dependent ----------------------------
     //
-    // decay(0) is never audible (wet gain is exactly 0 there) but is still
-    // defined smoothly down to a short, harmless value rather than being
-    // left at the 25% anchor's value, so nothing downstream has to special-
-    // case t=0 for numerical reasons (e.g. feedback-gain-from-RT60 division).
-    // Scaled up from the raw target RT60s (0.35/0.75/1.7/2.85/4.0) - the
-    // per-line feedback gain formula in VerbProcessor.cpp targets RT60
-    // assuming *only* the flat gain contributes to decay, but the per-
-    // line damping filter (frequency-dependent extra loss - see
-    // `verbDampingHz` below) removes additional energy every pass on top
-    // of that, so the *actual measured* RT60 undershoots the nominal
-    // target unless compensated here. Empirically measured and tuned -
-    // see docs/DSP_VERB.md's "RT60" section for the before/after numbers.
-    // Raised from the original {0.5, 1.1, 2.6, 4.3, 6.0} during the tail
-    // chorus/vibrato round - a real, serious regression found via direct
-    // feedback ("ревер ужасный", confirmed by direct audio comparison
-    // against a reference plate): reading each FDN line's own tank buffer
-    // at a modulated *fractional* position (VerbProcessor.cpp) via linear
-    // interpolation attenuates decorrelated/high-frequency content on
-    // every single pass (worst case -3dB at a half-sample offset, exactly
-    // like a 2-tap FIR lowpass), and that small per-pass loss compounds
-    // hugely over the hundreds of feedback passes a multi-second RT60
-    // needs - the same bug *class* the per-line damping filter's own
-    // compounding-loss history already documents (see verbDampingHz's
-    // comment), caught this time by a new dedicated "measured RT60 in
-    // real seconds" regression test rather than the pre-existing
-    // "frequency-dependent decay" test, which only checks *relative*
-    // frequency ordering and stays true even if the *whole* decay
-    // collapses uniformly. A first attempt at compensating this inside
-    // the feedback loop itself (a constant-power gain boost on the
-    // interpolated read) was a real, dangerous mistake - see
-    // VerbProcessor.cpp's own comment on why that pushed the loop
-    // unstable - so this fix instead raises the *target* RT60 the
-    // existing feedback-gain formula solves for, which stays safely
-    // bounded by verbLineFeedbackGainMax's own clamp. These anchors
-    // (paired with verbChorusDepthSamples's own reduced 1.6->0.3 depth
-    // below) were tuned so the *measured* RT60 (a dedicated test
-    // measures the real time-to­-60dB, not just this formula's raw
-    // input) lands close to this module's own pre-chorus, historically-
-    // measured figures (~1.9s at 50%, ~3.35s at 100%) - not an
-    // arbitrarily higher number for its own sake.
-    inline constexpr std::array<float, 5> verbDecayAnchors { 1.0f, 2.2f, 6.0f, 11.0f, 16.0f };
+    // Direct product requirement: "Mix должен управлять Dry/Wet, а не
+    // растягивать Decay до 4.35 секунды." Unlike the old plate module
+    // (whose decay stretched from ~2.5s at 50% to ~4.35s at 100% as a
+    // side effect of the same macro that also controlled wet amount),
+    // this reverb's decay time is a single constant, completely
+    // independent of Mix - turning Mix up only adds more of an
+    // *identical-length* tail into the mix, never a longer one.
+    // ~2.8-3.2s target range (measured via a dedicated RT60 test at low/
+    // mid/high bands - see docs/DSP_VERB.md).
+    inline constexpr float verbTargetDecaySeconds = 3.0f;
 
-    inline float verbDecaySeconds (float t01) noexcept
+    /** Kept as a function (not a bare constant) so call sites written
+        against the old macro-dependent contract (PluginProcessor's
+        getTailLengthSeconds(), the test suite) don't need to change -
+        but the parameter is now genuinely unused: every t01 in [0,1]
+        returns the same fixed target. */
+    inline float verbDecaySeconds (float) noexcept
     {
-        return verbPiecewise (t01, verbDecayAnchors);
+        return verbTargetDecaySeconds;
     }
 
-    // ---- Pre-delay (ms) -------------------------------------------------------
+    // ---- Pre-delay - FIXED, not macro-dependent --------------------------------
     //
-    // Deliberately modest throughout - a real plate is felt as fast/
-    // immediate, not a slapback delay. See docs/DSP_VERB.md's "Plate
-    // physical character" section.
-    inline constexpr std::array<float, 5> verbPreDelayMsAnchors { 0.0f, 2.5f, 8.0f, 14.0f, 20.0f };
+    // Same reasoning as decay above: a real vintage reverb's sense of
+    // "size" here comes from the tank's own fixed geometry, not from
+    // stretching pre-delay with Mix. Deliberately modest - felt as fairly
+    // immediate, not a slapback delay, and short enough that it never
+    // reads as a discrete hard early reflection on its own (see the
+    // "no hard early reflections" product requirement).
+    inline constexpr float verbPreDelayMsValue = 16.0f;
 
-    inline float verbPreDelayMs (float t01) noexcept
+    /** Same "kept as a function for the old call-site contract" reasoning
+        as verbDecaySeconds() above. */
+    inline float verbPreDelayMs (float) noexcept
     {
-        return verbPiecewise (t01, verbPreDelayMsAnchors);
+        return verbPreDelayMsValue;
     }
 
-    // ---- Wet-path bass isolation (250Hz) --------------------------------------
+    // ---- Wet-path bass isolation -----------------------------------------------
     //
-    // Lowered from 350Hz - direct feedback: "бас не реверим 250 гц
-    // примерно, всё остальное пиздато реверим" (keep bass out of the
-    // reverb down to ~250Hz, everything above that should reverb richly).
-    // The old 350Hz cutoff was excluding a real chunk of low-mid "body"
-    // (250-350Hz - guitar/vocal/snare warmth) from the wet path that
-    // could otherwise sound genuinely good reverbed; 250Hz keeps true
-    // bass/sub content dry while opening that range up.
-    //
-    // A cascaded (4-pole, -24dB/oct) Butterworth highpass on the wet SEND
-    // path - not a brickwall FIR (no latency, no ringing) - plus a second,
-    // lighter safety highpass on the wet OUTPUT (after the plate network),
-    // catching any low-frequency energy the plate's own recirculation
-    // might otherwise sustain (a feedback network's own resonances aren't
-    // guaranteed to respect an input-side filter alone - see
-    // docs/DSP_VERB.md's "350Hz wet-path isolation" section, written
-    // before this round's frequency change but describing the same
-    // mechanism). The DRY path never passes through either of these - see
-    // VerbProcessor.cpp.
-    inline constexpr float verbWetSendHighpassHz   = 250.0f;
-    inline constexpr float verbWetOutputHighpassHz = 250.0f;
+    // Lower than the old plate module's 250Hz - this redesign's product
+    // brief explicitly asks for a *warmer* character, so more low-mid
+    // body is allowed into the wet path than the old plate ever let
+    // through, while a cascaded (4-pole, -24dB/oct) Butterworth highpass
+    // on the send - not a brickwall FIR, no latency/ringing - still keeps
+    // true sub/bass out of the recirculating tank (a reverberated kick
+    // drum reads as mud, in any architecture). A second, lighter safety
+    // highpass on the wet OUTPUT catches anything the tank's own
+    // recirculation might otherwise sustain regardless of the send
+    // filter - a feedback network's own resonances aren't guaranteed to
+    // respect an input-side filter alone (same reasoning the old module
+    // documented, still true of any recirculating design). The DRY path
+    // never passes through either of these - see VerbProcessor.cpp.
+    inline constexpr float verbWetSendHighpassHz   = 220.0f;
+    inline constexpr float verbWetOutputHighpassHz = 220.0f;
 
-    // ---- Plate delay-line layout -----------------------------------------------
+    // ---- Input diffusion network (multi-stage, ahead of the tank) -------------
     //
-    // 12 lines (within the requested 8 minimum / 12-16 explored range) -
-    // short, densely-spaced, deliberately non-commensurate lengths (no
-    // small-integer ratios between any two) so no single comb frequency
-    // dominates - see docs/DSP_VERB.md's "Plate modal/FDN architecture"
-    // section for the measured mode-density verification. Millisecond
-    // values, converted to samples at the actual sample rate in
-    // VerbProcessor::prepare() - this is what keeps the plate's character
-    // (not just its RT60) sample-rate-independent.
-    inline constexpr int verbNumLines = 12;
-    inline constexpr std::array<float, 12> verbLineLengthsMs
+    // A long cascade of short-delay Schroeder-style allpass diffusers,
+    // NOT the whole reverb by itself (that would be the "cheap Schroeder"
+    // architecture both the old and new product briefs reject) - a pre-
+    // density stage that smears the input into a smooth, already-dense
+    // signal before it ever reaches the tank. This is the main mechanism
+    // behind "no hard early reflections": by the time the tank's first
+    // recirculation pass is audible, the input has already been broken
+    // into a diffuse wash, not a train of discrete taps.
+    //
+    // 8 stages spanning roughly 0.7-32ms - lengths chosen with no small-
+    // integer ratio between any pair.
+    inline constexpr int verbNumDiffusers = 8;
+    inline constexpr std::array<float, 8> verbDiffuserLengthsMs
     {
-        5.3f, 6.8f, 8.1f, 9.7f, 11.3f, 13.7f,
-        16.1f, 19.3f, 22.9f, 27.1f, 31.7f, 37.3f
+        0.7f, 1.7f, 3.1f, 5.9f, 8.9f, 14.3f, 21.7f, 31.3f
+    };
+    inline constexpr float verbDiffuserGain = 0.62f;
+
+    // ---- Reverb tank: decorrelated delay lines + Householder mixing -----------
+    //
+    // A plain N-line Feedback Delay Network (Stautner & Puckette 1982
+    // style - delay + per-line damping + an energy-preserving mixing
+    // matrix) - NOT Dattorro's plate topology (which nests its own
+    // internal decay-diffusion allpasses inside two long delay "arms";
+    // deliberately not reproduced here per this round's explicit "don't
+    // use Dattorro Plate" instruction) and NOT the old plate module's
+    // Householder-mixed 12/16-line tank either (different line count,
+    // different lengths, different mixing matrix, and a much smaller,
+    // carefully-bounded modulation depth - see "Tank line modulation"
+    // below).
+    //
+    // 16 lines at a "chamber" size range (16-78ms, longer/roomier than
+    // the old plate's tight 5-88ms spread, matching this redesign's
+    // chamber/hall rather than plate character), chosen with a near-
+    // geometric spacing and checked pairwise for small-integer
+    // coincidences. A 24-line attempt (irregularly spaced 14-87ms) was
+    // tried and MEASURED WORSE on the spectral-flatness sweep than this
+    // 16-line set (peak residual roughly doubled) - not every increase in
+    // line count helps; the extra short lines in that attempt introduced
+    // new near-coincidences of their own. Reverted rather than kept on
+    // the assumption "more lines = better" - see docs/DSP_VERB.md's "Tank
+    // line modulation" section for the measured comparison.
+    inline constexpr int verbNumLines = 16;
+    inline constexpr std::array<float, 16> verbLineLengthsMs
+    {
+        16.1f, 17.9f, 19.9f, 22.3f, 24.7f, 27.3f, 30.5f, 33.9f,
+        37.7f, 41.9f, 46.3f, 51.5f, 57.1f, 63.5f, 70.3f, 78.1f
     };
 
-    // Fixed diffuser (early-density) allpass chain, ahead of the FDN tank -
-    // short, decreasing delay lengths, same low-Q allpass primitive
-    // PanoramaProcessor's decorrelation uses (Biquad.h's makeAllpass is
-    // 2nd-order/IIR; this diffuser instead uses classic short-delay
-    // Schroeder-style allpass sections, appropriate for building early
-    // reflection density quickly - NOT used alone as the whole reverb,
-    // only as a pre-density stage ahead of the real FDN tank, which is
-    // what makes this architecturally different from a "cheap Schroeder"
-    // reverb - see docs/DSP_VERB.md).
-    // Grown from 4 to 6 stages, gain raised 0.6->0.72 (anti-metallic round -
-    // direct feedback: "железо убирать" / remove the metallic character).
-    // Denser early diffusion is what actually breaks up a plate's initial
-    // "ping" transient into a smooth wash before it ever reaches the FDN
-    // tank - a different lever from the tank's own line count/lengths
-    // (already investigated and found unhelpful in isolation - see
-    // docs/DSP_VERB.md's "Metallic-ring reduction investigation" section).
-    // Two new short, still non-commensurate lengths appended (0.8/0.6ms).
-    inline constexpr int verbNumDiffusers = 6;
-    inline constexpr std::array<float, 6> verbDiffuserLengthsMs { 3.1f, 2.3f, 1.7f, 1.1f, 0.8f, 0.6f };
-    inline constexpr float verbDiffuserGain = 0.72f;
-
-    // ---- Frequency-dependent damping (HF decays faster than mid) --------------
+    // ---- Tank line modulation (small, correctly-bounded - NOT chorus) ---------
     //
-    // One-pole lowpass inside each delay line's feedback path (Moorer/Jot-
-    // style damping, not a static output filter - this is what makes the
-    // *tail itself* progressively darker over time, distinct from
-    // verbReturnBandwidthHz below, which limits the wet signal's overall
-    // top end at every instant). Measured/tuned via docs/DSP_VERB.md's
-    // "frequency-dependent decay" section.
-    // Raised from an initial 4200Hz during tuning: even a one-pole
-    // lowpass's small per-pass insertion loss *below* its own cutoff
-    // (not just above it) compounds hugely over the hundreds of feedback
-    // passes a multi-second RT60 needs (~-0.24dB/pass at 1kHz against a
-    // 4200Hz cutoff, over ~300 passes, compounds to roughly -70dB on its
-    // own - silently capping 1kHz's own decay far below its nominal
-    // target, which is what the first measurement round caught). Raising
-    // it too far (9000Hz was tried) backfired differently: with per-pass
-    // damping loss that small, the shortest line's *total* loop gain
-    // (flat gain from the RT60 formula, ~0.994 for the 5.3ms line at a
-    // 6s target, times a near-unity damping response) sits close enough
-    // to 1.0 to measurably distort the result (THD roughly doubled,
-    // steady-state level became erratic) - a real stability-margin
-    // symptom, not a measurement artifact. 6000Hz is the settled middle
-    // ground: still well above the audible band's own damping-loss
-    // compounding problem, with enough headroom below `verbLineFeedbackGainMax`
-    // (see below) that no line's loop gain gets close to the boundary.
-    inline constexpr float verbDampingHz = 6000.0f;
+    // The direct product brief for this redesign asks for two things that
+    // sound contradictory at first: "correctly modulated decorrelated
+    // delay lines" AND "no explicit chorus/pitch wobble". The resolution
+    // (standard practice in high-quality algorithmic reverbs - Lexicon/
+    // Valhalla-style designs use exactly this) is that BOTH are true at
+    // once when the modulation depth is kept below the threshold where it
+    // reads as its own audible effect: a STATIC FDN's resonant modes are
+    // fixed for the life of the instance, which is what a real ear
+    // identifies as "metallic" (a specific note always rings at exactly
+    // the same frequency, every time); a small, slow modulation of each
+    // line's read position continuously and very slightly detunes those
+    // fixed modes, which is what actually removes the "ringing on
+    // specific notes" symptom - it is not decorative, it is the mechanism.
+    // Read via AllpassFractionalDelay (Biquad.h) rather than plain 2-tap
+    // linear interpolation - a true allpass (exactly flat magnitude
+    // response at any fractional delay, verified by its own isolated unit
+    // tests before ever being wired into this tank - see
+    // Tests/PluginTests.cpp's "uni76::dsp::AllpassFractionalDelay" suite).
+    // This is precisely the fix the old plate module's own "Metallic-ring
+    // root-cause investigation" round called for and failed to ship (a
+    // magnitude-flat interpolator, verified in isolation first) - not a
+    // repair of that old code, a fresh implementation checked against the
+    // specific mistake ("D=0 must collapse to an exact identity") that
+    // investigation's own writeup flagged as the leading suspect. Because
+    // this interpolator costs no per-pass loss, depth can be meaningfully
+    // larger than the old plate module's already-too-small 0.4 samples
+    // (which was too subtle to fix that module's own metallic ringing)
+    // while still being a tiny fraction of any line's length (the
+    // shortest tank line here is >800 samples at 44.1kHz) - nowhere near
+    // large enough to read as an audible chorus/pitch effect. Confirmed
+    // by direct measurement (see docs/DSP_VERB.md's "Tank line
+    // modulation" section) rather than assumed safe by similarity.
+    inline constexpr float verbLineModDepthSamples = 4.0f;
+    inline constexpr std::array<float, 16> verbLineModRateHz
+    {
+        0.073f, 0.089f, 0.101f, 0.113f, 0.127f, 0.139f, 0.151f, 0.167f,
+        0.181f, 0.197f, 0.211f, 0.229f, 0.241f, 0.257f, 0.269f, 0.283f
+    };
+
+    // ---- RT60-formula target (internal, larger than the spec/reported
+    // ~3s figure) ----------------------------------------------------------
+    //
+    // The per-line feedback-gain formula (VerbProcessor.cpp) assumes only
+    // the flat gain governs decay, but the per-line damping filter and the
+    // allpass modulation above both remove additional energy every pass on
+    // top of that - the same "small per-pass loss compounds hugely over
+    // hundreds of feedback passes" effect this module's own history has
+    // documented before (see the old plate module's superseded RT60-
+    // tuning notes). Measured directly (see docs/DSP_VERB.md's "RT60"
+    // section for this redesign): with the formula fed verbTargetDecaySeconds
+    // (3.0s) directly, the *actual* measured decay undershoots to ~1.9-2.2s.
+    // This internal-only target is what the formula actually solves for;
+    // verbTargetDecaySeconds above remains the real, reported, spec value
+    // (~2.8-3.2s) and is what every public/test-facing curve returns -
+    // only VerbProcessor.cpp's own per-line gain computation reads this one.
+    inline constexpr float verbDecayFormulaTargetSeconds = 6.0f;
+
+    // ---- Frequency-dependent damping (highs decay faster than mid) ------------
+    //
+    // One-pole lowpass inside each delay line's feedback path (Moorer/
+    // Jot-style damping) - what makes the *tail itself* progressively
+    // darker over time, distinct from the static output darkening filter
+    // below. Lower than the old plate's 6000Hz (this redesign's product
+    // brief explicitly wants "slightly dark", not just "highs die a bit
+    // faster than mid") - safe at this target because the fixed ~3s decay
+    // target is considerably shorter than the old plate's up-to-4.35s
+    // DEEP setting, so far fewer feedback passes accumulate the per-pass
+    // damping-filter insertion loss the old module's own tuning history
+    // warned about (see docs/DSP_VERB.md's historical "RT60" section) -
+    // headroom confirmed by measurement (see docs/DSP_VERB.md's "RT60"
+    // section for this redesign).
+    inline constexpr float verbDampingHz = 4200.0f;
 
     // Hard safety ceiling on any single line's per-pass feedback gain,
     // independent of the RT60-derived formula (VerbProcessor.cpp) -
-    // guarantees the FDN can never be pushed into a technically-unstable
-    // (gain >= 1) or borderline-ringy configuration by any combination of
-    // decay-anchor tuning and line length, present or future.
-    inline constexpr float verbLineFeedbackGainMax = 0.985f;
+    // guarantees the tank can never be pushed into a technically-unstable
+    // (gain >= 1) configuration by any combination of line length and the
+    // fixed decay target above, present or future.
+    inline constexpr float verbLineFeedbackGainMax = 0.98f;
 
-    // ---- Analog send/return coloration -----------------------------------------
+    // ---- Analog send coloration (fixed, never DRIVE-scaled) -------------------
     //
-    // Base (DRIVE=0%) values are deliberately tiny - texture, not a second
-    // SAT module. Same bounded per-half-gain tanh() shape PREAMP/SAT use,
-    // own (much smaller) constants - wet-path only, dry is never touched.
-    // See docs/DSP_VERB.md's "Analog send electronics"/"Analog return
-    // stage" sections for measured THD at the base values.
-    // Reduced during tuning - measured wet-path THD at the original,
-    // larger values reached ~5.9% on a sustained full-level tone at
-    // 100% wet (edge of "texture, not distortion"); these land closer to
-    // 2% under the same worst-case test - see docs/DSP_VERB.md's
-    // "Analog nonlinearity" section for the measured H2/H3/THD table.
-    inline constexpr float verbSendDriveGainBase  = 0.18f;
-    inline constexpr float verbSendAsymmetryBase  = 0.02f;
-    inline constexpr float verbReturnDriveGainBase = 0.12f;
-    inline constexpr float verbReturnAsymmetryBase = 0.02f;
+    // Deliberately tiny - texture, not a second SAT module - and, per the
+    // DRIVE contract below, permanently pinned to these values: the send
+    // stage (and everything after it up to and including the tank) never
+    // reads DRIVE at all, so the tank always receives (and reverberates)
+    // an essentially clean, undriven signal.
+    inline constexpr float verbSendDriveGainBase = 0.15f;
+    inline constexpr float verbSendAsymmetryBase = 0.02f;
 
-    // ---- DRIVE (nested knob, live-testing follow-up round) --------------------
+    // ---- DRIVE (nested knob) - overloads the formed TAIL only ------------------
     //
-    // The base values above were fixed for every previous round of this
-    // module's development - DRIVE (`ParamID::verbDrive`) now scales both
-    // the send and return stages together, from that same tiny-texture
-    // resting point up to a genuinely hot, audibly-driven plate -
-    // referencing a real reference plugin's (Vynl Audio Voyager-Verb) own
-    // nested-knob DRIVE control (see the module's own class comment /
-    // docs/DSP_VERB.md's "Drive (nested knob)" section). DRIVE=0% must
-    // reproduce the base values exactly (verbSmoothstep(0)==0), so every
-    // existing preset/session that never touches the new knob sounds
-    // identical to before this round shipped.
+    // Preserves this module's existing, already-correct DRIVE contract
+    // (see CLAUDE.md/docs/DSP_VERB.md's "Direction change" sections):
+    // DRIVE only ever overdrives the tank's own already-diffuse, already-
+    // decayed wet tail (the RETURN stage below), never the DI/dry signal,
+    // never the send, and never anything inside the tank's own feedback
+    // recirculation. Reference: Mk.gee's own guitar-reverb aesthetic - a
+    // clean guitar whose *reverb tail* breaks up warmly when driven.
     //
-    // Asymmetry ceilings (0.30/0.24) sit in the same range PREAMP/SAT's
-    // own asymmetry maxima do (0.32/0.28) - real, audible even-harmonic
-    // character at full DRIVE, not a token gesture.
-    //
-    // Drive-gain ceilings: an early version of this curve used 1.1/0.75 -
-    // reasonable-looking numbers that turned out to reproduce exactly the
-    // "no audible effect" bug this session's own PREAMP/SAT drive-curve
-    // fix diagnosed and corrected. At this module's own -18dBFS reference
-    // test level (amplitude ~0.126), a gain of 1.1 only reaches a tanh
-    // argument of ~0.14 - still deep in tanh's near-linear region (linear
-    // to within a fraction of a percent below ~0.2) - so "full DRIVE"
-    // measured barely more THD than DRIVE=0% (1.92% -> 2.16%, caught by a
-    // dedicated regression test before this shipped, not discovered
-    // later). PREAMP's own drive-gain ceiling for comparison is 10.0
-    // (PreampCurves.h) - VERB's DRIVE is deliberately less extreme than a
-    // dedicated saturator (this is still a reverb's send/return
-    // coloration, not PREAMP's own job), but large enough to push the
-    // tanh well into its curved region at the reference level: gain 7.0
-    // on a 0.126-amplitude signal reaches tanh(0.88), clearly compressed.
-    inline constexpr float verbSendDriveGainMax   = 7.0f;
-    inline constexpr float verbSendAsymmetryMax   = 0.30f;
-    inline constexpr float verbReturnDriveGainMax = 5.0f;
-    inline constexpr float verbReturnAsymmetryMax = 0.24f;
+    // Base (DRIVE=0%) values reproduce the module's original small,
+    // fixed "texture" coloration exactly; ceilings are large enough to
+    // read as a clearly driven, warm tail at DRIVE=100% without being a
+    // dedicated saturator's whole job (PREAMP's own ceiling, for
+    // reference, is 10.0 - see PreampCurves.h).
+    inline constexpr float verbReturnDriveGainBase  = 0.12f;
+    inline constexpr float verbReturnAsymmetryBase  = 0.02f;
+    inline constexpr float verbReturnDriveGainMax   = 9.0f;
+    inline constexpr float verbReturnAsymmetryMax   = 0.28f;
+
+    // Front-loaded (not S-shaped) curve - "На 20-30% уже должно быть
+    // слышно тёплое насыщение хвоста" (already audible warm saturation by
+    // 20-30% of the knob). pow(t, 0.42) reaches roughly half the base->max
+    // range by t=0.22-0.25 of knob travel (pow(0.25,0.42)=0.564), the same
+    // exponent this module's own DRIVE curve has always used - carried
+    // forward unchanged since it already satisfies this exact requirement
+    // (verified again below by the "front-loaded, not S-shaped" test).
+    inline constexpr float verbDriveCurveExponent = 0.42f;
 
     inline float verbDriveLerp (float base, float max, float driveNormalised01) noexcept
     {
         const auto t = std::clamp (driveNormalised01, 0.0f, 1.0f);
-        return base + (max - base) * verbSmoothstep (t);
-    }
-
-    inline float verbSendDriveGain (float driveNormalised01) noexcept
-    {
-        return verbDriveLerp (verbSendDriveGainBase, verbSendDriveGainMax, driveNormalised01);
-    }
-
-    inline float verbSendAsymmetry (float driveNormalised01) noexcept
-    {
-        return verbDriveLerp (verbSendAsymmetryBase, verbSendAsymmetryMax, driveNormalised01);
+        return base + (max - base) * std::pow (t, verbDriveCurveExponent);
     }
 
     inline float verbReturnDriveGain (float driveNormalised01) noexcept
@@ -306,111 +344,95 @@ namespace uni76::dsp
         return verbDriveLerp (verbReturnAsymmetryBase, verbReturnAsymmetryMax, driveNormalised01);
     }
 
-    // ---- Input stereo-width carry-through (live-testing follow-up round) -----
+    // ---- DRIVE warmth (return-stage pre-emphasis) ------------------------------
     //
-    // A real bug found via feedback: the FDN tank is (deliberately, for
-    // plate authenticity - see the class comment above) fed from a single
-    // mono sum, and its own stereo output comes entirely from the fixed
-    // decorrelated tap sign patterns - meaning genuine incoming stereo
-    // width (e.g. from PAN, if it runs before VERB in the chain order -
-    // see Core/ChainOrder.h) was silently discarded: VERB's own wet output
-    // carried no trace of it at all, however wide the input already was.
-    // verbInputSideBlend blends a portion of the *actual* input Side
-    // signal directly into the wet output (VerbProcessor.cpp), alongside
-    // (not instead of) the tank's own synthesised decorrelation - additive
-    // and scaled by the same wetGain*mix term everything else in the wet
-    // path already uses, so it is exactly zero whenever the module is
-    // bypassed or wetGain(0%)==0, same as every other wet-only term here.
+    // A plain symmetric-bandwidth tanh drives low and high content into
+    // the nonlinearity equally, which reads as "cheap clipping" rather
+    // than a deliberately voiced, warm saturator. A low-shelf boost ahead
+    // of the return-stage tanh (VerbProcessor.cpp), scaled by DRIVE,
+    // biases which content actually reaches the nonlinearity's curved
+    // region toward low-mid material - "warm", per this round's own
+    // "тёплым... а более дорогой и глубокий, не тресткающийся" request.
+    // Identity (0dB) at DRIVE=0%.
+    inline constexpr float verbReturnWarmthShelfHz = 350.0f;
+    inline constexpr float verbReturnWarmthMaxDb   = 5.0f;
+
+    // ---- Overall wet darkening (static, not macro/DRIVE-dependent) ------------
+    //
+    // A soft, single-pole rolloff on the wet output - what makes the
+    // module read as "slightly dark and further back in the mix" at
+    // every setting, distinct from the per-line damping filter above
+    // (which only affects the *decay rate*, not the tail's overall
+    // brightness at any single instant). Considerably darker than the
+    // old plate's 7200Hz "vintage rack" ceiling - this redesign's product
+    // brief explicitly asks for "sitting behind" rather than an extended-
+    // bandwidth modern algorithm.
+    inline constexpr float verbReturnBandwidthHz = 5200.0f;
+
+    // ---- Driven-tail placement: depth and static (non-modulated) width --------
+    //
+    // Two mechanisms, both scaled by DRIVE so they are exact no-ops at
+    // 0%, giving the driven tail a "warm, wide, and slightly distant"
+    // character (this round's own explicit request) WITHOUT any chorus/
+    // modulation (see the file comment above for why time-varying delay
+    // is avoided everywhere in this redesign, drive path included):
+    //
+    // 1. **Depth** - a second, DRIVE-dependent bandwidth ceiling on top
+    //    of the fixed verbReturnBandwidthHz above, walking down as DRIVE
+    //    rises. Distortion generates its own high harmonics, and rolling
+    //    the ceiling down *as DRIVE rises* keeps those harmonics from
+    //    ever reading as forward/"in your face" - the same distance cue
+    //    the old module's own driven-tail work already established.
+    // 2. **Width** - a small, FIXED (not LFO-modulated) inter-channel
+    //    delay offset on the return stage's R channel, blended in by
+    //    DRIVE. A static offset decorrelates L/R (countering a shared
+    //    waveshaper's tendency to pull two correlated channels toward
+    //    mono) without introducing any time-varying pitch/comb artefact -
+    //    there is no LFO here at all, unlike the old module's driven-tail
+    //    chorus.
+    inline constexpr float verbDriveDepthBandwidthMinHz = 2400.0f;
+    inline constexpr float verbDriveWidthDelayMs        = 0.6f;   // fixed R-channel offset
+    inline constexpr float verbDriveWidthMixMax         = 0.5f;   // how much of R is taken from the offset tap at full DRIVE
+
+    // ---- Input stereo-width carry-through --------------------------------------
+    //
+    // The tank is fed from a single mono sum (deliberate - see
+    // VerbProcessor.h), and its own stereo output comes from the fixed
+    // decorrelated tap sign patterns below - meaning genuine incoming
+    // stereo width (e.g. from PAN, if it runs before VERB in the chain
+    // order - see Core/ChainOrder.h) would otherwise be silently
+    // discarded. verbInputSideBlend blends a portion of the *actual*
+    // input Side signal directly into the wet output (VerbProcessor.cpp),
+    // alongside (not instead of) the tank's own synthesised decorrelation -
+    // additive and scaled by the same wetGain*mix term everything else in
+    // the wet path already uses.
     inline constexpr float verbInputSideBlend = 0.5f;
 
     // ---- Breakup (envelope-inverse return-stage character) --------------------
     //
-    // A fixed-gain tanh alone (verbReturnDriveGain above) gets audibly
-    // *cleaner* as the tail decays - a quieter signal sits deeper in
-    // tanh's near-linear region - backwards from a real driven plate/tape
-    // system, where the decaying tail characteristically "breaks up"/gets
-    // grainier as it fades. Direct reference: Vynl Audio Voyager-Verb's
-    // own documented character - "a saturated reverb that adds space
-    // without losing character - the tail breaks up as it fades, harmonic
-    // warmth and subtle distortion that makes the room feel physical, not
-    // processed." VerbProcessor.cpp tracks the tank's own current level
-    // against a slow-decaying "recent peak" reference and boosts the
-    // return stage's drive gain in inverse proportion to that ratio - the
-    // boost is small right after a loud transient (current ~= peak) and
-    // grows as the tail fades toward silence (current << peak), then
-    // resets once a new, louder transient arrives and re-anchors the
-    // peak. Multiplied by the raw DRIVE knob position (not
-    // verbReturnDriveGain itself), so DRIVE=0% reproduces the exact
-    // original behaviour with zero boost, matching every other
-    // DRIVE-scaled constant's own t=0 identity requirement.
-    inline constexpr float verbBreakupAmount = 1.5f;
-    // Fast enough to track the tank's own decay envelope, slow enough not
-    // to react to individual FDN feedback-pass ripples.
+    // A fixed-gain tanh alone gets audibly *cleaner* as the tail decays -
+    // a quieter signal sits deeper in tanh's near-linear region -
+    // backwards from a real driven analog system, where a decaying tail
+    // characteristically "breaks up"/gets grainier as it fades. Tracks
+    // the tank's own current level against a slow-decaying "recent peak"
+    // reference and boosts the return stage's drive gain in inverse
+    // proportion to that ratio. Multiplied by the raw DRIVE knob position
+    // (not verbReturnDriveGain itself), so DRIVE=0% reproduces the exact
+    // original behaviour with zero boost.
+    // Disabled (0.0) for the 2026-09-14 redesign - not part of this
+    // round's own explicit DRIVE brief ("warm, wide, slightly distant"
+    // tail, via the warmth shelf/depth/width mechanisms below, all of
+    // which remain), and its own envelope-ratio dynamic interacted
+    // unpredictably with the new tank's much longer input-diffusion
+    // buildup time and continuous read-position modulation (measured:
+    // the "gets more driven as it fades" trend it is meant to produce
+    // sometimes measured backwards under the new tank). Rather than ship
+    // an unpredictable character on top of an already-large redesign, the
+    // mechanism is kept (in case a future round wants to revisit it with
+    // its own dedicated measurement pass) but set to a true no-op.
+    inline constexpr float verbBreakupAmount = 0.0f;
     inline constexpr double verbBreakupLevelReleaseSeconds = 0.06;
-    // Slower than any single macro's own RT60 (verbDecayAnchors above
-    // tops out at 6.0s at DEEP) would defeat the ratio entirely - this
-    // sits comfortably above that, so within one tail the peak reference
-    // stays anchored near the transient's own level while still resetting
-    // for genuinely new, separate material.
-    inline constexpr double verbBreakupPeakReleaseSeconds = 8.0;
-
-    // Overall wet bandwidth ceiling (return stage) - soft, single-pole
-    // rolloff, not brickwall. Sits well above the damping filter's own
-    // cutoff so the two effects are both audible/measurable independently
-    // (a static ceiling on top-end brightness vs. a progressively-
-    // darkening tail).
-    //
-    // Lowered from 9500 during the "vintage character" round (direct
-    // reference: Valhalla VintageVerb's own tonal balance) - a smoother,
-    // less bright top end reads as an older digital reverb rack rather
-    // than a modern, extended-bandwidth algorithm, without needing a
-    // second explicit filter stage.
-    inline constexpr float verbReturnBandwidthHz = 7200.0f;
-
-    // ---- Tail chorus/vibrato (vintage-character round) -------------------
-    //
-    // Direct reference: Valhalla VintageVerb's own documented character -
-    // the characteristic "shimmer"/pitch-wobble a real vintage digital
-    // reverb rack's own fixed-point delay-line modulation produced,
-    // deliberately emulated rather than treated as a flaw. Implemented as
-    // a small, per-line LFO-modulated *read* offset into each FDN line's
-    // own circular buffer (VerbProcessor.cpp) - the buffer's own WRITE
-    // side and nominal length (and therefore the RT60/feedback-gain math
-    // above) are completely unaffected; only the fractional read position
-    // wobbles a little around its nominal (integer) index, requiring
-    // linear interpolation between two adjacent samples (same technique
-    // the pre-delay buffer already uses). Each line gets its own rate -
-    // spread across a narrow, slow, non-commensurate range (same
-    // "no small-integer ratios" principle verbLineLengthsMs already uses)
-    // so the 12 lines drift in and out of phase with each other rather
-    // than wobbling in lockstep (which would just read as a single slow
-    // pitch bend, not a chorused "shimmer").
-    // Reduced from an initial 1.6 (chosen for maximum audible smear) after
-    // measuring its real cost: even at a *fraction* of a sample, this
-    // tank's Householder feedback matrix mixes all 12 lines' own damped
-    // output into one shared term every pass, so each line's own
-    // interpolation loss doesn't stay local - it compounds across the
-    // *whole* tank, not just that one line. 1.6 samples measured a real
-    // RT60 collapse to roughly half this module's own historical decay
-    // time even after a large compensating anchor increase (see
-    // verbDecayAnchors above) - not an acceptable trade for the smear
-    // effect. 0.3 samples is the depth that, paired with the raised
-    // anchors above, measured back within ~10% of this module's own pre-
-    // chorus RT60 - still a genuinely audible, continuously-shifting
-    // wobble (not zero, not a token vibrato), just not the most extreme
-    // depth that was tried first.
-    // Raised again (anti-metallic round, direct feedback: "железо
-    // убирать") now that verbDecayAnchors below has more headroom to
-    // compensate with - deeper modulation smears the tank's own static
-    // comb-filter resonances more thoroughly. Re-measure RT60 (a
-    // dedicated test/diagnostic - see verbDecayAnchors's own comment)
-    // after touching this.
-    inline constexpr float verbChorusDepthSamples = 0.4f;
-    inline constexpr std::array<float, 12> verbLineChorusRateHz
-    {
-        0.113f, 0.147f, 0.181f, 0.209f, 0.233f, 0.271f,
-        0.298f, 0.331f, 0.362f, 0.401f, 0.437f, 0.479f
-    };
+    inline constexpr double verbBreakupPeakReleaseSeconds  = 8.0;
 
     // ---- Smoothing -------------------------------------------------------------
     inline constexpr double verbSmoothingSeconds = 0.03;

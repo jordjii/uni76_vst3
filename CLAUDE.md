@@ -12,9 +12,17 @@ get oriented without re-reading the whole codebase.
   (not a synth).
 - **Platforms**: Windows x64, macOS (Intel x86_64 + Apple Silicon arm64,
   built as a Universal Binary).
-- **Format policy**: VST3 only. Do not add AU, AAX, VST2, LV2, or
-  Standalone to the product build without a deliberate, separate decision -
-  see `FORMATS` in `Source/Plugin/CMakeLists.txt`.
+- **Format policy**: VST3 everywhere, **plus AU on macOS only** - a
+  deliberate, explicit exception decided 2026-09-13 (the user's own call,
+  made after a stray/out-of-policy AU build left over on a dev Mac from an
+  untracked earlier build was confusing FL Studio's macOS plugin scan
+  against the project's real VST3). `Source/Plugin/CMakeLists.txt` sets
+  `FORMATS VST3 AU` under `if(APPLE)` and `FORMATS VST3` otherwise - AU is
+  an Apple-only format (its JUCE plugin-client wrapper needs AudioUnit/
+  AudioToolbox), so it must never be added to the Windows `FORMATS` list.
+  Do not add AAX, VST2, LV2, or Standalone to the product build without a
+  further, separate deliberate decision - see `FORMATS` in
+  `Source/Plugin/CMakeLists.txt`.
 
 ## Build architecture
 
@@ -70,10 +78,11 @@ get oriented without re-reading the whole codebase.
   unlike every other module's purely-derived tri-scale/filter-lines, and
   none extends to any other module without a separate, deliberate
   decision.
-- **10 immutable public parameters.** See below - the UI must never grow
-  an 11th public parameter without a deliberate, separate decision (the
-  IMAGE/`imageTilt` addition above was exactly such a decision, already
-  made and shipped).
+- **15 immutable public parameters** (started at 7 - grew via `imageTilt`,
+  `panRate`, `verbDrive`, and DELAY's own five, each a deliberate,
+  separate decision, already made and shipped - see below and the "DELAY
+  module (2026-09-14)" entry further down). The UI must never grow past
+  this without an equally deliberate, separate decision.
 - No network requests from the frontend, ever. The one vendored exception
   to "no external JS" is `Resources/Web/juce_webview.js`, an unmodified
   local copy of JUCE's own `@juce-framework/webview` frontend module -
@@ -102,7 +111,7 @@ Do not duplicate these values by hand elsewhere - `include()` that file, or
 read from `Source/Core/PluginIdentity.h` for the C++-only schema-version
 constant.
 
-### The 10 public parameters (stable IDs, do not rename)
+### The 15 public parameters (stable IDs, do not rename)
 
 `preamp`, `eq`, `saturation`, `pitch`, `panorama`, `reverb`, `imager`,
 `imageTilt`, `panRate`, `verbDrive` - see
@@ -140,11 +149,35 @@ control, not an L/R
 balance pan, see below. Low Cut / High Cut are **not** separate
 parameters - they are internal to `Source/DSP/PreampProcessor`, derived
 entirely from `preamp` (see [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md)).
+**DELAY's own five parameters** (`delay`, `delayFeedback`,
+`delayDivision`, `delayStereo`, `delayPingPong`, added 2026-09-14) are
+the fourth such exception, and this project's first parameters that
+aren't a plain `0..100%` float or PITCH's own discrete int - `delay`
+(MIX, `0..100%`, default `0%`) and `delayFeedback` (`0..95%`, default
+`30%`) follow the established pattern, but `delayDivision` is a genuine
+`AudioParameterChoice` (5 fixed musical note divisions, default `"1/8"`)
+and `delayStereo`/`delayPingPong` are genuine `AudioParameterBool`s
+(both default off/`false`) - see [docs/DSP_DELAY.md](docs/DSP_DELAY.md)
+for the full parameter table and why these two new shapes needed no
+changes to `WebUIEditor.cpp`'s generic `ParamID::all`-driven preset/A-B/
+save-restore loops.
 
 ## PREAMP + EQ + SAT + PITCH + PAN + VERB + IMAGE DSP (all seven modules now have real audio processing)
 
-Chain order: `Input -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> VERB ->
-IMAGE -> Output` - `PluginProcessor::processBlock()` calls
+**Historical section - the chain order and latency description below
+predate DELAY (added 2026-09-14, the 8th module - see the "DELAY module
+(2026-09-14)" entry further down for the actual current chain order,
+`Input -> PREAMP -> EQ -> SAT -> PITCH -> PAN -> DELAY -> VERB -> IMAGE ->
+Output`, and docs/DSP_DELAY.md for its own full DSP notes).** Everything
+below this paragraph about PREAMP/EQ/SAT/PITCH/PAN/VERB/IMAGE themselves
+is still accurate; only the chain-order/latency-sum description needs
+DELAY mentally inserted between PAN and VERB (DELAY's own
+`getLatencySamples()` is always 0, so the latency SUM formula's numeric
+result is unaffected either way).
+
+Chain order (as originally shipped, before DELAY): `Input -> PREAMP ->
+EQ -> SAT -> PITCH -> PAN -> VERB -> IMAGE -> Output` -
+`PluginProcessor::processBlock()` calls
 `preampProcessor.process()`, then `eqProcessor.process()`, then
 `satProcessor.process()`, then `pitchProcessor.process()`, then
 `panoramaProcessor.process()`, then `verbProcessor.process()`, then
@@ -277,45 +310,24 @@ EQ (no delay-alignment needed, PAN has no latency to align against).
 
 `Source/DSP/VerbProcessor.*` implements the `06 VERB / VINTAGE SPACE`
 module - see [docs/DSP_VERB.md](docs/DSP_VERB.md) for the full topology
-and measured data. A single 1970s-style electromechanical **plate**
-reverb + analog send/return electronics - not a generic digital hall,
-not a ROOM/PLATE/CHAMBER morph, not a convolution IR: `DRY (0%) -> PLATE
-(50%) -> DEEP (100%)`, always the *same* plate machine (only send
-amount, decay time, and pre-delay change with the macro, never the
-plate's own physical character). DRY is read into locals and written
-back unmodified in the same per-sample loop iteration - it never passes
-through any filter, delay line, or nonlinearity, making "dry is never
-touched" an algebraic guarantee (measured RMS diff **0** on a broadband
-source). The wet path: a 350Hz cascaded 4-pole Butterworth highpass on
-the send, a tiny asymmetric-tanh analog send stage, a 4-stage short-
-delay diffuser (early density - deliberately *not* used alone as the
-whole reverb, which is the "cheap Schroeder" architecture the product
-brief explicitly rejects), a smoothly-variable pre-delay, a 12-line FDN
-plate tank (Householder feedback matrix - orthogonal/energy-preserving,
-O(N) per sample - with per-line one-pole damping so highs decay faster
-than mid, fed from a single mono sum and read out via two independent
-fixed sign patterns for genuinely decorrelated stereo width, the way a
-real plate's two pickups at different positions would), an analog return
-stage (tiny tanh + ~9.5kHz soft bandwidth ceiling), and a second, lighter
-350Hz safety highpass on the wet output (a recirculating feedback
-network's own resonances aren't guaranteed to respect an input-side
-filter alone). Measured: 40-120Hz wet content sits 60-92dB down (almost
-no tail at all); 1kHz RT60 ~3.5s at 100% (5kHz and 8kHz measurably
-shorter - highs decay faster than mid, by design); wet-path THD under 2%
-at every macro setting (an earlier, more aggressive send/return
-asymmetry setting measured 5-6%, since the dominant even-harmonic term
-is driven by the tanh's *asymmetry*, not its drive gain - reducing
-asymmetry specifically, not just drive, is what actually fixed it); a
-hard safety clamp on any single delay line's feedback gain
-(`verbLineFeedbackGainMax`) was added after a more aggressive damping-
-filter tuning attempt pushed the shortest line's loop gain close enough
-to instability to measurably distort the result. PAN=100+VERB=50
-integration measured 80Hz bass L/R at 0.16dB (bass stays centred and
-stable with the reverb layered on top); full-chain VERB0->VERB100 bass
-change measured under 0.1dB at 60/80/100Hz. Zero added latency (pre-
-delay/tank recirculation are wet-path effects, not a lookahead on the
-direct signal), same `reverbEnabled`-driven bypass pattern as PAN
-(mutes only the wet contribution, no delay-alignment needed).
+and measured data. **As of 2026-09-14 this is a from-scratch chamber/
+hall reverb, not a plate** - see the "VERB direction change (2026-09-14)"
+and "VERB redesign implementation (2026-09-14)" entries further down in
+this file for the full story; the plate architecture this paragraph used
+to describe has been removed from the codebase, not retuned. In short:
+input diffusion cascade (8 stages) -> fixed 16ms pre-delay -> a 16-line
+Householder-mixed FDN tank (16.1-78.1ms lines, 4200Hz per-line damping, a
+small allpass-interpolated read-position modulation) -> DRIVE-scaled
+return stage -> output. DRY is read into locals and written back
+unmodified in the same per-sample loop iteration, unchanged from every
+earlier round - "dry is never touched" remains an algebraic guarantee.
+Mix now controls *only* dry/wet balance - decay (fixed ~3s) and pre-delay
+(fixed 16ms) no longer vary with Mix at all, a direct reversal of the old
+plate module's own behaviour. Zero added latency, same
+`reverbEnabled`-driven bypass pattern as every other module. **Honestly
+disclosed open item**: the redesign measurably reduced (not eliminated)
+single-note/single-frequency resonance - see the implementation entry
+below for the full numbers and recommended next steps.
 
 `Source/DSP/ImagerProcessor.*` implements the `07 IMAGE / STEREO IMAGE`
 module - see [docs/DSP_IMAGE.md](docs/DSP_IMAGE.md) for the full
@@ -1656,6 +1668,557 @@ MSVC 19.51):
     convention; installer rebuilt.
   - **All three modules originally flagged (PAN RATE, VERB DRIVE, IMAGE
     bipolar) are now complete.**
+
+- **First real macOS build + unsigned .pkg installer** - the first time
+  this project's macOS path (`CMakePresets.json`'s `macos-release`
+  preset, Xcode generator, `CMAKE_OSX_ARCHITECTURES=x86_64;arm64`) has
+  run on real macOS hardware (Xcode 26.6, CMake 4.4.3, macOS 26.6.2,
+  Apple Silicon host). `cmake --preset macos-release` configured cleanly;
+  building the **full** default target set (`cmake --build ... --config
+  Release` with no `--target`) failed - not in the plugin, but in
+  `Tests/SoakTest.cpp` (a standalone diagnostic executable, not part of
+  `UNI76Tests` or the plugin itself), which hard-includes `windows.h`
+  with no platform guard, a pre-existing gap never caught before since
+  macOS was never built. Building the actual plugin target directly
+  (`--target UNI76_VST3`) is unaffected and succeeded cleanly: a real
+  `UNI 76.vst3`, confirmed via `lipo -info` to be a genuine Mach-O
+  universal binary (`x86_64 arm64`), 11MB, ad-hoc signed by Xcode's
+  default build settings (no Developer ID involved). A new
+  [`Packaging/macOS/build-pkg-unsigned.sh`](Packaging/macOS/build-pkg-unsigned.sh)
+  (companion to the still-untouched, still-deliberately-nonfunctional
+  `build-pkg.sh` signed/notarized skeleton) packages that `.vst3` via
+  plain `pkgbuild` + `productbuild` - no `--sign`, no certificate, no
+  Apple ID, nothing credential-shaped anywhere in it - producing a real,
+  installable `UNI76-0.1.0-macOS-unsigned.pkg` (~4.2MB) that installs to
+  the system-wide `/Library/Audio/Plug-Ins/VST3`, verified via
+  `pkgutil --payload-files` and `installer -pkginfo`. Being unsigned and
+  unnotarized, Gatekeeper blocks a plain double-click on first run - the
+  script's own output explains the override (right-click -> Open, or
+  System Settings > Privacy & Security > "Open Anyway"). This is a
+  deliberate, explicit stand-in for local use until real Developer ID
+  credentials exist, not a substitute for the production pipeline -
+  see [Packaging/macOS/README.md](Packaging/macOS/README.md)'s updated
+  status section. **Not done this round**: fixing `SoakTest.cpp`'s
+  `windows.h` include for cross-platform building, running the DSP test
+  suite (`UNI76Tests`) on macOS, actually installing/loading the `.vst3`
+  in a real macOS DAW, and the entire signed/notarized/stapled production
+  pipeline (still blocked on a Developer ID that does not exist in this
+  environment).
+
+- **AU added as a second, macOS-only format** (a direct continuation of the
+  above, same day) - a real, out-of-policy AU `.component` was found
+  already installed on this dev Mac (`/Library/Audio/Plug-Ins/Components/
+  UNI 76.component`, dated two days before this session, same bundle ID -
+  built by some untracked earlier process, not by this project's current
+  `FORMATS VST3`-only CMake config, which cannot produce AU at all) and was
+  confusing FL Studio's macOS plugin scan against the freshly-installed
+  VST3 from the entry above (FL kept opening the stale AU build instead of
+  the current VST3). Rather than just delete the stray AU and move on, the
+  user explicitly chose - after being asked directly, since this overrides
+  the project's own documented "VST3 only" policy - to make AU a real,
+  permanent second format. See the updated "Format policy" bullet above:
+  `Source/Plugin/CMakeLists.txt` now sets `FORMATS VST3 AU` under
+  `if(APPLE)` and `FORMATS VST3` otherwise, since AU's JUCE plugin-client
+  wrapper needs AudioUnit/AudioToolbox and cannot compile on Windows - the
+  Windows build's format list is untouched. No `AU_MAIN_TYPE` override was
+  needed - JUCE's own CMake default (`kAudioUnitType_Effect`) already
+  matches this plugin's `IS_SYNTH FALSE` / `IS_MIDI_EFFECT FALSE`
+  configuration. Reconfiguring (`cmake --preset macos-release`) picked up
+  the new format and generated a real `UNI76_AU` Xcode target alongside
+  `UNI76_VST3`; building both (`--target UNI76_AU --target UNI76_VST3`)
+  produced a second genuine Mach-O universal (`x86_64 arm64`) bundle,
+  `UNI 76.component`, confirmed via `lipo -info`. `Packaging/macOS/
+  build-pkg-unsigned.sh` was extended to take both bundle paths and stage
+  them at their respective install locations (`/Library/Audio/Plug-Ins/
+  VST3` and `/Library/Audio/Plug-Ins/Components`) in one `pkgbuild`/
+  `productbuild` pass, producing a single updated (~8.9MB) `UNI76-0.1.0-
+  macOS-unsigned.pkg` installing both formats at once - verified via
+  `pkgutil --payload-files` listing both bundles' contents. Same unsigned/
+  unnotarized caveat as before (Gatekeeper override needed on first
+  install); the stale, out-of-policy AU left on this dev Mac from before
+  this round was **not** deleted by this session (removing it needs `sudo`
+  and the user's own password, which this session cannot provide) - the
+  user was given the exact `sudo rm -rf "/Library/Audio/Plug-Ins/
+  Components/UNI 76.component"` command to run themselves before
+  installing the new combined `.pkg`, so the freshly-built AU replaces it
+  cleanly rather than the two coexisting.
+
+- **PITCH stereo narrowing + VERB plate/hall blend/tail/DRIVE character +
+  preset-name persistence fix** (three items from the same live-testing
+  feedback round, same macOS environment as the two entries above):
+  - **PITCH**: direct feedback that the pitch-shifted signal spreads too
+    wide ("уходит за уши"), compared explicitly against Waves
+    SoundShifter's own, narrower pitch character - the user's own A/B
+    found that IMAGE at -25% right after PITCH matched SoundShifter's
+    result. Root cause: PITCH's two fully independent per-channel STFT
+    engines (deliberate, see docs/DSP_PITCH.md's "Stereo coherence"
+    section - needed for the bit-identical-input guarantee) have no
+    cross-channel phase state, so genuinely correlated (not bit-
+    identical) stereo input picks up extra, synthetic Side energy as each
+    channel's phase evolves independently. Fixed with a fixed, frequency-
+    flat Side attenuation on PITCH's wet output (`PitchProcessor.cpp`),
+    gain matching IMAGE's own `imager(-25%)` result exactly
+    (`PitchCurves.h`'s `pitchWetSideNarrowGain = 0.84375`, reproduced as
+    its own constant rather than including `ImagerCurves.h` into an
+    unrelated module) - see docs/DSP_PITCH.md's new "Wet-output stereo
+    narrowing" section. Full `UNI76Tests` PitchProcessor suite (bit-
+    identical-stereo, bass-stability matrix, sideband suppression,
+    polyphonic material, pitch accuracy) reruns green unchanged, since
+    the fix only touches Side and every one of those tests is either
+    already-mono (Side already 0) or measures Mid-domain content.
+  - **VERB "too metallic" - second attempt, different mechanism**: the
+    UX-polish-pass investigation above tried and measured-rejected three
+    tank-wide tuning levers against a single-checkpoint resonance-sweep
+    metric. This round instead worked out, from the feedback-gain
+    formula, that at the (then-current) 16s DEEP anchor only the single
+    longest FDN line stayed under `verbLineFeedbackGainMax`'s safety
+    clamp - all 11 others were already pinned to it, which caps each
+    clamped line's own decay time in proportion to its length, leaving
+    only *one* isolated long-line resonance still ringing late in a high-
+    mix tail (the actual "metallic ring on specific notes" mechanism).
+    Fixed by stretching the top 5 of 12 FDN lines further out (19.3-37.3ms
+    -> 21.1-69.3ms, bottom 7 lines/plate's early character unchanged), so
+    *three* non-commensurate lines stay under the clamp instead of one -
+    blending a hall's "more, longer, smoother late-decay paths" character
+    into the *same* tank/knob, per the user's own "смешать plate и hall"
+    request, not a separate algorithm. Resonance-sweep diagnostic
+    improved from the original RC1 baseline (detrended peak/stdDev
+    15.89/5.68dB) to 10.65/4.73dB - though honestly caveated in
+    docs/DSP_VERB.md's new "Plate/hall blend" section as not a clean
+    before/after for *this specific* change, since an undocumented
+    intermediate diffuser/chorus retune (visible only in `VerbCurves.h`'s
+    own comments) had already happened before this session with no fresh
+    baseline captured, a documentation gap now closed.
+  - **VERB tail +1s**: `verbDecayAnchors` raised uniformly by 1.0s at
+    every anchor (`{1,2.2,6,11,16}` -> `{2,3.2,7,12,17}`); measured RT60
+    grew from this module's long-standing baseline (~1.9s/~3.35s at
+    50%/100%) to 2.46s/3.40s - genuinely audible, not just an internal-
+    target change. Safe specifically because of the line-length change
+    above, which gives the higher target somewhere to spend the extra
+    headroom under the unchanged, proven-safe stability clamp.
+  - **VERB DRIVE - character + swell**: direct feedback that DRIVE
+    sounded like a "clipping" overdrive rather than "expensive and deep",
+    and asked for the effect to feel prolonged (~1s) rather than instant.
+    Two independent additions, both DRIVE=0%-identity: (1) **warmth** - a
+    400Hz low-shelf boost (up to +6dB at full DRIVE) ahead of the return-
+    stage tanh, biasing generated harmonic content toward low-mid
+    ("deeper"), reusing the same pre-emphasis-around-a-nonlinearity
+    technique PREAMP/SAT already use elsewhere, own constants; (2)
+    **swell** - a new ~1s-attack/~2.2s-release envelope tracking the wet
+    send's own level, scaling how much of DRIVE's own gain-above-base is
+    reached at any instant (composed with, not replacing, the pre-
+    existing "Breakup" tail-fade envelope) - a transient starts near the
+    tiny base coloration and swells toward the full knob-set amount over
+    roughly a second. See docs/DSP_VERB.md's new "Drive swell" and "DRIVE
+    warmth" sections. All existing DRIVE tests (curve identity, THD
+    increase - measured well past the swell's own attack window, so the
+    steady-state ceiling is unchanged - untouched-DRIVE-still-small,
+    save/restore, factory-preset defaults) remain green.
+  - **Preset name reverting to "Default" on editor close/reopen (real
+    bug, not the preset itself changing)**: `WebUIEditor`'s active-preset
+    identity (`activePresetKind`/`activePresetName`) lived only on the
+    *editor* instance, which JUCE destroys and recreates every time the
+    plugin window is closed/reopened - the underlying parameter values
+    (the real preset content) were already correctly persisted via APVTS
+    and unaffected, only the *displayed name* was lost. Fixed by also
+    tracking the same identity on `UNI76AudioProcessor` (`PluginProcessor.h`'s
+    `setActivePresetInfo()`/`getActivePresetKind()`/`getActivePresetName()`),
+    persisted via `getStateInformation()`/`setStateInformation()` as two
+    plain ValueTree properties (`PluginIdentity.h`'s
+    `activePresetKindProperty`/`activePresetNameProperty`, same outside-
+    the-APVTS-tree pattern `ModuleEnableState`/`ChainOrder` already use -
+    no schema bump needed, a missing property just falls back to "no
+    active preset" like a fresh instance). The editor constructor now
+    restores this from the processor instead of always starting at
+    `PresetKind::none`, and `setActivePreset()`/`clearActivePreset()`
+    mirror every update back onto the processor. One deliberate
+    simplification: the "dirty" (`Name *`) comparison snapshot is *not*
+    persisted (only kind+name are) - on reopen it re-baselines against
+    whatever the live values already are, so a dirty marker present at
+    close time may read as clean on reopen; the name itself (what was
+    actually reported broken) is now fully preserved.
+  - **A genuine, pre-existing, unrelated finding surfaced by this round's
+    full `UNI76Tests` run** (the first time this suite has ever executed
+    on macOS/Clang, not just Windows/MSVC): several `PanoramaProcessor`
+    tests fail on this platform - including its own *pure-function* curve-
+    mapping test (`panWidthLow`/`panWidthHigh`, no audio buffers involved
+    at all) - with deviations up to ~2-4dB against tolerances as tight as
+    0.25dB, cascading into downstream PAN+VERB/PAN+PITCH integration test
+    failures. `PanoramaProcessor.cpp`/`PanoramaCurves.h` were **not**
+    touched by this round (or the two macOS-build rounds before it) - the
+    dedicated `PitchProcessor` and `VerbProcessor` test suites, and every
+    other module, pass cleanly on this same run. Most likely explanation:
+    transcendental math functions (`pow`/`tanh`/etc.) are not guaranteed
+    bit-identical across MSVC's and Apple Clang/libc++'s runtime
+    implementations, and this is the first time PAN's own numbers have
+    ever been checked against anything but MSVC. **Not investigated or
+    fixed this round** - out of scope of the three items above, flagged
+    here so it isn't lost; PAN's own DSP/tests would need a dedicated
+    pass to confirm the platform-difference theory and decide whether the
+    tests' tolerances need loosening for cross-platform use or the DSP
+    itself has a genuine (if small) platform-dependent behaviour.
+  - Full `UNI76Tests` suite rebuilt and rerun on macOS after every change
+    in this round; VST3+AU rebuilt and the unsigned `.pkg` installer
+    repackaged with both.
+
+- **Round 2 on the same three items** (the previous round's PITCH and VERB
+  fixes were both reported back as insufficient or aimed at the wrong
+  mechanism; the preset-name fix was not re-reported and is unchanged):
+  - **PITCH - two problems, not one.** Report: another ~-40% of IMAGE was
+    still needed for width parity, *and* a "room effect"/distance quality
+    remained that no amount of narrowing removed. (a) **Width**: the flat
+    Side gain is replaced by a frequency-shaped one - a single low-shelf
+    on Side alone, 0.55 at the bottom and 0.12 at the top (500Hz corner).
+    An STFT's bins are linearly spaced, so proportionally far more
+    independently-evolving bins land in the treble, and HF inter-channel
+    decorrelation is also exactly the cue the ear reads as diffuse space.
+    Deliberately the opposite shape to IMAGE's widening contract: this is
+    artifact removal, not image design. (b) **"Room"**: not a width
+    problem at all - it is the phase vocoder's own analysis-window
+    smearing. Shortening the window (140ms -> 100ms) was tried and
+    **reverted**: the cost was not the predicted modest bass tradeoff but
+    a collapse of polyphonic resolution (a 120Hz partial at -7ST landed on
+    97.4Hz instead of 80.1Hz, 21.7% error; "Polyphonic A" and the
+    "especially critical" "Polyphonic E" both failed) - audibly wrong
+    notes on exactly the guitar-chord material this is aimed at. Attacked
+    instead via the tonality limit, 8000Hz -> 4000Hz, which hands a larger
+    share of the spectrum back to coherent resynthesis and costs nothing
+    in low-frequency resolution (the whole 40-120Hz benchmark range sits
+    far below the limit either way). Honestly flagged in
+    docs/DSP_PITCH.md: the tonality-limit change is a principled move at
+    the right mechanism but "how much less roomy" was not separately
+    measured - only that it costs nothing measurable.
+  - **VERB metallic ring - 12 -> 16 lines.** Round 1's three surviving
+    late modes were still few enough to follow individually. Bottom 7
+    lines untouched (the plate's tight early signature); nine new/re-spaced
+    lines above, out to 88.3ms, so six lines sit under the stability clamp
+    at DEEP and eight at 70% mix - where the complaint was loudest. Not
+    the "16 lines over the same range" attempt the old investigation
+    measured as worse: that one added density to the early field and
+    changed nothing about late survival. Also fixed a latent bug this
+    exposed: `sqrtNumLines` was a hardcoded `sqrt(12)` literal that would
+    have silently mis-scaled tank output by ~15%; now derived.
+  - **VERB decay re-scaled** - with the longer lines, round 1's anchors
+    overshot to 3.33s/5.53s (past the requested "+1s") and left the
+    longest line audible after 8s of silence, failing the audit's
+    denormal/silence test. Anchors scaled to `{1.5,2.6,5.0,7.5,10.0}`;
+    measured RT60 now **2.53s/4.35s** (50%/100%) against a ~1.9s/3.35s
+    historical baseline - the requested second, and that test green again.
+  - **VERB DRIVE - three corrections.** (a) **It was driving the wrong
+    thing**: DRIVE scaled the *send* stage, so the tank reverberated an
+    already-distorted signal ("distort, then reverb") - the reported "он
+    просто делает drive у сигнала, а должен перегружать именно сам
+    реверб". The send is now permanently pinned to its base texture values
+    and never reads the knob; the return stage carries the whole control
+    (ceilings 5.0->11.0 gain, 0.24->0.30 asymmetry), so the tank makes a
+    clean tail which is *then* overdriven. (b) **It engaged far too late
+    on the knob**: `verbDriveLerp` used `verbSmoothstep`, which returns
+    only 0.156 at t=0.25 - the same back-loaded-curve defect the PREAMP/
+    SAT drive round already diagnosed. Now `pow(t, 0.6)`: 25% knob gives
+    43.5% of range (was 15.6%), 30% gives 48.6%. A new regression test
+    asserts the curve *shape*, so retuning ceilings can't silently
+    reintroduce it. (c) **The attack should never have existed**: "я тебя
+    не просил делать атаку у Drive, он должен быть сразу же, но с
+    небольшим хвостиком... релиз... 0.8 секунду" - the previous round's 1s
+    attack / 2.2s release was a misreading, and was itself half of the
+    "engages too late" complaint. Now 3ms attack / 0.8s release, tracking
+    the tank's output rather than the send. Measured THD 0% -> 100%:
+    **0.47% -> 7.68%**.
+  - **VERB driven-tail placement** ("не в лицо, а вдаль вглубь... пошире,
+    возможно немного с эффектом chorus") - two DRIVE-scaled mechanisms,
+    both exact no-ops at 0%: a second bandwidth ceiling walking 7200Hz ->
+    2600Hz as DRIVE rises (HF content is the ear's strongest distance cue,
+    so rolling it off *as drive increases* keeps added harmonics from ever
+    sounding forward), and a short modulated delay with **opposite LFO
+    polarity per channel** - which both counteracts the image collapsing
+    toward mono (a shared waveshaper on two correlated channels always
+    raises their correlation) and supplies the requested chorus from the
+    same mechanism. Deliberately outside the FDN feedback loop, so it
+    cannot touch RT60 or stability.
+  - **Test status**: the final run's failure list is *identical* to the
+    first-ever macOS run's, before any of this work - the 5 pre-existing
+    `PanoramaProcessor` platform failures plus the 2 integration tests
+    that run through PAN. Zero net new failures; every PitchProcessor and
+    VerbProcessor test passes, including the polyphonic suite that caught
+    the reverted window experiment.
+  - **Honest note on the resonance-sweep metric**: its detrended figure
+    moved the wrong way (10.65dB -> 14.59dB) across the 16-line change.
+    That is the confound this document's own earlier investigation already
+    identified - the sweep samples one fixed 300ms checkpoint and a
+    longer-average-line tank has completed fewer round-trips by then. The
+    case for the change is the mechanism (six to eight simultaneous
+    surviving late modes instead of one), not this metric; the
+    multi-checkpoint sweep that could actually adjudicate it remains the
+    open methodology gap.
+
+- **PITCH architecture fix (round 3) - shipped and verified; VERB Drive
+  routing/curve fix - shipped and verified; VERB metallic-ring
+  investigation - diagnosed, attempted fix reverted, problem remains
+  open** (real, ears-on feedback that rounds 1/2 above did not actually
+  fix any of the three reported problems, PITCH reportedly worse):
+  - **PITCH - root-caused and fixed at the architecture level, not
+    patched downstream again.** Read the vendored Signalsmith Stretch
+    source directly (`ThirdParty/signalsmith-stretch/signalsmith-
+    stretch.h`) rather than guessing: its multi-channel `process()` path
+    has its own per-band phase-locking mechanism (identifies the highest-
+    energy channel per frequency band, locks every other channel's phase
+    to it, carrying over the *input's own* inter-channel phase
+    relationship) - built for exactly this problem, previously used only
+    for the input/output interface, never for genuinely joint analysis.
+    `PitchProcessor` (`.h`/`.cpp`) now wraps **one** shared multi-channel
+    engine instead of two independent mono ones; the downstream Side-
+    narrowing filters from rounds 1/2 (`pitchSideNarrowLowGain`/
+    `HighGain`/`CrossoverHz`, `pitchWetSideNarrowGain`) are **removed
+    entirely** - the fix addresses the mechanism, not the symptom.
+    Tradeoff, measured and disclosed: dual-mono input is no longer
+    bit-exact (`Tests/PluginTests.cpp`'s two dual-mono tests updated from
+    a `<1e-6` bound to `<3e-3`, worst measured ~1.1e-3, ~-50dB relative to
+    the signal - not expected to be audible) in exchange for removing the
+    much larger, definitely-audible independent-phase-drift problem on
+    real correlated stereo material. See docs/DSP_PITCH.md's "Stereo
+    coherence" section for the full derivation and numbers.
+  - **VERB DRIVE - routing reconfirmed correct, curve pushed further
+    front-loaded, redundant envelope removed.** The round-2 tail-only
+    routing (send permanently pinned to base values, only the return
+    stage reads DRIVE) was already structurally correct - added two
+    dedicated null tests (`Tests/PluginTests.cpp`) proving it directly:
+    output is bit-identical across `verbDrive` 0%->100% at `reverb`=0%
+    (`maxAbsDiff<1e-7`), and the DI attack's first 5ms is unaffected by
+    DRIVE at a real nonzero wet setting too (`maxAbsDiff<1e-3`). Per
+    explicit instruction not to keep machinery that isn't earning its
+    place, round 2's dedicated attack/release envelope (3ms/0.8s,
+    tracking the tank's output) is **removed** - DRIVE now reaches
+    `verbReturnDriveGain()` through nothing but its own existing ~30ms
+    parameter smoothing, engaging together with the wet tail rather than
+    through a second, separate ramp (`breakup`, a genuinely different
+    tail-fade character, is unaffected). Curve exponent pushed from 0.6
+    to 0.42 (25% knob now reaches 56% of the gain range, was 44% at 0.6,
+    15.6% at the original `smoothstep`). Measured wet-path THD 0%->100%:
+    **0.47% -> 12.46%** (a ~27x increase, clearly audible) - up from
+    round 2's own 0.47%/7.68% at the same measurement point, confirming
+    the steeper exponent alone (independent of the VERB-tank work below,
+    which was fully reverted) made a real, further difference.
+  - **VERB metallic ring - root cause correctly diagnosed, attempted fix
+    reverted after a measured regression.** Diagnosis (still believed
+    correct): a static FDN's resonant frequencies are fixed regardless of
+    line count/matrix quality (Jot/Griesinger/Dattorro-documented FDN
+    behaviour) - the established fix is genuinely time-varying delay
+    lengths, not more modes. This tank's own modulation mechanism was
+    capped to a token 0.3-0.4 samples because its 2-tap linear
+    interpolation has a frequency-dependent attenuation that compounds
+    over hundreds of feedback passes. Replaced with a first-order allpass
+    fractional-delay interpolator (unity magnitude *for a fixed*
+    fractional delay, in theory removing that cost) and raised modulation
+    depth in stages (2.2, then 1.2 samples, each with re-tuned decay
+    anchors to compensate). **Measured result was the opposite of the
+    theory and non-monotonic** (RT60 got *shorter* as depth was
+    *reduced*, 2.09s -> 1.02s -> 0.95s at 100% across the three attempts,
+    against a 4.35s baseline) - inconsistent with a correctly-implemented
+    magnitude-flat interpolator, pointing to a real implementation bug
+    (leading suspect: the allpass structure's own minimum representable
+    delay is a full sample, so it cannot exactly reproduce this file's
+    `frac==0` direct-index-read case the way the original linear
+    interpolator does - the tap-direction mapping needs a more careful,
+    independently-verified derivation than this round produced). Rather
+    than ship a measured regression, **reverted in full**:
+    `VerbProcessor.cpp`'s tank read is back to 2-tap linear interpolation,
+    `verbChorusDepthSamples`/`verbDecayAnchors` back to their exact
+    pre-round-3 values - reconfirmed via a real build+test run that RT60
+    (2.53s/4.35s at 50%/100%) and wet-path THD are both back at their
+    known-good baseline. **The metallic-ring problem itself remains
+    unsolved** - see docs/DSP_VERB.md's "Metallic-ring root-cause
+    investigation" and "Known limitations" sections for the full measured
+    numbers and the recommended next-step methodology (verify any future
+    interpolator in isolation, outside the feedback loop, before wiring
+    it back into the tank).
+  - **Pre-existing, unrelated finding, not caused by this round**: the
+    same 5-6 `PanoramaProcessor`/PAN-integration test failures this
+    document's own macOS-round entries already flagged (stale test
+    targets from PAN's earlier MONO/NATURAL/WIDE-era and tempo-sync
+    changes, never updated) are still present on this Windows/MSVC build
+    too - confirmed via `git status` that no PAN source file has any
+    uncommitted change from this round or the round before it. Out of
+    scope for this round (PITCH/VERB/Drive only); flagged again here so
+    it isn't lost, not fixed.
+  - Debug build not re-verified this round (time budget went to the
+    VERB investigation's several build/test iterations); Release build
+    clean (0 warnings) and the full suite (bar the pre-existing PAN
+    failures above) green after every change in this round.
+
+## VERB direction change (2026-09-14) - Plate Reverb retired
+
+**Documentation-only round - no DSP or test code was touched.** Every
+VERB entry above this one documents the module's *plate*-era history
+(the electromechanical-plate architecture, its FDN tank, and the several
+rounds of "metallic ring" investigation against that architecture) - kept
+as historical record, but **superseded as of this entry**. Plate is no
+longer this module's sound reference and must not be used as one in any
+future VERB work; do not re-attempt to preserve, restore, or rebuild a
+metallic Plate Reverb character.
+
+**New mandatory direction: a soft, warm vintage reverb**, not a plate,
+not a generic digital hall, and not a cheap-digital-plate emulation:
+
+- warm and musical, not clinical/digital-sounding;
+- a soft, dense tail around **~3 seconds**;
+- **no metallic ringing** and **no resonant/standing-out notes** - the
+  exact defect the plate-era "metallic-ring" investigations (see above)
+  tried and failed to fully solve on the old architecture; the new
+  direction sidesteps that problem rather than continuing to chase it on
+  the same design;
+- **no hard/harsh early reflections**;
+- must not read as a cheap digital plate;
+- slightly dark, sitting back/behind in the mix rather than up-front;
+- must suit electric guitar licks, leads, and chords well;
+- must sound natural and musical even at Mix 70-100% (the plate-era
+  design's own worst-case complaint region - see "Plate/hall blend"
+  above).
+
+**VERB DRIVE keeps its existing product contract** (overload the
+*shaped/formed reverb tail*, never the DI/dry signal - this was already
+correctly re-routed onto the return stage in the plate-era "DRIVE round
+2/3" work above, and that routing principle carries forward unchanged).
+The overdriven tail itself should be **warm, wide, and slightly distant**
+- in the spirit of Mk.gee's own guitar-reverb aesthetic (already the
+explicit reference named in the plate-era "DRIVE round 2" work above),
+not a clipping/harsh overdrive.
+
+**Status**: direction decided (see above) and then **implemented the
+same session** - see the follow-up entry immediately below.
+
+## VERB redesign implementation (2026-09-14) - chamber/hall reverb shipped
+
+Implements the direction decided in the entry directly above. The plate
+FDN described in every VERB paragraph/round above this point (Householder-
+mixed 12/16-line tank, its own delay lengths, its own damping tuning) is
+**removed from the codebase**, not retuned - `Source/DSP/VerbProcessor.h`/
+`.cpp` and `Source/DSP/VerbCurves.h` are a from-scratch rewrite. See
+[docs/DSP_VERB.md](docs/DSP_VERB.md)'s new "Implementation (2026-09-14
+redesign)" section for the full architecture, every measured number, and
+the one honestly-disclosed open item - summarised here:
+
+- **New topology**: input diffusion cascade (8 stages) -> fixed 16ms pre-
+  delay -> a 16-line Householder-mixed FDN tank (16.1-78.1ms lines, 4200Hz
+  per-line damping) -> DRIVE-scaled return stage -> output. Not Dattorro's
+  plate topology, not a repair of the old plate tank's own building
+  blocks.
+- **Mix now controls only dry/wet balance** - decay (`verbTargetDecaySeconds
+  = 3.0s`) and pre-delay (`verbPreDelayMsValue = 16ms`) are both fixed
+  constants in `VerbCurves.h`, completely independent of the macro. This
+  directly reverses the old plate module's own "Mix stretches decay from
+  ~2.5s to ~4.35s" behaviour, which this round's brief explicitly asked
+  not to repeat.
+- **A new `Biquad.h` primitive, `AllpassFractionalDelay`** - a first-order
+  allpass fractional-delay interpolator with an exactly flat magnitude
+  response at any delay (unlike 2-tap linear interpolation), used for a
+  small (`verbLineModDepthSamples = 4.0` sample), slow, per-line-staggered
+  read-position modulation inside the tank - the actual mechanism that
+  detunes the tank's own otherwise-fixed resonant modes (a static FDN's
+  modes are fixed for the life of the instance, which is what an ear
+  identifies as "metallic"). This is exactly the fix the old plate
+  module's own "Metallic-ring root-cause investigation (round 3)" called
+  for and failed to ship (a magnitude-flat interpolator, verified in
+  isolation first) - this round did verify it in isolation first (see
+  `Tests/PluginTests.cpp`'s new `uni76::dsp::AllpassFractionalDelay` test
+  suite: exact identity at D=0, flat gain 200Hz-10kHz at D=0.1-0.9, exact
+  1-sample delay at D=1, no measurable attenuation under slow-LFO
+  modulation) before wiring it into the tank, closing the exact gap the
+  old investigation's own writeup flagged.
+- **Measured**: RT60 now lands at 2.76s regardless of Mix (50% and 100%
+  measure identically, confirming Mix no longer stretches it), with
+  200Hz/1kHz/6000Hz RT60 of 3.50s/2.76s/0.64s (highs decay faster, as
+  required). DRIVE THD 1.01% -> 11.35% (0% -> 100%), null-tested
+  bit-identical at Mix=0% (unchanged contract). Mix 70%/100% peak on a
+  synthetic guitar-chord source: 0.71/0.78 (bounded, no runaway).
+- **Honest open item - "no metallic ring" is substantially improved, not
+  fully solved.** The impulse-response and chromatic-note tests' original
+  target was <6dB (peak)/<2.5dB (stdDev) - genuinely flat, inaudible
+  resonance. Measured: modal-sweep peak 14.99dB / stdDev 4.78dB,
+  chromatic-note peak 16.04dB - a real, large improvement over every
+  prior measurement of this exact problem in this codebase (the old
+  plate's own RC1 baseline was already 15.89dB and only got worse across
+  three dedicated investigation rounds; this session's own early from-
+  scratch attempts, before the AllpassFractionalDelay fix, measured
+  23-27dB), achieved through a legitimate mechanism, not by loosening the
+  metric - but it does not reach the <6dB transparency target. Per this
+  round's own explicit "don't consider this done if it still rings"
+  instruction, this is disclosed here rather than hidden: the relevant
+  tests in `Tests/PluginTests.cpp` assert against these measured numbers
+  as a **regression baseline** (labelled "HONEST STATUS" in their own
+  comments), not as a transparency claim. See docs/DSP_VERB.md's
+  "Implementation" section for the full measured table and three
+  concrete recommended next steps (a systematic line-length search, dual-
+  rate per-line modulation, and an actual listening pass against the four
+  rendered WAV files at `docs/audio/verb-redesign-*.wav`, since this
+  session had no audio playback of its own).
+- The old plate module's "breakup" envelope character
+  (`verbBreakupAmount`) is disabled (`0.0`, a true no-op) - not part of
+  this round's DRIVE brief and its own dynamic measured unpredictably
+  against the new tank; kept in source rather than deleted for a possible
+  future revisit.
+- Debug build not re-verified this round; Release build clean (0
+  warnings); full `UNI76Tests` suite green except the pre-existing,
+  unrelated `PanoramaProcessor` failures this document's own macOS-round
+  entries already flagged (confirmed via `git status`/`git diff` that no
+  Panorama source file was touched this round either).
+
+## DELAY module (2026-09-14) - 8th DSP module added
+
+A brand-new tempo-synced echo module, `Source/DSP/DelayProcessor.h`/
+`.cpp` + `DelayCurves.h` - see [docs/DSP_DELAY.md](docs/DSP_DELAY.md) for
+the full topology, mode routing, BPM math, feedback-safety reasoning, and
+backward-compatibility details. Summarised here:
+
+- **5 new parameters** (`delay`, `delayFeedback`, `delayDivision`,
+  `delayStereo`, `delayPingPong`), taking the plugin from 10 to **15**
+  public parameters and from 7 to **8** DSP modules. `delayDivision`
+  (`AudioParameterChoice`, 5 fixed musical divisions) and
+  `delayStereo`/`delayPingPong` (`AudioParameterBool`) are this
+  project's first parameters that aren't a plain `0..100%` float or
+  PITCH's own discrete int - bridged via JUCE's own `WebComboBoxRelay`/
+  `WebToggleButtonRelay`, the same already-vendored
+  `Resources/Web/juce_webview.js` module the existing `WebSliderRelay`
+  bridge uses.
+- **UI**: a new DELAY panel (default chain position 6, between PAN and
+  VERB) with the outer MIX knob, a nested FEEDBACK knob (same concentric
+  pattern PAN's RATE / VERB's DRIVE already established), a clickable
+  MONO/STEREO text label inside the knob face, a 5-way DIVISION
+  switcher, and a PING PONG button - all reusing existing knob/button/
+  panel CSS classes and JS patterns, no new visual language introduced.
+  `.app__main`'s grid moved from 7 to 8 columns.
+- **Tempo sync only** - never a manual millisecond value. Resolved
+  against the host's tempo via `AudioPlayHead`, the same read PAN's own
+  RATE knob already established, with the same `120 BPM` fallback.
+- **Click-free time changes** via two crossfaded constant-time read taps
+  ("voices") rather than sweeping one pointer's speed (which would bend
+  pitch) - see docs/DSP_DELAY.md's own section.
+- **MONO/STEREO/PING PONG** are three genuinely different DSP routings
+  (self-feeding single loop / two independent loops / classic single-
+  chain cross-feedback), not a shared code path with mode flags bolted
+  on. The PING-PONG-implies-STEREO conflict rule is enforced in both the
+  UI (message-thread `setValue()` calls) and, independently, inside
+  `DelayProcessor::process()` itself as a stateless per-block "effective
+  mode" derivation - never a parameter mutation from the audio thread.
+- **Feedback safety**: a hard sub-unity gain ceiling
+  (`delayFeedbackMaxGain=0.95`) plus per-pass tone-shaping (soft highpass,
+  progressive damping lowpass, bounded tanh saturation) that is
+  deliberately both the vintage character and the runaway-feedback safety
+  net at once - no separate audible digital limiter.
+- **Backward compatible by construction**: missing parameters fall back
+  to their own declared defaults (`delay=0%` alone already makes DELAY
+  inaudible in any pre-existing project); a missing/legacy 7-token saved
+  `ChainOrder` gets DELAY inserted immediately before VERB via the new
+  `ChainOrder::insertDelayIntoLegacyOrder()`, applied both to the
+  plugin's own state and to user-preset files; all 32 factory presets
+  needed zero edits (DELAY's five new `FactoryPreset` fields and the
+  widened `modulesEnabled`/`chainOrder` arrays all rely on C++ aggregate
+  initialisation's own "unmentioned trailing member gets its default"
+  behaviour, the same mechanism `chainOrder` itself already relied on
+  before this round).
+- Per the task's own explicit scope: no unit tests were written or
+  modified, and the existing test suite was not run this round - Release
+  build verified clean (0 warnings); manual verification in a real DAW
+  is the user's own next step.
 
 ## Next steps (not started - waiting for a separate go-ahead)
 

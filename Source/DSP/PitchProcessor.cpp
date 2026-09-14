@@ -31,9 +31,14 @@ namespace uni76::dsp
 {
     struct PitchProcessor::Engine
     {
-        // Two fully independent mono engines, not one shared 2-channel
-        // engine - see the class comment in PitchProcessor.h for why.
-        std::array<signalsmith::stretch::SignalsmithStretch<float>, PitchProcessor::maxChannels> stretchers;
+        // A single, shared multi-channel engine - see PitchProcessor.h's
+        // class comment for why this replaced the previous "two
+        // independent mono instances" design. configure()'s first
+        // argument is the real channel count (1 for a mono bus, 2 for
+        // stereo) - never hardcoded to maxChannels, since the library's
+        // own per-band "lock every other channel's phase to the
+        // highest-energy one" step is keyed off this exact count.
+        signalsmith::stretch::SignalsmithStretch<float> stretcher;
     };
 
     PitchProcessor::PitchProcessor() : engine (std::make_unique<Engine>()) {}
@@ -52,15 +57,15 @@ namespace uni76::dsp
         const auto blockSamples    = juce::jmax (4, juce::roundToInt (sampleRate * pitchStftBlockSeconds));
         const auto intervalSamples = juce::jmax (1, juce::roundToInt (sampleRate * pitchStftIntervalSeconds));
 
-        for (auto& stretcher : engine->stretchers)
-            stretcher.configure (1, blockSamples, intervalSamples);
+        engine->stretcher.configure (numChannels, blockSamples, intervalSamples);
 
-        // Both channels share the same configuration, so their latency is
-        // identical - a single scalar is correct here, and stays fixed
-        // regardless of the semitone value. This is the engine's own
-        // latency *while running*, not the module's current real output
-        // delay (see getLatencySamples()'s doc comment).
-        latencySamples = engine->stretchers[0].inputLatency() + engine->stretchers[0].outputLatency();
+        // A single instance now, so latency is read from it directly -
+        // the previous "both channels share one configuration, take
+        // channel 0's figure" comment no longer applies, there is only
+        // one configuration. This is the engine's own latency *while
+        // running*, not the module's current real output delay (see
+        // getLatencySamples()'s doc comment).
+        latencySamples = engine->stretcher.inputLatency() + engine->stretcher.outputLatency();
 
         dryScratch.setSize (numChannels, maximumBlockSize, false, false, true);
         wetScratch.setSize (numChannels, maximumBlockSize, false, false, true);
@@ -74,20 +79,31 @@ namespace uni76::dsp
 
     void PitchProcessor::reset() noexcept
     {
-        for (auto& stretcher : engine->stretchers)
-            stretcher.reset();
+        engine->stretcher.reset();
     }
 
     void PitchProcessor::process (juce::AudioBuffer<float>& buffer, int semitones, bool enabled) noexcept
     {
         const auto numSamples = buffer.getNumSamples();
-        const auto channels   = juce::jmin (numChannels, buffer.getNumChannels());
 
-        if (numSamples <= 0 || channels <= 0)
+        if (numSamples <= 0)
+            return;
+
+        // The shared engine was configured for exactly `numChannels`
+        // channels (see prepare()) - its per-band "lock every other
+        // channel's phase to the highest-energy one" logic is written in
+        // terms of that fixed count, so it cannot safely be fed a
+        // different channel count block-to-block. A host's channel count
+        // is fixed for the lifetime of a prepareToPlay() call in
+        // practice (this is the same assumption every other module here
+        // already makes), so this is a defensive bound, not an expected
+        // runtime path.
+        const auto channels = buffer.getNumChannels();
+        if (channels < numChannels)
             return;
 
         // ---- numeric safety at the input boundary --------------------
-        for (int ch = 0; ch < channels; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* data = buffer.getWritePointer (ch);
             for (int i = 0; i < numSamples; ++i)
@@ -115,33 +131,33 @@ namespace uni76::dsp
         // for why that is no longer possible once the disabled path has
         // zero latency of its own. Captured before the engine call below,
         // same ordering the previous delay-line version used.
-        for (int ch = 0; ch < channels; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
             dryScratch.copyFrom (ch, 0, buffer, ch, 0, numSamples);
 
         const auto clampedSemitones = (float) juce::jlimit (-12, 12, semitones);
+        engine->stretcher.setTransposeSemitones (clampedSemitones, (float) (pitchTonalityLimitHz / sampleRate));
 
         // ---- wet: pure pitch-shift, duration always preserved (equal
         // input/output sample counts every call, so the engine never
         // time-stretches, only pitch-shifts) --------------------------
-        for (int ch = 0; ch < channels; ++ch)
+        // One call across all channels, not a per-channel loop - this is
+        // what gives the engine's own STFT grid and phase-locking a
+        // shared view of every channel at once (see PitchProcessor.h's
+        // class comment).
+        float* inputChannels[maxChannels];
+        float* outputChannels[maxChannels];
+        for (int ch = 0; ch < numChannels; ++ch)
         {
-            float* inputChannels[1]  = { buffer.getWritePointer (ch) };
-            float* outputChannels[1] = { wetScratch.getWritePointer (ch) };
-
-            auto& stretcher = engine->stretchers[(size_t) ch];
-            // Tonality limit (see PitchCurves.h's pitchTonalityLimitHz) -
-            // the API takes it normalised against sample rate, not a raw
-            // Hz value (see the library's own setTransposeFactor()
-            // comment / UPSTREAM_README.md).
-            stretcher.setTransposeSemitones (clampedSemitones, (float) (pitchTonalityLimitHz / sampleRate));
-            stretcher.process (inputChannels, numSamples, outputChannels, numSamples);
+            inputChannels[ch]  = buffer.getWritePointer (ch);
+            outputChannels[ch] = wetScratch.getWritePointer (ch);
         }
+        engine->stretcher.process (inputChannels, numSamples, outputChannels, numSamples);
 
         // ---- enable/disable crossfade (sample-accurate) ----------------
         for (int i = 0; i < numSamples; ++i)
             bypassRampScratch[(size_t) i] = bypassSmoother.getNextValue();
 
-        for (int ch = 0; ch < channels; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* out = buffer.getWritePointer (ch);
             const auto* wet = wetScratch.getReadPointer (ch);
@@ -155,7 +171,7 @@ namespace uni76::dsp
         }
 
         // ---- final numeric safety net ------------------------------------
-        for (int ch = 0; ch < channels; ++ch)
+        for (int ch = 0; ch < numChannels; ++ch)
         {
             auto* data = buffer.getWritePointer (ch);
             for (int i = 0; i < numSamples; ++i)

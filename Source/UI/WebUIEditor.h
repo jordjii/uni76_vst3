@@ -84,14 +84,14 @@ private:
 public:
     struct ABSnapshot
     {
-        std::array<float, 10> values {};
-        std::array<bool, 7> moduleEnabled {};
+        std::array<float, 15> values {};
+        std::array<bool, 8> moduleEnabled {};
         // Chain order is part of "the sound" too (see Core/ChainOrder.h -
         // reordering genuinely changes the processed audio), so both A/B
         // compare and the preset dirty-marker (getActivePresetInfo()) need
         // it in the snapshot they diff against - not value-initialised
-        // zeros (role 0 repeated 7 times, not a valid permutation).
-        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
+        // zeros (role 0 repeated 8 times, not a valid permutation).
+        std::array<int, 8> chainOrder { 0, 1, 2, 3, 4, 7, 5, 6 };
     };
 
 private:
@@ -128,6 +128,19 @@ private:
     juce::WebSliderRelay panRateRelay    { "panRate" };
     juce::WebSliderRelay verbDriveRelay  { "verbDrive" };
 
+    // DELAY (8th DSP module, added 2026-09-14 - see docs/DSP_DELAY.md).
+    // DIVISION/STEREO/PING PONG are genuinely different parameter shapes
+    // from every other module's plain 0..100% float, so they use JUCE's
+    // own WebComboBoxRelay/WebToggleButtonRelay rather than WebSliderRelay -
+    // the same already-vendored Resources/Web/juce_webview.js bridge
+    // module (getComboBoxState/getToggleState are already exported by it,
+    // unmodified), not a new/parallel bridge mechanism.
+    juce::WebSliderRelay delayRelay          { "delay" };
+    juce::WebSliderRelay delayFeedbackRelay  { "delayFeedback" };
+    juce::WebComboBoxRelay delayDivisionRelay { "delayDivision" };
+    juce::WebToggleButtonRelay delayStereoRelay   { "delayStereo" };
+    juce::WebToggleButtonRelay delayPingPongRelay { "delayPingPong" };
+
     juce::WebControlParameterIndexReceiver controlParameterIndexReceiver;
 
     SinglePageBrowser webView;
@@ -142,6 +155,12 @@ private:
     juce::WebSliderParameterAttachment imageTiltAttachment;
     juce::WebSliderParameterAttachment panRateAttachment;
     juce::WebSliderParameterAttachment verbDriveAttachment;
+
+    juce::WebSliderParameterAttachment delayAttachment;
+    juce::WebSliderParameterAttachment delayFeedbackAttachment;
+    juce::WebComboBoxParameterAttachment delayDivisionAttachment;
+    juce::WebToggleButtonParameterAttachment delayStereoAttachment;
+    juce::WebToggleButtonParameterAttachment delayPingPongAttachment;
 
     // Message-thread-only envelope state for the meter telemetry timer -
     // fast attack, slower release, applied here (not in JS, not on the

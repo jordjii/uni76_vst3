@@ -2,6 +2,18 @@
 #  UNI 76 plugin target
 # ==============================================================================
 
+# Format policy: VST3 everywhere, plus AU on macOS only (a deliberate,
+# explicit exception - decided 2026-09-13 to fix an FL Studio macOS
+# confusion between a stray, pre-existing AU build and the project's VST3 -
+# see CLAUDE.md's "Format policy" section). AU is an Apple-only format: its
+# JUCE plugin-client wrapper needs AudioUnit/AudioToolbox, which don't exist
+# on Windows, so it must never be added to the Windows FORMATS list.
+if(APPLE)
+    set(UNI76_PLUGIN_FORMATS VST3 AU)
+else()
+    set(UNI76_PLUGIN_FORMATS VST3)
+endif()
+
 juce_add_plugin(UNI76
     VERSION                      "${UNI76_VERSION}"
     COMPANY_NAME                 "${UNI76_COMPANY_NAME}"
@@ -11,7 +23,7 @@ juce_add_plugin(UNI76
     PLUGIN_MANUFACTURER_CODE      ${UNI76_PLUGIN_MANUFACTURER_CODE}
     PLUGIN_CODE                   ${UNI76_PLUGIN_CODE}
     PRODUCT_NAME                 "${UNI76_PRODUCT_NAME}"
-    FORMATS                       VST3
+    FORMATS                       ${UNI76_PLUGIN_FORMATS}
     VST3_CATEGORIES               Fx
     IS_SYNTH                      FALSE
     NEEDS_MIDI_INPUT              FALSE
@@ -67,6 +79,9 @@ target_sources(UNI76
         ../DSP/ImagerCurves.h
         ../DSP/ImagerProcessor.h
         ../DSP/ImagerProcessor.cpp
+        ../DSP/DelayCurves.h
+        ../DSP/DelayProcessor.h
+        ../DSP/DelayProcessor.cpp
 
         ../UI/WebUIEditor.h
         ../UI/WebUIEditor.cpp

@@ -11,6 +11,7 @@
 #include "DSP/PanoramaProcessor.h"
 #include "DSP/VerbProcessor.h"
 #include "DSP/ImagerProcessor.h"
+#include "DSP/DelayProcessor.h"
 
 /*
     UNI 76 - root AudioProcessor.
@@ -24,18 +25,20 @@
         timer, running on the message thread, is what actually reads those
         meters and talks to the WebView - the audio thread itself never
         touches the UI.
-      - PREAMP, EQ, SAT, PITCH, PAN, VERB and IMAGE all have real DSP
-        (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
+      - PREAMP, EQ, SAT, PITCH, PAN, VERB, IMAGE and DELAY all have real
+        DSP (see Source/DSP/PreampProcessor.h + docs/DSP_PREAMP.md,
         Source/DSP/EqProcessor.h + docs/DSP_EQ.md,
         Source/DSP/SatProcessor.h + docs/DSP_SAT.md,
         Source/DSP/PitchProcessor.h + docs/DSP_PITCH.md,
         Source/DSP/PanoramaProcessor.h + docs/DSP_PAN.md,
-        Source/DSP/VerbProcessor.h + docs/DSP_VERB.md, and
-        Source/DSP/ImagerProcessor.h + docs/DSP_IMAGE.md). IMAGE is a
+        Source/DSP/VerbProcessor.h + docs/DSP_VERB.md,
+        Source/DSP/ImagerProcessor.h + docs/DSP_IMAGE.md, and
+        Source/DSP/DelayProcessor.h + docs/DSP_DELAY.md). IMAGE is a
         deliberate exception to the "one knob per module" rule - it has
         two independent public parameters, `imager` (width/imaging
         amount) and `imageTilt` (static L/R balance) - see
-        docs/DSP_IMAGE.md.
+        docs/DSP_IMAGE.md. DELAY (added 2026-09-14) is the 8th module -
+        see docs/DSP_DELAY.md.
 */
 
 class UNI76AudioProcessor final : public juce::AudioProcessor
@@ -116,6 +119,24 @@ public:
         correct for them). Public because WebUIEditor.cpp must call it. */
     void updateReportedLatency() noexcept;
 
+    /** Persistent (state-saved) identity of the last-applied preset - kind
+        (0=none, 1=factory, 2=user; mirrors WebUIEditor::PresetKind, kept
+        as a plain int here so the processor doesn't need to depend on an
+        editor-side enum) and display name. Tracked here, not just on the
+        editor, specifically so the name survives editor close/reopen -
+        see PluginIdentity.h's activePresetKindProperty/activePresetNameProperty
+        and getStateInformation()/setStateInformation(). Does not track the
+        preset's own snapshot of parameter values (unlike the editor's
+        richer ActivePresetInfo, which also computes a "dirty" flag) - on
+        editor reopen the current live values are treated as the new clean
+        baseline for that comparison, a deliberate small simplification
+        (the dirty asterisk may reset across a close/reopen even if it was
+        set beforehand; the preset *name* itself, which is what was
+        actually reported missing, is fully preserved). */
+    void setActivePresetInfo (int kind, const juce::String& name) noexcept { activePresetKind = kind; activePresetName = name; }
+    int getActivePresetKind() const noexcept { return activePresetKind; }
+    const juce::String& getActivePresetName() const noexcept { return activePresetName; }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
 
@@ -133,6 +154,11 @@ private:
     // Core/ChainOrder.h.
     uni76::ChainOrder chainOrder;
 
+    // Same persistence pattern again - see setActivePresetInfo()'s doc
+    // comment above.
+    int activePresetKind = 0;
+    juce::String activePresetName;
+
     uni76::dsp::PreampProcessor preampProcessor;
     uni76::dsp::EqProcessor eqProcessor;
     uni76::dsp::SatProcessor satProcessor;
@@ -140,6 +166,7 @@ private:
     uni76::dsp::PanoramaProcessor panoramaProcessor;
     uni76::dsp::VerbProcessor verbProcessor;
     uni76::dsp::ImagerProcessor imagerProcessor;
+    uni76::dsp::DelayProcessor delayProcessor;
 
     // Cached raw parameter pointers (juce::AudioProcessorValueTreeState's
     // documented realtime-safe way to read a parameter's current value
@@ -154,6 +181,11 @@ private:
     std::atomic<float>* imageTiltParameter = nullptr;
     std::atomic<float>* panRateParameter = nullptr;
     std::atomic<float>* verbDriveParameter = nullptr;
+    std::atomic<float>* delayParameter = nullptr;
+    std::atomic<float>* delayFeedbackParameter = nullptr;
+    std::atomic<float>* delayDivisionParameter = nullptr;
+    std::atomic<float>* delayStereoParameter = nullptr;
+    std::atomic<float>* delayPingPongParameter = nullptr;
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (UNI76AudioProcessor)
 };

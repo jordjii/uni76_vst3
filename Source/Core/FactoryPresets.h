@@ -106,8 +106,14 @@ namespace uni76
         float verbDrive;
 
         // Module-enabled flags, in ModuleEnableState.h's own order:
-        // preamp, eq, saturation, pitch, panorama, reverb, imager.
-        std::array<bool, 7> modulesEnabled;
+        // preamp, eq, saturation, pitch, panorama, reverb, imager. Index 7
+        // (delay) is not listed by any of the 32 rows below - aggregate
+        // initialisation fills a trailing array element not supplied by a
+        // brace-init list with its type's own default (false for bool),
+        // which is exactly right here: every existing preset's own
+        // `delay` value defaults to 0% (see below), so DELAY defaulting
+        // disabled changes nothing about how any of them sound.
+        std::array<bool, 8> modulesEnabled;
 
         // Processing-chain order (drag-and-drop pedalboard round - see
         // Core/ChainOrder.h): chainOrder[position] is which module *role*
@@ -117,13 +123,29 @@ namespace uni76
         // switch dispatch - so a preset that doesn't also capture its own
         // order isn't fully reproducing "the sound", only the per-module
         // values. Defaulted here (not listed in every preset row below) to
-        // the factory identity order {0,1,2,3,4,5,6} = PREAMP->EQ->SAT->
-        // PITCH->PAN->VERB->IMAGE, matching every existing preset's actual
-        // (never-reordered) chain - aggregate initialisation falls back to
-        // a member's own default initialiser whenever a brace-init list
-        // doesn't supply that trailing member, so none of the 32 rows
-        // below need editing for this to be correct.
-        std::array<int, 7> chainOrder { 0, 1, 2, 3, 4, 5, 6 };
+        // the current factory identity order {0,1,2,3,4,7,5,6} = PREAMP->
+        // EQ->SAT->PITCH->PAN->DELAY->VERB->IMAGE (DELAY added 2026-09-14,
+        // see docs/DSP_DELAY.md - inserted before VERB, matching every
+        // existing preset's actual, never-reordered chain plus DELAY at
+        // its own new default position) - aggregate initialisation falls
+        // back to a member's own default initialiser whenever a brace-
+        // init list doesn't supply that trailing member, so none of the
+        // 32 rows below need editing for this to be correct.
+        std::array<int, 8> chainOrder { 0, 1, 2, 3, 4, 7, 5, 6 };
+
+        // DELAY (8th DSP module, added 2026-09-14 - see docs/DSP_DELAY.md).
+        // Every existing preset below leaves all five of these at their
+        // own defaults (0% mix - inaudible, 30% feedback, "1/8" division,
+        // MONO, PING PONG off) via the same trailing-default-initialiser
+        // aggregate-init behaviour chainOrder above already relies on -
+        // none of the 32 rows need editing. `delay=0%` alone already
+        // guarantees DELAY is inaudible in every existing preset,
+        // regardless of what these other four values happen to be.
+        float delay = 0.0f;
+        float delayFeedback = 30.0f;
+        int delayDivision = 1; // "1/8" - see DelayCurves.h's delayDefaultDivisionIndex
+        bool delayStereo = false;
+        bool delayPingPong = false;
     };
 
     /*

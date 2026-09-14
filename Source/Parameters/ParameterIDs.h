@@ -36,6 +36,21 @@
     tiny-texture resting point up to a genuinely hot, audibly-driven
     plate - referencing a real reference plugin's (Vynl Audio Voyager-
     Verb) own nested-knob DRIVE control.
+
+    `delay`/`delayFeedback`/`delayDivision`/`delayStereo`/`delayPingPong`
+    (11th-15th parameters, the new DELAY module - see docs/DSP_DELAY.md)
+    added 2026-09-14: a tempo-synced (BPM-locked, never free-running-ms)
+    delay/echo module, the 8th DSP module and the first one whose own
+    public surface needs more than a plain 0..100% float per parameter -
+    `delayDivision` is a genuine `AudioParameterChoice` (5 fixed note
+    divisions) and `delayStereo`/`delayPingPong` are genuine
+    `AudioParameterBool`s, bridged to the WebView through JUCE's own
+    WebComboBoxRelay/WebToggleButtonRelay (the same already-vendored
+    `Resources/Web/juce_webview.js` module that the existing WebSliderRelay
+    bridge uses - not a new dependency, just a different relay/attachment
+    pair from the same JUCE mechanism). `delay` (MIX) and `delayFeedback`
+    are plain 0..100%/0..95% floats, the same nested-outer/inner-knob
+    pattern `panRate`/`verbDrive` already established.
 */
 
 namespace uni76::ParamID
@@ -51,6 +66,13 @@ namespace uni76::ParamID
     inline constexpr const char* panRate    = "panRate";
     inline constexpr const char* verbDrive  = "verbDrive";
 
+    // DELAY (see docs/DSP_DELAY.md) - the 8th DSP module, added 2026-09-14.
+    inline constexpr const char* delay          = "delay";
+    inline constexpr const char* delayFeedback  = "delayFeedback";
+    inline constexpr const char* delayDivision  = "delayDivision";
+    inline constexpr const char* delayStereo    = "delayStereo";
+    inline constexpr const char* delayPingPong  = "delayPingPong";
+
     /** Version tag passed to juce::ParameterID for every parameter below.
         JUCE mixes this into the VST3 parameter hash; bump it only if a
         parameter's meaning changes in a way that should be treated as a
@@ -59,8 +81,9 @@ namespace uni76::ParamID
     inline constexpr int parameterVersionHint = 1;
 
     /** All parameter IDs, for iteration (tests, UI wiring, etc). */
-    inline constexpr std::array<const char*, 10> all
+    inline constexpr std::array<const char*, 15> all
     {
-        preamp, eq, saturation, pitch, panorama, reverb, imager, imageTilt, panRate, verbDrive
+        preamp, eq, saturation, pitch, panorama, reverb, imager, imageTilt, panRate, verbDrive,
+        delay, delayFeedback, delayDivision, delayStereo, delayPingPong
     };
 }

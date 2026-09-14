@@ -102,4 +102,18 @@ namespace uni76
         already v5+.
     */
     inline constexpr int panoramaOriginalSchemaVersion = 5;
+
+    /** Property names under which the active-preset identity (which
+        preset, factory or user, is currently applied) is stored in the
+        saved ValueTree - see PluginProcessor::setActivePresetInfo() and
+        WebUIEditor.h's ActivePresetInfo. Tracking this on the *processor*
+        (not just the editor) is what makes the displayed preset name
+        survive closing and reopening the plugin editor window - before
+        this, the name lived only on the editor instance, which JUCE
+        destroys and recreates on every editor close/open, so the name
+        silently reverted to "Default" even though the actual parameter
+        values (the real preset content) were unaffected, since those
+        alone were already part of the APVTS-backed saved state. */
+    inline constexpr const char* activePresetKindProperty = "uni76ActivePresetKind";
+    inline constexpr const char* activePresetNameProperty = "uni76ActivePresetName";
 }

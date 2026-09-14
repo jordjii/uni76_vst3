@@ -13,49 +13,102 @@
     plugin (after PREAMP, EQ, SAT, PITCH and PAN). Imager stays
     passthrough - see CLAUDE.md and docs/DSP_VERB.md.
 
-    A single 1970s-style electromechanical PLATE reverb + analog send/
-    return electronics - not a generic digital hall, not a ROOM/PLATE/
-    CHAMBER morph, not a convolution IR. Every setting is the same plate
-    machine; the macro only changes send amount, decay time, and
-    pre-delay:
+    ---------------------------------------------------------------------
+    NEW DIRECTION (2026-09-14) - this is a from-scratch redesign. The
+    module used to be a 1970s-style electromechanical PLATE reverb; that
+    architecture, and plate as a sound reference at all, is retired - see
+    CLAUDE.md's "VERB direction change" entry and docs/DSP_VERB.md's
+    "Direction change" section for the full product brief. This is now a
+    soft, warm, dark, VINTAGE ALGORITHMIC reverb with a chamber/hall
+    character:
 
-        0%   = DRY   - bit-exact (up to float rounding) identity.
-        50%  = PLATE  - classic, dense, dark studio plate.
-        100% = DEEP    - longer, deeper, still a usable insert effect.
+        - warm and mild, not clinical/digital-sounding;
+        - a soft, dense tail, fixed at ~3 seconds regardless of Mix;
+        - no metallic ringing, no fixed resonant/standing-out notes;
+        - no hard/harsh early reflections, no audible comb filtering;
+        - no explicit chorus and no pitch wobble anywhere in the tank;
+        - slightly dark, sitting back/behind in the mix;
+        - natural and musical even at Mix 70-100%.
 
-    Topology (see docs/DSP_VERB.md for the full derivation and measured
-    data):
+    Deliberately NOT Dattorro's plate topology (which nests its own
+    internal decay-diffusion allpasses inside two long delay "arms") and
+    NOT a repair/retune of the old plate-era 16-line FDN. This is a plain
+    N-line Feedback Delay Network (Stautner & Puckette 1982 style) fed by
+    a long multi-stage input diffusion cascade, mixed with an orthogonal
+    Householder matrix - a different line count, different lengths, and a
+    much smaller, carefully-bounded modulation depth than the old plate
+    module's own (see VerbCurves.h's "Tank line modulation" section for
+    why a *small* amount of correctly-bounded modulation is the actual
+    anti-metallic mechanism here, not something this redesign avoids -
+    the old plate module's own never-fully-solved "metallic ring" history
+    (see docs/DSP_VERB.md's superseded "Historical implementation"
+    section) came from too little, unsafely-added modulation on a
+    much-longer-decay tank, not from modulation being the wrong idea).
 
-        DRY ------------------------------------------------> MIX
+    Topology - **DRIVE lives entirely after the tank, on the wet tail
+    only - it never touches the send, the DI/Dry signal, or the tank's
+    own internal recirculation** (unchanged product contract from the
+    plate era - see "DRIVE routing" below):
+
+        DI/DRY ----------------------------------------------------> MIX
         INPUT
-          -> wet send HPF (350Hz, cascaded 4-pole Butterworth)
-          -> analog send stage (asymmetric tanh, DRIVE-scaled - see
-             VerbCurves.h's "DRIVE (nested knob)" section - tiny/
-             "texture" at DRIVE=0%, up to genuinely hot at 100%)
-          -> diffuser (4-stage short-delay allpass - early density)
-          -> pre-delay (smoothly variable, linear-interpolated)
-          -> FDN plate tank (12 delay lines, Householder feedback
-             matrix, per-line one-pole damping so highs decay faster
-             than mid, fixed decorrelated stereo output taps)
-          -> analog return stage (asymmetric tanh, also DRIVE-scaled,
-             + ~9.5kHz soft bandwidth ceiling)
-          -> wet output HPF safety (350Hz, lighter, 2-pole)
+          -> wet send HPF (120Hz, cascaded 4-pole Butterworth)
+          -> analog send stage (tiny, fixed asymmetric tanh - NOT
+             DRIVE-scaled, always the same small "texture" coloration
+             regardless of DRIVE, so the tank always receives an
+             essentially clean signal and produces a clean, warm tail)
+          -> input diffusion cascade (8-stage short-delay allpass -
+             smooths the input into a dense wash BEFORE the tank, so
+             there is no discrete early-reflection "slap")
+          -> fixed pre-delay (16ms, constant regardless of Mix)
+          -> reverb tank (12 delay lines, Householder feedback matrix,
+             per-line one-pole damping so highs decay faster than mid, a
+             small/slow/staggered per-line read-position modulation just
+             large enough to detune the tank's own fixed resonant modes
+             (the actual anti-"metallic ring" mechanism) but far below
+             the depth where it would read as an audible chorus/pitch
+             effect - see VerbCurves.h's "Tank line modulation" section -
+             fixed decorrelated stereo output taps)
+          -> analog return stage (asymmetric tanh, DRIVE-scaled here and
+             only here - see "DRIVE routing" below - + static darkening
+             bandwidth ceiling)
+          -> DRIVE warmth/depth/width shaping (tail only, no modulation)
+          -> wet output HPF safety (120Hz, lighter, 2-pole)
           -> MIX (dry*(1-wet) + wetProcessed*wet)
           -> enable/disable crossfade against a dry copy (zero latency,
              no delay-alignment needed)
           -> Output
 
+    **DRIVE routing** (`VerbProcessor::process()`): the send stage's
+    drive-gain/asymmetry constants are compile-time constants
+    (`verbSendDriveGainBase`/`verbSendAsymmetryBase`) that never read
+    `driveNormalised01` at all - only the return stage
+    (`verbReturnDriveGain`/`verbReturnAsymmetry`, and the warmth/depth/
+    width shaping after it) does. This means DI/Dry and the *signal the
+    tank reverberates* are both completely independent of DRIVE by
+    construction - DRIVE only ever overdrives the tank's own already-
+    formed wet tail, never the input being sent into the tank, and never
+    the tank's own recirculation/decay. Verified by dedicated null tests
+    (`Tests/PluginTests.cpp`'s "DRIVE null test" and "DRIVE does not
+    affect the tank's own decay/RT60") that confirm output is bit-
+    identical across `verbDrive` 0%->100% whenever `reverb` (wet amount)
+    is 0%, that the *dry* component specifically never moves with DRIVE
+    at any wet amount, and that measured RT60 is unaffected by DRIVE.
+
     Both wet-path highpasses exist specifically so that DRY bass/kick
     stays completely untouched (the dry path never passes through either
-    filter) while the WET plate tank never receives or sustains
-    meaningful sub/bass energy - see "350Hz wet-path isolation" in
-    docs/DSP_VERB.md for why a single input-side filter alone is not
-    trusted to guarantee this for a recirculating feedback network.
+    filter) while the WET tank never receives or sustains meaningful
+    sub/bass energy - see docs/DSP_VERB.md.
 
     `verbWetGain(0) == 0.0` exactly (VerbCurves.h) is what makes DRY
-    provably (not just measured) a bypass: at t=0 the wet contribution
-    is multiplied by exactly zero before it is ever added to the dry
-    signal, regardless of what state the plate tank itself is in.
+    provably (not just measured) a bypass: at t=0 the wet contribution is
+    multiplied by exactly zero before it is ever added to the dry signal,
+    regardless of what state the tank itself is in.
+
+    Mix (`reverb`) controls ONLY the dry/wet balance - decay time and
+    pre-delay are fixed constants (verbTargetDecaySeconds/verbPreDelayMs
+    in VerbCurves.h), never derived from Mix, per this round's explicit
+    "Mix must not stretch Decay" requirement.
 
     Realtime-safety contract matches every other module: prepare() is
     the only place that allocates (the delay-line buffers, sized for the
@@ -77,12 +130,12 @@ namespace uni76::dsp
             per call - all smoothed internally, so passing a raw (possibly
             jumpy) automation value each block is safe and expected.
             driveNormalised01 drives the nested DRIVE knob (see
-            VerbCurves.h's "DRIVE (nested knob)" section) - at 0% it
-            reproduces this module's original, pre-existing send/return
-            coloration exactly. */
+            VerbCurves.h's "DRIVE" section) - at 0% it reproduces this
+            module's original, pre-existing send/return coloration
+            exactly. */
         void process (juce::AudioBuffer<float>& buffer, float wetNormalised01, float driveNormalised01, bool enabled) noexcept;
 
-        /** Always 0 - the plate's pre-delay and recirculation are wet-
+        /** Always 0 - the tank's pre-delay and recirculation are wet-
             path effects, not a lookahead/analysis delay on the direct
             signal, so there is nothing here a host needs to
             compensate for (same reasoning EQ/PAN already document). */
@@ -96,30 +149,54 @@ namespace uni76::dsp
         Biquad wetSendHighpassA, wetSendHighpassB;      // 4-pole (2x cascaded 2-pole) on the send
         Biquad wetOutputHighpassL, wetOutputHighpassR;  // lighter safety highpass on the wet output, per channel
 
-        // ---- pre-delay (smoothly variable) ----
-        std::vector<float> preDelayBuffer;
-        int preDelayWritePos = 0;
+        // ---- fixed pre-delay (constant - Mix never stretches this) ----
+        IntegerDelayLine preDelay;
 
-        // ---- diffuser (early density, ahead of the tank) ----
+        // ---- input diffusion cascade (early density, ahead of the tank) ----
         std::array<std::vector<float>, verbNumDiffusers> diffuserBuffers;
         std::array<int, verbNumDiffusers> diffuserWritePos {};
 
-        // ---- FDN plate tank ----
+        // ---- reverb tank: decorrelated delay lines, small bounded modulation ----
         std::array<std::vector<float>, verbNumLines> lineBuffers;
         std::array<int, verbNumLines> lineWritePos {};
         std::array<int, verbNumLines> lineLengthSamples {};
         std::array<OnePoleLowPass, verbNumLines> lineDamping;
         std::array<float, verbNumLines> lineFeedbackGain {};
 
-        // ---- tail chorus/vibrato (see VerbCurves.h's "Tail chorus/
-        // vibrato" section) - a small per-line LFO wobbling each line's
-        // own *read* position (not its write side or nominal length) via
-        // linear interpolation between two adjacent buffer samples.
-        std::array<double, verbNumLines> chorusLfoPhase {};
-        std::array<double, verbNumLines> chorusLfoIncrement {};
+        // Small, slow, per-line-staggered read-position modulation - see
+        // VerbCurves.h's "Tank line modulation" section for why this is
+        // present at all (it is the actual anti-metallic mechanism, not
+        // a texture) and why it is kept far below the depth where it
+        // would read as an audible chorus/pitch effect. Read via
+        // AllpassFractionalDelay (Biquad.h), not plain linear
+        // interpolation - a true allpass, so the modulation costs no
+        // measurable RT60/level the way linear interpolation's own
+        // frequency-dependent attenuation would (see Biquad.h's class
+        // comment and its own isolated unit tests,
+        // Tests/PluginTests.cpp's "uni76::dsp::AllpassFractionalDelay"
+        // suite, verified BEFORE this was wired in here).
+        std::array<double, verbNumLines> lineModPhase {};
+        std::array<double, verbNumLines> lineModIncrement {};
+        std::array<AllpassFractionalDelay, verbNumLines> lineInterpolators;
 
-        // ---- analog return bandwidth ----
+        // ---- analog return bandwidth (static darkening, not DRIVE-scaled) ----
         OnePoleLowPass returnBandwidthL, returnBandwidthR;
+
+        // ---- DRIVE warmth (return-stage pre-emphasis, see VerbCurves.h's
+        // "DRIVE warmth" section) ----
+        Biquad returnWarmthShelfL, returnWarmthShelfR;
+
+        // ---- DRIVE depth: extra, DRIVE-scaled bandwidth ceiling on the
+        // driven tail, on top of the fixed returnBandwidth* pair above -
+        // see VerbCurves.h's "Driven-tail placement" section.
+        OnePoleLowPass driveDepthLowpassL, driveDepthLowpassR;
+
+        // ---- DRIVE width: a small, FIXED (non-modulated) inter-channel
+        // delay on the R return channel, blended in proportion to DRIVE -
+        // decorrelates L/R without any LFO/chorus (see VerbCurves.h's
+        // "Driven-tail placement" section for why this is static, unlike
+        // the old plate module's modulated driven-tail chorus).
+        IntegerDelayLine driveWidthDelayR;
 
         // ---- breakup (envelope-inverse return-stage character, see
         // VerbCurves.h's "Breakup" section) ----
@@ -140,8 +217,6 @@ namespace uni76::dsp
         // contribution alone is what the bypass smoother scales to zero.
         // This makes "dry is never touched" an algebraic guarantee, not
         // just a measured property - see the class comment above.
-
-        void updateDecayDependentCoefficients (float wetForCoefficients) noexcept;
 
         JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR (VerbProcessor)
     };

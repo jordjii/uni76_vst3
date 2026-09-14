@@ -17,8 +17,10 @@ import { getNativeFunction } from "./juce_webview.js";
 // Matches Source/Parameters/ParameterIDs.h's ParamID::all order, which is
 // also the order Core/ChainOrder.h's role indices use - kept identical to
 // module_power.js's own MODULE_ORDER (duplicated, not imported, so this
-// file has no load-order dependency on that one).
-const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager"];
+// file has no load-order dependency on that one). "delay" (role 7, added
+// 2026-09-14) is APPENDED - its default chain *position* (between PAN and
+// VERB) is a separate concept from its role index (see Core/ChainOrder.h).
+const MODULE_ORDER = ["preamp", "eq", "saturation", "pitch", "panorama", "reverb", "imager", "delay"];
 
 let getChainOrder = null;
 let setChainOrder = null;
