@@ -114,6 +114,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/scales.css"
         "${CMAKE_SOURCE_DIR}/Resources/Web/meters.css"
         "${CMAKE_SOURCE_DIR}/Resources/Web/responsive.css"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/archive-theme.css"
 
         "${CMAKE_SOURCE_DIR}/Resources/Web/app.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/knob.js"
@@ -123,6 +124,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/module_power.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/chain_order.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/header_controls.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/theme.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76

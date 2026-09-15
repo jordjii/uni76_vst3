@@ -69,7 +69,8 @@
 }
 
 .knob__scale-numbers .is-min {
-  left: 0;
+  /* Keep the complete −12 label inside narrow module columns. */
+  left: 2em;
   bottom: 0.15em;
 }
 
@@ -80,7 +81,8 @@
 }
 
 .knob__scale-numbers .is-max {
-  right: 0;
+  /* Mirrors the minimum label so theme/responsive changes cannot clip it. */
+  right: 2em;
   bottom: 0.15em;
 }
 

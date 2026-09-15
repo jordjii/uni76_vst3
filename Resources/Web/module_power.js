@@ -65,11 +65,10 @@ export function refreshModuleEnabledUI() {
 }
 
 function setEnabledAndRefresh(index, enabled) {
-  setModuleEnabled(index, enabled);
-  // Read the state back rather than assuming the setter landed exactly as
-  // requested - keeps every view (strip + footer) consistent even if two
-  // clicks race each other.
-  refreshModuleEnabledUI();
+  // The native bridge is asynchronous. Reading immediately after starting
+  // the setter races the message-thread update and can redraw the old value,
+  // making a click appear to do nothing. Always complete set -> then read.
+  return setModuleEnabled(index, enabled).then(() => refreshModuleEnabledUI());
 }
 
 export function initModulePower() {

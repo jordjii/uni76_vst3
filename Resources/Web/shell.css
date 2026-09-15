@@ -55,10 +55,11 @@
   display: grid;
   grid-template-columns: repeat(8, 1fr);
   min-height: 0;
-  /* The coloured module row is inset relative to the dark chassis on all
-     sides, with one shared radius on its outer corners - modules are NOT
-     individually rounded/carded, only the group as a whole. */
+  /* Preserve the slim chassis frame, but paint the exposed gutter with the
+     same surface colour as the header/footer. This keeps the intended inset
+     without the unrelated grey strip beside PREAMP and IMAGE. */
   margin-inline: var(--frame-thickness);
+  box-shadow: 0 0 0 var(--frame-thickness) var(--bg-header);
   border-radius: var(--frame-radius);
   overflow: hidden;
 }

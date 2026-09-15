@@ -15,6 +15,7 @@ import { initMeters } from "./meters.js";
 import { initModulePower } from "./module_power.js";
 import { initChainOrder } from "./chain_order.js";
 import { initPresetMenu, initABToggle } from "./header_controls.js";
+import { initThemeToggle } from "./theme.js";
 
 // PITCH is a discrete -12..+12 semitone APVTS int parameter (25 positions,
 // step 1) - unlike every other module's plain 0..100% float. `scaled`
@@ -410,6 +411,7 @@ initModulePower();
 initChainOrder();
 initPresetMenu();
 initABToggle();
+initThemeToggle();
 preventButtonFocusStealing();
 
 // Startup profiling only - see docs/FULL_DSP_AUDIT.md's GUI-startup

@@ -91,34 +91,31 @@ namespace uni76::dsp
     // insert-effect reverb send rather than a full wet/dry replace, and
     // keeping headroom so Mix 70-100% stays natural (no wash-out) - a
     // direct product requirement for this redesign.
-    inline constexpr std::array<float, 5> verbWetAnchors { 0.0f, 0.12f, 0.27f, 0.42f, 0.55f };
+    inline constexpr std::array<float, 5> verbWetAnchors { 0.0f, 0.16f, 0.34f, 0.53f, 0.72f };
 
     inline float verbWetGain (float t01) noexcept
     {
         return verbPiecewise (t01, verbWetAnchors);
     }
 
-    // ---- Decay (RT60) - FIXED, not macro-dependent ----------------------------
-    //
-    // Direct product requirement: "Mix должен управлять Dry/Wet, а не
-    // растягивать Decay до 4.35 секунды." Unlike the old plate module
-    // (whose decay stretched from ~2.5s at 50% to ~4.35s at 100% as a
-    // side effect of the same macro that also controlled wet amount),
-    // this reverb's decay time is a single constant, completely
-    // independent of Mix - turning Mix up only adds more of an
-    // *identical-length* tail into the mix, never a longer one.
-    // ~2.8-3.2s target range (measured via a dedicated RT60 test at low/
-    // mid/high bands - see docs/DSP_VERB.md).
-    inline constexpr float verbTargetDecaySeconds = 3.0f;
+    // ---- Decay (RT60) ---------------------------------------------------------
+    // The single VERB control now deliberately grows both the amount and
+    // the useful tail length.  The lower half remains restrained for insert
+    // use, while the upper half opens into a substantially longer ambient
+    // tail.  Smoothstep interpolation keeps automation free of corners.
+    inline constexpr std::array<float, 5> verbDecayAnchors { 2.2f, 2.8f, 3.5f, 4.3f, 5.2f };
+    inline constexpr float verbTargetDecaySeconds = verbDecayAnchors[4];
 
-    /** Kept as a function (not a bare constant) so call sites written
-        against the old macro-dependent contract (PluginProcessor's
-        getTailLengthSeconds(), the test suite) don't need to change -
-        but the parameter is now genuinely unused: every t01 in [0,1]
-        returns the same fixed target. */
-    inline float verbDecaySeconds (float) noexcept
+    inline float verbDecaySeconds (float t01) noexcept
     {
-        return verbTargetDecaySeconds;
+        return verbPiecewise (t01, verbDecayAnchors);
+    }
+
+    // The feedback formula needs a calibrated target larger than the
+    // externally reported RT60 because damping removes energy on every pass.
+    inline float verbDecayFormulaSeconds (float t01) noexcept
+    {
+        return verbDecaySeconds (t01) * 2.0f;
     }
 
     // ---- Pre-delay - FIXED, not macro-dependent --------------------------------
@@ -207,64 +204,9 @@ namespace uni76::dsp
         37.7f, 41.9f, 46.3f, 51.5f, 57.1f, 63.5f, 70.3f, 78.1f
     };
 
-    // ---- Tank line modulation (small, correctly-bounded - NOT chorus) ---------
-    //
-    // The direct product brief for this redesign asks for two things that
-    // sound contradictory at first: "correctly modulated decorrelated
-    // delay lines" AND "no explicit chorus/pitch wobble". The resolution
-    // (standard practice in high-quality algorithmic reverbs - Lexicon/
-    // Valhalla-style designs use exactly this) is that BOTH are true at
-    // once when the modulation depth is kept below the threshold where it
-    // reads as its own audible effect: a STATIC FDN's resonant modes are
-    // fixed for the life of the instance, which is what a real ear
-    // identifies as "metallic" (a specific note always rings at exactly
-    // the same frequency, every time); a small, slow modulation of each
-    // line's read position continuously and very slightly detunes those
-    // fixed modes, which is what actually removes the "ringing on
-    // specific notes" symptom - it is not decorative, it is the mechanism.
-    // Read via AllpassFractionalDelay (Biquad.h) rather than plain 2-tap
-    // linear interpolation - a true allpass (exactly flat magnitude
-    // response at any fractional delay, verified by its own isolated unit
-    // tests before ever being wired into this tank - see
-    // Tests/PluginTests.cpp's "uni76::dsp::AllpassFractionalDelay" suite).
-    // This is precisely the fix the old plate module's own "Metallic-ring
-    // root-cause investigation" round called for and failed to ship (a
-    // magnitude-flat interpolator, verified in isolation first) - not a
-    // repair of that old code, a fresh implementation checked against the
-    // specific mistake ("D=0 must collapse to an exact identity") that
-    // investigation's own writeup flagged as the leading suspect. Because
-    // this interpolator costs no per-pass loss, depth can be meaningfully
-    // larger than the old plate module's already-too-small 0.4 samples
-    // (which was too subtle to fix that module's own metallic ringing)
-    // while still being a tiny fraction of any line's length (the
-    // shortest tank line here is >800 samples at 44.1kHz) - nowhere near
-    // large enough to read as an audible chorus/pitch effect. Confirmed
-    // by direct measurement (see docs/DSP_VERB.md's "Tank line
-    // modulation" section) rather than assumed safe by similarity.
-    inline constexpr float verbLineModDepthSamples = 4.0f;
-    inline constexpr std::array<float, 16> verbLineModRateHz
-    {
-        0.073f, 0.089f, 0.101f, 0.113f, 0.127f, 0.139f, 0.151f, 0.167f,
-        0.181f, 0.197f, 0.211f, 0.229f, 0.241f, 0.257f, 0.269f, 0.283f
-    };
-
-    // ---- RT60-formula target (internal, larger than the spec/reported
-    // ~3s figure) ----------------------------------------------------------
-    //
-    // The per-line feedback-gain formula (VerbProcessor.cpp) assumes only
-    // the flat gain governs decay, but the per-line damping filter and the
-    // allpass modulation above both remove additional energy every pass on
-    // top of that - the same "small per-pass loss compounds hugely over
-    // hundreds of feedback passes" effect this module's own history has
-    // documented before (see the old plate module's superseded RT60-
-    // tuning notes). Measured directly (see docs/DSP_VERB.md's "RT60"
-    // section for this redesign): with the formula fed verbTargetDecaySeconds
-    // (3.0s) directly, the *actual* measured decay undershoots to ~1.9-2.2s.
-    // This internal-only target is what the formula actually solves for;
-    // verbTargetDecaySeconds above remains the real, reported, spec value
-    // (~2.8-3.2s) and is what every public/test-facing curve returns -
-    // only VerbProcessor.cpp's own per-line gain computation reads this one.
-    inline constexpr float verbDecayFormulaTargetSeconds = 6.0f;
+    // The tank intentionally has no time-varying delay modulation.  This
+    // removes the fractional-delay/allpass state that could sound like a
+    // faint chorus or produce tiny discontinuities in a long feedback tail.
 
     // ---- Frequency-dependent damping (highs decay faster than mid) ------------
     //
@@ -297,7 +239,7 @@ namespace uni76::dsp
     // reads DRIVE at all, so the tank always receives (and reverberates)
     // an essentially clean, undriven signal.
     inline constexpr float verbSendDriveGainBase = 0.15f;
-    inline constexpr float verbSendAsymmetryBase = 0.02f;
+    inline constexpr float verbSendAsymmetryBase = 0.0f;
 
     // ---- DRIVE (nested knob) - overloads the formed TAIL only ------------------
     //
@@ -315,7 +257,7 @@ namespace uni76::dsp
     // dedicated saturator's whole job (PREAMP's own ceiling, for
     // reference, is 10.0 - see PreampCurves.h).
     inline constexpr float verbReturnDriveGainBase  = 0.12f;
-    inline constexpr float verbReturnAsymmetryBase  = 0.02f;
+    inline constexpr float verbReturnAsymmetryBase  = 0.0f;
     inline constexpr float verbReturnDriveGainMax   = 9.0f;
     inline constexpr float verbReturnAsymmetryMax   = 0.28f;
 
@@ -436,4 +378,5 @@ namespace uni76::dsp
 
     // ---- Smoothing -------------------------------------------------------------
     inline constexpr double verbSmoothingSeconds = 0.03;
+    inline constexpr double verbDecaySmoothingSeconds = 0.15;
 }

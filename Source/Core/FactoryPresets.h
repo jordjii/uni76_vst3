@@ -107,7 +107,7 @@ namespace uni76
 
         // Module-enabled flags, in ModuleEnableState.h's own order:
         // preamp, eq, saturation, pitch, panorama, reverb, imager. Index 7
-        // (delay) is not listed by any of the 32 rows below - aggregate
+        // (delay) is not listed by the original rows below - aggregate
         // initialisation fills a trailing array element not supplied by a
         // brace-init list with its type's own default (false for bool),
         // which is exactly right here: every existing preset's own
@@ -130,7 +130,7 @@ namespace uni76
         // its own new default position) - aggregate initialisation falls
         // back to a member's own default initialiser whenever a brace-
         // init list doesn't supply that trailing member, so none of the
-        // 32 rows below need editing for this to be correct.
+        // rows below need editing for this to be correct.
         std::array<int, 8> chainOrder { 0, 1, 2, 3, 4, 7, 5, 6 };
 
         // DELAY (8th DSP module, added 2026-09-14 - see docs/DSP_DELAY.md).
@@ -138,7 +138,7 @@ namespace uni76
         // own defaults (0% mix - inaudible, 30% feedback, "1/8" division,
         // MONO, PING PONG off) via the same trailing-default-initialiser
         // aggregate-init behaviour chainOrder above already relies on -
-        // none of the 32 rows need editing. `delay=0%` alone already
+        // none of the existing rows need editing. `delay=0%` alone already
         // guarantees DELAY is inaudible in every existing preset,
         // regardless of what these other four values happen to be.
         float delay = 0.0f;
@@ -185,7 +185,7 @@ namespace uni76
         docs/FULL_DSP_AUDIT.md covers separately, still PITCH=0/TILT=0
         unless documented per-preset.
     */
-    inline constexpr std::array<FactoryPreset, 32> factoryPresets { {
+    inline constexpr std::array<FactoryPreset, 52> factoryPresets { {
         // ---- GENERAL ------------------------------------------------------
         // Name              Category                     preamp  eq    sat   pitch  pan   verb  imager tilt   rate     drive  { preamp, eq,    sat,   pitch, pan,   verb,  imager }
         { "Default",          PresetCategory::general,        0.0f, 50.0f,  0.0f, 0.0f,  0.0f,  0.0f,  0.0f, 0.0f, 68.182f, 0.0f, { false, false, false, false, false, false, false } },
@@ -243,5 +243,25 @@ namespace uni76
         { "Wide Clean",       PresetCategory::electricGuitar, 20.0f, 50.0f, 10.0f, 0.0f, 58.0f, 20.0f, 46.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true  } },
         { "Plate Lead",       PresetCategory::electricGuitar, 36.0f, 40.0f, 30.0f, 0.0f, 20.0f, 48.0f, 16.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true  } },
         { "Dark Rhythm",      PresetCategory::electricGuitar, 40.0f, 15.0f, 34.0f, 0.0f, 10.0f, 14.0f,  0.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  false } },
+        { "Glass Clean",      PresetCategory::electricGuitar, 14.0f, 68.0f,  6.0f, 0.0f, 38.0f, 18.0f, 34.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Studio Clean",     PresetCategory::electricGuitar, 18.0f, 55.0f,  8.0f, 0.0f, 24.0f, 16.0f, 22.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Funk Snap",        PresetCategory::electricGuitar, 16.0f, 72.0f, 12.0f, 0.0f, 20.0f, 10.0f, 18.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Indie Jangle",     PresetCategory::electricGuitar, 22.0f, 62.0f, 14.0f, 0.0f, 46.0f, 28.0f, 38.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Dream Clean",      PresetCategory::electricGuitar, 18.0f, 58.0f, 10.0f, 0.0f, 60.0f, 52.0f, 48.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Ambient Swell",    PresetCategory::electricGuitar, 16.0f, 48.0f,  8.0f, 0.0f, 68.0f, 82.0f, 54.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Shoegaze Wash",    PresetCategory::electricGuitar, 28.0f, 42.0f, 24.0f, 0.0f, 64.0f, 88.0f, 56.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Blues Edge",       PresetCategory::electricGuitar, 34.0f, 44.0f, 28.0f, 0.0f, 16.0f, 18.0f, 12.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Blues Lead",       PresetCategory::electricGuitar, 44.0f, 40.0f, 38.0f, 0.0f, 18.0f, 30.0f, 14.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Classic Crunch",   PresetCategory::electricGuitar, 42.0f, 38.0f, 44.0f, 0.0f, 14.0f, 16.0f, 10.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "British Rhythm",   PresetCategory::electricGuitar, 48.0f, 35.0f, 50.0f, 0.0f, 12.0f, 14.0f,  8.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "American Drive",   PresetCategory::electricGuitar, 46.0f, 60.0f, 46.0f, 0.0f, 16.0f, 18.0f, 12.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Garage Grit",      PresetCategory::electricGuitar, 52.0f, 30.0f, 58.0f, 0.0f, 10.0f, 12.0f,  6.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Stoner Warmth",    PresetCategory::electricGuitar, 58.0f, 20.0f, 56.0f, 0.0f, 12.0f, 24.0f,  8.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Psychedelic Lead", PresetCategory::electricGuitar, 42.0f, 46.0f, 42.0f, 0.0f, 72.0f, 62.0f, 46.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Singing Lead",     PresetCategory::electricGuitar, 48.0f, 52.0f, 46.0f, 0.0f, 22.0f, 42.0f, 18.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Solo Space",       PresetCategory::electricGuitar, 38.0f, 50.0f, 34.0f, 0.0f, 34.0f, 68.0f, 28.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Dark Lead",        PresetCategory::electricGuitar, 50.0f, 22.0f, 48.0f, 0.0f, 16.0f, 38.0f, 10.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
+        { "Lo-Fi Amp",        PresetCategory::electricGuitar, 56.0f, 18.0f, 62.0f, 0.0f,  8.0f, 20.0f,  0.0f, 0.0f, 68.182f, 0.0f, { true,  true,  true,  false, true,  true,  false,false } },
+        { "Arena Lead",       PresetCategory::electricGuitar, 44.0f, 54.0f, 40.0f, 0.0f, 30.0f, 76.0f, 26.0f, 0.0f, 68.182f, 0.0f, { true,  false, true,  false, true,  true,  true, false } },
     } };
 }

@@ -167,6 +167,12 @@
      in every module) instead of growing to fill leftover space - this is
      what makes the knob's own vertical position immune to how much aux
      content a given module has below it (see the class comment above). */
+  position: absolute;
+  left: 50%;
+  top: var(--module-knob-anchor);
+  transform: translate(-50%, -50%);
+  width: 100%;
+  z-index: 1;
   flex: 0 0 auto;
   display: flex;
   flex-direction: column;
@@ -181,8 +187,7 @@
      by a fixed amount, which is what actually reads as "just a knob,
      centred" rather than leaving a large dead gap at the bottom of each
      panel. */
-  margin-top: auto;
-  margin-bottom: auto;
+  margin: 0;
 }
 
 .module__aux {
@@ -265,22 +270,13 @@
    content at all", which is what live testing actually asked for across
    both earlier attempts. */
 .module__delay-content {
-  flex: 0 0 auto;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: var(--space-sm);
-  min-height: 0;
-  margin-top: auto;
-  margin-bottom: auto;
-  width: 100%;
+  display: contents;
 }
 
 /* Both children stop trying to centre/pin *themselves* - the wrapper
    above now owns that job as a single unit. */
 .module__delay-content .module__knob-area {
-  margin-top: 0;
-  margin-bottom: 0;
+  margin: 0;
 }
 
 /* `.knob-module__inner-readout` is `position: absolute` everywhere else
@@ -294,40 +290,48 @@
    knob-module's own height genuinely includes the readout and the gap
    after it is correct. */
 .module__delay-content .knob-module__inner-readout {
-  position: static;
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
   margin-top: var(--space-xs);
 }
 
 .module__aux--delay {
-  margin-top: 0;
+  position: absolute;
+  left: 50%;
+  top: calc(var(--module-knob-anchor) + var(--knob-size) * 0.72 + 3.7rem);
+  transform: translateX(-50%);
+  width: calc(100% - 2 * var(--space-xs));
+  z-index: 2;
+  margin: 0;
   align-items: center;
   gap: calc(var(--space-xs) * 0.5);
 }
 
 .delay-division {
-  display: flex;
-  justify-content: center;
-  border: 1.5px solid var(--ink-hairline-strong);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 2px;
+  width: 100%;
 }
 
 .delay-division__btn {
-  flex: 1 1 auto;
+  grid-column: span 2;
   font-family: var(--font-mono);
   font-size: calc(var(--fs-knob-label) * 0.62);
   font-weight: 800;
   letter-spacing: 0.02em;
   color: var(--ink-mid);
   background: transparent;
-  border: none;
+  border: 1.5px solid var(--ink-hairline-strong);
+  border-radius: var(--radius-sm);
   padding: 0.3em 0.2em;
   cursor: pointer;
 }
 
-.delay-division__btn + .delay-division__btn {
-  border-left: 1.5px solid var(--ink-hairline-strong);
-}
+.delay-division__btn:nth-child(4),
+.delay-division__btn:nth-child(5) { grid-column: span 3; }
 
 .delay-division__btn.is-active {
   color: var(--knob-face);
@@ -350,11 +354,14 @@
 .delay-toggle-row {
   display: flex;
   justify-content: center;
+  width: 100%;
   gap: calc(var(--space-xs) * 0.6);
 }
 
 .delay-mode-btn {
   flex: 1 1 0;
+  min-width: 0;
+  min-height: 2.5em;
   font-size: calc(var(--fs-knob-label) * 0.64);
   font-weight: 800;
   letter-spacing: var(--tracking-wide);

@@ -86,8 +86,8 @@
   --fs-subtitle: clamp(0.64rem, 0.55rem + 0.32vw, 0.8rem);
   --fs-header-btn: clamp(0.62rem, 0.54rem + 0.3vw, 0.75rem);
   --fs-module-index: clamp(0.8rem, 0.68rem + 0.4vw, 0.98rem);
-  --fs-module-name: clamp(1.1rem, 0.9rem + 0.85vw, 1.55rem);
-  --fs-module-tag: clamp(0.58rem, 0.5rem + 0.28vw, 0.7rem);
+  --fs-module-name: clamp(0.92rem, 0.72rem + 0.68vw, 1.38rem);
+  --fs-module-tag: clamp(0.48rem, 0.41rem + 0.2vw, 0.62rem);
   --fs-knob-value: clamp(0.95rem, 0.8rem + 0.6vw, 1.25rem);
   --fs-knob-label: clamp(0.7rem, 0.6rem + 0.32vw, 0.88rem);
   --fs-knob-scale-num: clamp(0.5rem, 0.44rem + 0.22vw, 0.6rem);
@@ -132,6 +132,9 @@
      ~22px at the 960x640 reference size, scaling gently with editor
      height between the 600x400 and 1350x900 resize limits. */
   --knob-area-shift: clamp(0.9rem, 0.5rem + 2.2vh, 1.8rem);
+  /* One physical anchor for every outer knob. DELAY's extra controls are
+     positioned below this line and never participate in centring it. */
+  --module-knob-anchor: 52%;
 
   /* ---- Knob geometry -------------------------------------------------------
      A single scale so the knob, its tick ring and its indicator always

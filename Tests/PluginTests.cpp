@@ -294,7 +294,7 @@ public:
             }
         }
 
-        beginTest ("getTailLengthSeconds() tracks VERB's fixed RT60 whenever wet, not a fixed-at-zero constant");
+        beginTest ("getTailLengthSeconds() tracks VERB's variable RT60 whenever wet");
         {
             // Regression test for a real bug found during the pre-release
             // audit: getTailLengthSeconds() unconditionally returned 0.0
@@ -304,14 +304,9 @@ public:
             // at all - see docs/FULL_DSP_AUDIT.md's "VERB tail" section and
             // docs/DSP_VERB.md.
             //
-            // Under the 2026-09-14 redesign, Mix controls only dry/wet
-            // balance - decay time is a FIXED constant
-            // (verbTargetDecaySeconds, VerbCurves.h), never derived from
-            // Mix, so the reported tail must be the SAME at 50% and 100%
-            // wet (this is a direct behaviour change from the old plate
-            // module, which stretched decay from ~2.5s to ~4.35s across
-            // this same range - see CLAUDE.md's "VERB direction change"
-            // entry).
+            // The current product behaviour deliberately lengthens the
+            // decay toward 100%, so the host-reported tail must follow the
+            // same curve instead of returning a stale fixed constant.
             UNI76AudioProcessor processor;
             auto& apvts = processor.getValueTreeState();
             auto* reverb = apvts.getParameter (uni76::ParamID::reverb);
@@ -323,15 +318,15 @@ public:
 
             reverb->setValueNotifyingHost (0.5f);
             const auto tailAt50 = processor.getTailLengthSeconds();
-            expectWithinAbsoluteError (tailAt50, (double) uni76::dsp::verbTargetDecaySeconds, 0.01,
-                                       "VERB50 tail should match the fixed RT60 target");
+            expectWithinAbsoluteError (tailAt50, (double) uni76::dsp::verbDecaySeconds (0.5f), 0.01,
+                                       "VERB50 tail should match the variable RT60 curve");
 
             reverb->setValueNotifyingHost (1.0f);
             const auto tailAt100 = processor.getTailLengthSeconds();
-            expectWithinAbsoluteError (tailAt100, (double) uni76::dsp::verbTargetDecaySeconds, 0.01,
-                                       "VERB100 tail should match the fixed RT60 target");
-            expectWithinAbsoluteError (tailAt100, tailAt50, 1.0e-6,
-                                       "Mix must not stretch decay - VERB50 and VERB100 must report the identical fixed tail");
+            expectWithinAbsoluteError (tailAt100, (double) uni76::dsp::verbDecaySeconds (1.0f), 0.01,
+                                       "VERB100 tail should match the maximum RT60 target");
+            expect (tailAt100 > tailAt50,
+                    "VERB100 must report a longer tail than VERB50");
 
             // Disabling VERB internally mutes the wet contribution entirely
             // (same crossfade-to-dry-only bypass every other module uses) -
@@ -6813,7 +6808,7 @@ public:
             expect (residualStdDevDb < 6.0, "the tank's steady decay is not spectrally flat enough (detrended stdDev=" + juce::String (residualStdDevDb) + "dB) - risk of an audibly uneven/metallic tail (regression vs. this round's own measured baseline)");
         }
 
-        beginTest ("Macro curve mapping (VerbCurves.h, direct) - Mix controls only wet gain, decay/pre-delay are fixed");
+        beginTest ("Macro curve mapping (VerbCurves.h, direct) - wet gain and decay grow smoothly");
         {
             std::cout << "\n=== VERB curve mapping (VerbCurves.h, direct) ===" << std::endl;
             const float points[] { 0.0f, 0.25f, 0.5f, 0.75f, 1.0f };
@@ -6826,30 +6821,27 @@ public:
             std::cout << "=== end curve mapping ===" << std::endl << std::endl;
 
             expectWithinAbsoluteError (uni76::dsp::verbWetGain (0.0f), 0.0f, 1.0e-6f, "wet(0%) must be exactly 0.0 (DRY identity)");
-            expectWithinAbsoluteError (uni76::dsp::verbWetGain (1.0f), 0.55f, 0.02f, "wet(100%) should land near the 55% target");
+            expectWithinAbsoluteError (uni76::dsp::verbWetGain (1.0f), 0.72f, 0.02f, "wet(100%) should land near the stronger 72% target");
 
             for (size_t i = 1; i < 5; ++i)
                 expect (uni76::dsp::verbWetGain (points[i]) > uni76::dsp::verbWetGain (points[i - 1]), "wet gain must grow monotonically");
 
-            expect (uni76::dsp::verbWetGain (1.0f) < 0.6f, "100% knob position must not mean anywhere near 100% wet");
+            expect (uni76::dsp::verbWetGain (1.0f) < 0.8f, "100% knob position must retain useful insert headroom");
 
-            // Direct product requirement (2026-09-14 redesign): "Mix
-            // должен управлять Dry/Wet, а не растягивать Decay" - decay
-            // and pre-delay must be IDENTICAL at every macro position,
-            // unlike the old plate module (which stretched decay from
-            // ~2.5s at 50% to ~4.35s at 100%).
+            // Decay now grows intentionally with the macro, while pre-delay
+            // remains fixed so there is no moving slap/early reflection.
             for (size_t i = 1; i < 5; ++i)
             {
-                expectWithinAbsoluteError (uni76::dsp::verbDecaySeconds (points[i]), uni76::dsp::verbDecaySeconds (points[i - 1]), 1.0e-6f,
-                                            "decay must be fixed (Mix must not stretch it)");
+                expect (uni76::dsp::verbDecaySeconds (points[i]) > uni76::dsp::verbDecaySeconds (points[i - 1]),
+                        "decay must grow monotonically");
                 expectWithinAbsoluteError (uni76::dsp::verbPreDelayMs (points[i]), uni76::dsp::verbPreDelayMs (points[i - 1]), 1.0e-6f,
                                             "pre-delay must be fixed (Mix must not stretch it)");
             }
 
-            expect (uni76::dsp::verbDecaySeconds (0.5f) >= 2.8f && uni76::dsp::verbDecaySeconds (0.5f) <= 3.2f,
-                    "fixed decay target should land in the requested ~2.8-3.2s range");
-            expect (uni76::dsp::verbDecaySeconds (1.0f) >= 2.8f && uni76::dsp::verbDecaySeconds (1.0f) <= 3.2f,
-                    "fixed decay target should land in the requested ~2.8-3.2s range");
+            expectWithinAbsoluteError (uni76::dsp::verbDecaySeconds (0.5f), 3.5f, 0.05f,
+                                       "50% decay should remain musical and controlled");
+            expectWithinAbsoluteError (uni76::dsp::verbDecaySeconds (1.0f), 5.2f, 0.05f,
+                                       "100% decay should provide the requested long tail");
         }
 
         beginTest ("Low-frequency wet rejection: 40-500Hz burst response, VERB=100%");
@@ -6948,7 +6940,7 @@ public:
             expect (results[8000.0f][1] < results[5000.0f][1], "8kHz should have decayed further than 5kHz by 2s");
         }
 
-        beginTest ("VERB: measured RT60 (time to -60dB @1kHz) matches the fixed ~2.8-3.2s target, identically at every Mix");
+        beginTest ("VERB: measured RT60 grows toward the longer 100% tail");
         {
             // A real gap the "frequency-dependent decay" test above never
             // covered - it only checks that higher frequencies decay
@@ -6995,10 +6987,10 @@ public:
             std::cout << "  100%: measured=" << measured100 << "s   (fixed target=" << uni76::dsp::verbTargetDecaySeconds << "s)" << std::endl;
             std::cout << "=== end measured RT60 ===" << std::endl << std::endl;
 
-            expect (measured50 > 2.4 && measured50 < 3.6, "measured 50% RT60 should land near the fixed ~2.8-3.2s target");
-            expect (measured100 > 2.4 && measured100 < 3.6, "measured 100% RT60 should land near the fixed ~2.8-3.2s target");
-            expect (std::abs (measured100 - measured50) < 0.5,
-                    "Mix must not stretch decay - measured RT60 at 50% and 100% should be close, got " + juce::String (measured50) + "s vs " + juce::String (measured100) + "s");
+            expect (measured50 > 3.5 && measured50 < 4.6, "measured 50% RT60 should remain controlled");
+            expect (measured100 > 4.4 && measured100 < 5.3, "measured 100% RT60 should land near the longer target");
+            expect (measured100 > measured50 + 0.4,
+                    "measured RT60 must grow audibly from 50% to 100%");
         }
 
         beginTest ("Bass test: 50/80/120/250Hz stay almost dry, 500Hz+transient get a clear plate tail, VERB=100%");
@@ -7177,13 +7169,14 @@ public:
             }
             expect (bufferIsFinite (autoOutput), "automation should not produce non-finite output");
 
-            // No large sample-to-sample jump anywhere (a crude click detector).
-            bool clickFree = true;
+            // Tight sample-to-sample discontinuity detector: the source's
+            // own slope is small, so a feedback/coefficient step stands out.
+            float maxJump = 0.0f;
             for (int ch = 0; ch < 2; ++ch)
                 for (int i = 1; i < totalSamples; ++i)
-                    if (std::abs (autoOutput.getSample (ch, i) - autoOutput.getSample (ch, i - 1)) > 1.0f)
-                        clickFree = false;
-            expect (clickFree, "automation should be click-free (no large sample-to-sample jumps)");
+                    maxJump = juce::jmax (maxJump, std::abs (autoOutput.getSample (ch, i) - autoOutput.getSample (ch, i - 1)));
+            std::cout << "VERB automation maximum adjacent-sample jump=" << maxJump << std::endl;
+            expect (maxJump < 0.15f, "automation produced a click-like discontinuity: maxJump=" + juce::String (maxJump));
         }
 
         beginTest ("Mono bus is supported (folds the tank's stereo taps to mono, stays finite)");
@@ -7476,7 +7469,7 @@ public:
             // high should decay measurably faster (frequency-dependent
             // damping - see VerbCurves.h's verbDampingHz), never longer.
             expect (rt60ByFreq[200.0f] > 2.2, "200Hz RT60 should not have collapsed - got " + juce::String (rt60ByFreq[200.0f]) + "s");
-            expect (rt60ByFreq[1000.0f] > 2.4 && rt60ByFreq[1000.0f] < 3.6, "1kHz RT60 should land near the fixed ~2.8-3.2s target, got " + juce::String (rt60ByFreq[1000.0f]) + "s");
+            expect (rt60ByFreq[1000.0f] > 4.4 && rt60ByFreq[1000.0f] < 5.3, "1kHz RT60 should land near the long 100% target, got " + juce::String (rt60ByFreq[1000.0f]) + "s");
             expect (rt60ByFreq[6000.0f] > 0.0 && rt60ByFreq[6000.0f] < rt60ByFreq[1000.0f],
                     "6kHz should decay clearly faster than 1kHz (frequency-dependent damping), got " + juce::String (rt60ByFreq[6000.0f]) + "s vs " + juce::String (rt60ByFreq[1000.0f]) + "s");
         }
@@ -7658,11 +7651,11 @@ public:
                 // verbWetGain(t) tops out well under 1.0 by construction
                 // (see the "Macro curve mapping" test above), checked
                 // again here directly against the real processed output.
-                expect (uni76::dsp::verbWetGain (mix) < 0.6f, "Mix " + juce::String (mix * 100.0f) + "%: wet gain should stay moderate, not overwhelm dry");
+                expect (uni76::dsp::verbWetGain (mix) < 0.8f, "Mix " + juce::String (mix * 100.0f) + "%: wet gain should stay below full-scale replacement");
             }
         }
 
-        beginTest ("RT60 stays near the fixed target across several sample rates and block sizes");
+        beginTest ("Maximum RT60 stays consistent across sample rates and block sizes");
         {
             const double rates[] { 44100.0, 48000.0, 96000.0 };
             const int blocks[] { 64, 256, 1024 };
@@ -7691,7 +7684,7 @@ public:
                     auto wo = verbWetOnly (input, sr, bs, 1.0f);
                     const auto rt60 = measureRT60Seconds (wo, sr, 1000.0, 0, burstLen);
                     std::cout << "  " << sr << "Hz / block " << bs << ": RT60=" << rt60 << "s" << std::endl;
-                    expect (rt60 > 2.3 && rt60 < 3.7, juce::String (sr) + "Hz/block " + juce::String (bs) + ": RT60 should stay near the fixed ~3s target, got " + juce::String (rt60) + "s");
+                    expect (rt60 > 4.3 && rt60 < 5.3, juce::String (sr) + "Hz/block " + juce::String (bs) + ": maximum RT60 should stay near the long-tail target, got " + juce::String (rt60) + "s");
                 }
             }
             std::cout << "=== end RT60 across sample rates/block sizes ===" << std::endl << std::endl;
@@ -10604,7 +10597,7 @@ public:
             std::cout << "VERB tail decay: earlyRms=" + juce::String (earlyRms, 8) + " lateRms=" + juce::String (lateRms, 8) << std::endl;
 
             expect (lateRms < earlyRms * 0.05, "VERB tail did not decay toward silence after 8s");
-            expect (lateRms < 1.0e-4, "VERB tail left implausibly large residual energy after 8s of silence");
+            expect (lateRms < 1.0e-3, "VERB tail left implausibly large residual energy after 8s of silence");
         }
 
         beginTest ("Determinism: identical input/state/rate/block sequence produces bit-identical output across two independent runs");
@@ -10783,8 +10776,8 @@ public:
             // categories (GENERAL + VOCAL/PIANO/ACOUSTIC GUITAR/ELECTRIC
             // GUITAR instrument banks) in the UX polish pass - see
             // Core/FactoryPresets.h and CLAUDE.md.
-            expect (uni76::factoryPresets.size() >= 28 && uni76::factoryPresets.size() <= 40,
-                    "factory preset count should be roughly 28-40 across all 5 categories");
+            expectEquals ((int) uni76::factoryPresets.size(), 52,
+                          "factory preset bank should contain the original 32 plus 20 electric-guitar presets");
 
             std::set<uni76::PresetCategory> seenCategories;
             std::map<uni76::PresetCategory, int> countPerCategory;
@@ -11199,7 +11192,7 @@ public:
             auto legacyLoaded = uni76::loadUserPreset (legacyName);
             expect (legacyLoaded.has_value(), "legacy preset without a ChainOrder node should still load");
             if (legacyLoaded.has_value())
-                expect (legacyLoaded->chainOrder == std::array<int, 7> { 0, 1, 2, 3, 4, 5, 6 },
+                expect (legacyLoaded->chainOrder == std::array<int, 8> { 0, 1, 2, 3, 4, 7, 5, 6 },
                         "a preset with no ChainOrder node must fall back to the factory identity order");
 
             legacyFile.deleteFile();
@@ -11214,13 +11207,13 @@ public:
             uni76::FactoryPreset scrambled { "TestScrambled", uni76::PresetCategory::general,
                 0.0f, 50.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 0.0f, 35.303f, 0.0f,
                 { false, false, false, false, false, false, false },
-                { 3, 1, 6, 0, 5, 2, 4 } };
+                { 3, 1, 6, 0, 7, 5, 2, 4 } };
 
             UNI76AudioProcessor processor;
             processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
             processor.prepareToPlay (44100.0, 256);
 
-            expect (processor.getChainOrder().snapshot() == std::array<int, 7> { 0, 1, 2, 3, 4, 5, 6 },
+            expect (processor.getChainOrder().snapshot() == std::array<int, 8> { 0, 1, 2, 3, 4, 7, 5, 6 },
                     "precondition: a fresh processor starts at the factory identity order");
 
             if (uni76::ChainOrder::isValidPermutation (scrambled.chainOrder))
@@ -11254,35 +11247,35 @@ public:
         beginTest ("Defaults to the factory PREAMP->EQ->SAT->PITCH->PAN->VERB->IMAGE order");
         {
             uni76::ChainOrder chain;
-            const std::array<int, 7> expected { 0, 1, 2, 3, 4, 5, 6 };
+            const std::array<int, 8> expected { 0, 1, 2, 3, 4, 7, 5, 6 };
             expect (chain.snapshot() == expected, "fresh ChainOrder should be the identity permutation");
-            for (int i = 0; i < 7; ++i)
-                expectEquals (chain.roleAtPosition (i), i);
+            for (int i = 0; i < 8; ++i)
+                expectEquals (chain.roleAtPosition (i), expected[(size_t) i]);
         }
 
         beginTest ("isValidPermutation accepts real permutations and rejects everything else");
         {
-            expect (uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 5, 6 }), "identity should be valid");
-            expect (uni76::ChainOrder::isValidPermutation ({ 6, 5, 4, 3, 2, 1, 0 }), "reversed should be valid");
-            expect (uni76::ChainOrder::isValidPermutation ({ 2, 0, 6, 1, 4, 3, 5 }), "an arbitrary shuffle should be valid");
+            expect (uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 7, 5, 6 }), "default order should be valid");
+            expect (uni76::ChainOrder::isValidPermutation ({ 7, 6, 5, 4, 3, 2, 1, 0 }), "reversed should be valid");
+            expect (uni76::ChainOrder::isValidPermutation ({ 2, 0, 7, 6, 1, 4, 3, 5 }), "an arbitrary shuffle should be valid");
 
-            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 0, 2, 3, 4, 5, 6 }), "a duplicate role must be rejected");
-            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 5, 7 }), "an out-of-range role must be rejected");
-            expect (! uni76::ChainOrder::isValidPermutation ({ -1, 1, 2, 3, 4, 5, 6 }), "a negative role must be rejected");
+            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 0, 2, 3, 4, 5, 6, 7 }), "a duplicate role must be rejected");
+            expect (! uni76::ChainOrder::isValidPermutation ({ 0, 1, 2, 3, 4, 5, 6, 8 }), "an out-of-range role must be rejected");
+            expect (! uni76::ChainOrder::isValidPermutation ({ -1, 1, 2, 3, 4, 5, 6, 7 }), "a negative role must be rejected");
         }
 
         beginTest ("setOrder / snapshot / roleAtPosition round-trip");
         {
             uni76::ChainOrder chain;
-            const std::array<int, 7> shuffled { 5, 6, 0, 1, 2, 3, 4 }; // e.g. VERB->IMAGE->PREAMP->...
+            const std::array<int, 8> shuffled { 5, 6, 0, 7, 1, 2, 3, 4 }; // e.g. VERB->IMAGE->PREAMP->...
             chain.setOrder (shuffled);
 
             expect (chain.snapshot() == shuffled, "snapshot() should return exactly what was set");
-            for (int i = 0; i < 7; ++i)
+            for (int i = 0; i < 8; ++i)
                 expectEquals (chain.roleAtPosition (i), shuffled[(size_t) i]);
 
             chain.resetToDefault();
-            const std::array<int, 7> identity { 0, 1, 2, 3, 4, 5, 6 };
+            const std::array<int, 8> identity { 0, 1, 2, 3, 4, 7, 5, 6 };
             expect (chain.snapshot() == identity, "resetToDefault() should return to the factory order");
         }
 
@@ -11297,7 +11290,7 @@ public:
             constexpr int blockSize = 256;
             auto makeSource = [&] { return makeStereoFromMono (generateSine (1, 8192, sr, 300.0f, 0.5f)); };
 
-            auto runWithOrder = [&] (const std::array<int, 7>& order)
+            auto runWithOrder = [&] (const std::array<int, 8>& order)
             {
                 UNI76AudioProcessor processor;
                 processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
@@ -11309,7 +11302,7 @@ public:
                 processor.getModuleEnableState().setEnabled (0, true);  // preamp
                 processor.getModuleEnableState().setEnabled (1, false); // eq
                 processor.getModuleEnableState().setEnabled (2, true);  // saturation
-                for (int m = 3; m < 7; ++m)
+                for (int m = 3; m < uni76::ModuleEnableState::numModules; ++m)
                     processor.getModuleEnableState().setEnabled (m, false);
 
                 processor.getChainOrder().setOrder (order);
@@ -11317,8 +11310,8 @@ public:
                 return runFullChain (processor, makeSource(), blockSize);
             };
 
-            const std::array<int, 7> preampFirst { 0, 2, 1, 3, 4, 5, 6 }; // PREAMP -> SAT -> (rest, all disabled/no-op)
-            const std::array<int, 7> satFirst    { 2, 0, 1, 3, 4, 5, 6 }; // SAT -> PREAMP -> (rest)
+            const std::array<int, 8> preampFirst { 0, 2, 1, 3, 4, 7, 5, 6 }; // PREAMP -> SAT -> (rest, all disabled/no-op)
+            const std::array<int, 8> satFirst    { 2, 0, 1, 3, 4, 7, 5, 6 }; // SAT -> PREAMP -> (rest)
 
             const auto outputA = runWithOrder (preampFirst);
             const auto outputB = runWithOrder (satFirst);
@@ -11341,7 +11334,7 @@ public:
         beginTest ("Chain order survives a real getStateInformation()/setStateInformation() save+restore");
         {
             UNI76AudioProcessor processor;
-            const std::array<int, 7> custom { 4, 6, 0, 5, 1, 3, 2 }; // an arbitrary but valid shuffle
+            const std::array<int, 8> custom { 4, 6, 0, 7, 5, 1, 3, 2 }; // an arbitrary but valid shuffle
             processor.getChainOrder().setOrder (custom);
 
             juce::MemoryBlock saved;
@@ -11355,7 +11348,7 @@ public:
 
         beginTest ("Missing or corrupt saved chain order falls back to the factory default, not a crash or partial order");
         {
-            const std::array<int, 7> identity { 0, 1, 2, 3, 4, 5, 6 };
+            const std::array<int, 8> identity { 0, 1, 2, 3, 4, 7, 5, 6 };
 
             // Missing property entirely (state saved before this round).
             {
@@ -11365,7 +11358,7 @@ public:
                 {
                     juce::MemoryBlock data;
                     juce::AudioProcessor::copyXmlToBinary (*xml, data);
-                    processor.getChainOrder().setOrder ({ 6, 5, 4, 3, 2, 1, 0 }); // perturb first
+                    processor.getChainOrder().setOrder ({ 6, 5, 7, 4, 3, 2, 1, 0 }); // perturb first
                     processor.setStateInformation (data.getData(), (int) data.getSize());
                 }
                 expect (processor.getChainOrder().snapshot() == identity,
@@ -11376,12 +11369,12 @@ public:
             {
                 UNI76AudioProcessor processor;
                 auto badState = processor.getValueTreeState().copyState();
-                badState.setProperty (uni76::ChainOrder::stateProperty, juce::String ("0,0,2,3,4,5,6"), nullptr);
+                badState.setProperty (uni76::ChainOrder::stateProperty, juce::String ("0,0,2,3,4,5,6,7"), nullptr);
                 if (auto xml = badState.createXml())
                 {
                     juce::MemoryBlock data;
                     juce::AudioProcessor::copyXmlToBinary (*xml, data);
-                    processor.getChainOrder().setOrder ({ 6, 5, 4, 3, 2, 1, 0 }); // perturb first
+                    processor.getChainOrder().setOrder ({ 6, 5, 7, 4, 3, 2, 1, 0 }); // perturb first
                     processor.setStateInformation (data.getData(), (int) data.getSize());
                 }
                 expect (processor.getChainOrder().snapshot() == identity,
@@ -11394,11 +11387,11 @@ public:
             constexpr double sr = 44100.0;
             constexpr int blockSize = 256;
 
-            const std::array<int, 7> orders[] {
-                { 0, 1, 2, 3, 4, 5, 6 }, // factory default
-                { 6, 5, 4, 3, 2, 1, 0 }, // fully reversed
-                { 5, 2, 6, 0, 3, 1, 4 }, // arbitrary shuffle
-                { 3, 4, 5, 6, 0, 1, 2 }, // PITCH/PAN/VERB/IMAGE moved ahead of PREAMP/EQ/SAT
+            const std::array<int, 8> orders[] {
+                { 0, 1, 2, 3, 4, 7, 5, 6 }, // factory default
+                { 7, 6, 5, 4, 3, 2, 1, 0 }, // fully reversed
+                { 5, 2, 6, 0, 7, 3, 1, 4 }, // arbitrary shuffle
+                { 3, 4, 7, 5, 6, 0, 1, 2 }, // PITCH/PAN/DELAY/VERB/IMAGE moved ahead of PREAMP/EQ/SAT
             };
 
             for (auto& order : orders)
@@ -12052,7 +12045,7 @@ public:
                 burst.setSample (1, i, (float) (0.3 * s));
             }
 
-            auto measureTailHighContent = [&] (const std::array<int, 7>& order)
+            auto measureTailHighContent = [&] (const std::array<int, 8>& order)
             {
                 UNI76AudioProcessor processor;
                 processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
@@ -12088,9 +12081,9 @@ public:
                 return energy > 1.0e-12 ? highEnergy / energy : -1.0;
             };
 
-            // role indices: 0=preamp,1=eq,2=saturation,3=pitch,4=panorama,5=reverb,6=imager
-            const std::array<int, 7> verbBeforeEq { 5, 1, 0, 2, 3, 4, 6 }; // VERB runs first, EQ afterwards
-            const std::array<int, 7> eqBeforeVerb { 1, 5, 0, 2, 3, 4, 6 }; // EQ runs first, VERB afterwards
+            // role indices: 0=preamp,1=eq,2=saturation,3=pitch,4=panorama,5=reverb,6=imager,7=delay
+            const std::array<int, 8> verbBeforeEq { 5, 1, 0, 2, 3, 4, 7, 6 }; // VERB runs first, EQ afterwards
+            const std::array<int, 8> eqBeforeVerb { 1, 5, 0, 2, 3, 4, 7, 6 }; // EQ runs first, VERB afterwards
 
             const auto highContentVerbBeforeEq = measureTailHighContent (verbBeforeEq);
             const auto highContentEqBeforeVerb = measureTailHighContent (eqBeforeVerb);

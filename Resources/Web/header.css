@@ -11,6 +11,10 @@
 
 .header__brand {
   justify-self: start;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.32em;
   font-size: var(--fs-brand);
   font-weight: 700;
   letter-spacing: var(--tracking-wider);
@@ -24,7 +28,25 @@
      line + the title's row gap moves its text up to match. A/B moved out
      to the footer's centre column this round (see index.html/meters.css),
      so this is back to the original two-element layout. */
-  margin-bottom: calc(var(--fs-subtitle) + 0.2em);
+  margin-bottom: 0;
+}
+
+.header__brand-name {
+  font-weight: 900;
+  letter-spacing: 0.2em;
+  line-height: 1;
+}
+
+.header__brand-collection {
+  max-width: 15em;
+  padding-top: 0.34em;
+  border-top: 1px solid currentColor;
+  font-family: var(--font-mono);
+  font-size: 0.58em;
+  font-weight: 700;
+  line-height: 1.2;
+  letter-spacing: 0.14em;
+  color: var(--text-tertiary);
 }
 
 .header__title {
@@ -40,14 +62,7 @@
 .header__product-row {
   display: flex;
   align-items: center;
-  gap: 0.9em;
-}
-
-.header__deco-line {
-  width: clamp(2.4rem, 1.6rem + 3vw, 5rem);
-  height: 2px;
-  background: var(--header-accent);
-  opacity: 0.75;
+  gap: 0;
 }
 
 .header__product {
@@ -74,6 +89,14 @@
 
 .header__btn--preset {
   position: relative;
+}
+
+/* Both labels occupy the same box, so ORIGINAL <-> ARCHIVE never shifts
+   the preset controls or the centred product title. */
+.header__btn--theme {
+  width: 6.8rem;
+  justify-content: center;
+  flex-shrink: 0;
 }
 
 /* Cream-outline style: no filled button chrome, just an outline + cream

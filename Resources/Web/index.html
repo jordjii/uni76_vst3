@@ -19,8 +19,9 @@
   <link rel="stylesheet" href="scales.css" />
   <link rel="stylesheet" href="meters.css" />
   <link rel="stylesheet" href="responsive.css" />
+  <link rel="stylesheet" href="archive-theme.css" />
 </head>
-<body>
+<body data-theme="archive">
   <div class="app">
     <div class="bolt bolt--top-left" aria-hidden="true"></div>
     <div class="bolt bolt--top-right" aria-hidden="true"></div>
@@ -28,16 +29,20 @@
     <div class="bolt bolt--bottom-right" aria-hidden="true"></div>
 
     <header class="header">
-      <div class="header__brand">NOSTALGIA AUDIO</div>
+      <div class="header__brand">
+        <span class="header__brand-name">ECHOLABS</span>
+        <span class="header__brand-collection">AUDIO ARCHIVE COLLECTION</span>
+      </div>
       <div class="header__title">
         <div class="header__product-row">
-          <span class="header__deco-line" aria-hidden="true"></span>
           <span class="header__product">UNI 76</span>
-          <span class="header__deco-line" aria-hidden="true"></span>
         </div>
         <span class="header__subtitle">ANALOG PROCESSOR</span>
       </div>
       <div class="header__controls">
+        <button class="header__btn header__btn--theme" type="button" data-header-control="theme" aria-label="Switch interface theme">
+          <span class="header__btn-theme-label">ORIGINAL</span>
+        </button>
         <button class="header__btn header__btn--preset-nav" type="button" data-header-control="preset-prev" aria-label="Previous preset">&#9666;</button>
         <button class="header__btn header__btn--preset" type="button" data-header-control="preset" aria-haspopup="true" aria-expanded="false">
           <span class="header__btn-preset-label">DEFAULT</span> &#9662;

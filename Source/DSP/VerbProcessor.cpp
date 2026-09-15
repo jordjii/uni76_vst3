@@ -35,6 +35,7 @@ namespace uni76::dsp
             const auto term = scale * sum;
             for (auto& x : v) x -= term;
         }
+
     }
 
     void VerbProcessor::prepare (double sampleRateIn, int maximumBlockSize, int numChannelsToUse)
@@ -65,7 +66,6 @@ namespace uni76::dsp
             lineLengthSamples[(size_t) k] = length;
             lineBuffers[(size_t) k].assign ((size_t) length, 0.0f);
             lineDamping[(size_t) k].setCutoffHz (sampleRate, verbDampingHz);
-            lineModIncrement[(size_t) k] = twoPi * (double) verbLineModRateHz[(size_t) k] / sampleRate;
         }
 
         returnBandwidthL.setCutoffHz (sampleRate, verbReturnBandwidthHz);
@@ -91,19 +91,14 @@ namespace uni76::dsp
         driveSmoother.setCurrentAndTargetValue (0.0f);
         bypassSmoother.setCurrentAndTargetValue (1.0f);
 
-        // Decay is now a FIXED target, completely independent of Mix - so,
-        // unlike the old plate module, the per-line feedback gain only
-        // needs computing once, here, not every block. Solved against
-        // verbDecayFormulaTargetSeconds (an internal-only, measurement-
-        // calibrated value, larger than the reported verbTargetDecaySeconds)
-        // - see VerbCurves.h's "RT60-formula target" comment for why the
-        // formula's own input has to be inflated to make the *measured*
-        // decay land at the real ~2.8-3.2s spec.
+        // Start at the 0% decay value. Runtime targets are ramped per sample,
+        // so changing VERB cannot step the feedback gain at a block boundary.
         for (int k = 0; k < verbNumLines; ++k)
         {
             const auto lineSeconds = (float) lineLengthSamples[(size_t) k] / (float) sampleRate;
-            const auto rawGain = std::pow (10.0f, -3.0f * lineSeconds / verbDecayFormulaTargetSeconds);
-            lineFeedbackGain[(size_t) k] = std::min (verbLineFeedbackGainMax, rawGain);
+            const auto rawGain = std::pow (10.0f, -3.0f * lineSeconds / verbDecayFormulaSeconds (0.0f));
+            lineFeedbackGain[(size_t) k].reset (sampleRate, verbDecaySmoothingSeconds);
+            lineFeedbackGain[(size_t) k].setCurrentAndTargetValue (std::min (verbLineFeedbackGainMax, rawGain));
         }
 
         reset();
@@ -129,11 +124,6 @@ namespace uni76::dsp
             std::fill (lineBuffers[(size_t) k].begin(), lineBuffers[(size_t) k].end(), 0.0f);
             lineWritePos[(size_t) k] = 0;
             lineDamping[(size_t) k].reset();
-            lineInterpolators[(size_t) k].reset();
-            // Staggered starting phases (not just staggered rates) so
-            // the 12 lines' own modulation never all cross zero
-            // together, even for the first cycle right after a reset.
-            lineModPhase[(size_t) k] = twoPi * (double) k / (double) verbNumLines;
         }
 
         returnBandwidthL.reset();
@@ -182,6 +172,13 @@ namespace uni76::dsp
         // runtime index arithmetic left to poison).
         const auto safeWetNormalised01 = std::isfinite (wetNormalised01) ? wetNormalised01 : 0.0f;
         wetSmoother.setTargetValue (std::clamp (safeWetNormalised01, 0.0f, 1.0f));
+        const auto decayFormulaSeconds = verbDecayFormulaSeconds (safeWetNormalised01);
+        for (int k = 0; k < verbNumLines; ++k)
+        {
+            const auto lineSeconds = (float) lineLengthSamples[(size_t) k] / (float) sampleRate;
+            const auto rawGain = std::pow (10.0f, -3.0f * lineSeconds / decayFormulaSeconds);
+            lineFeedbackGain[(size_t) k].setTargetValue (std::min (verbLineFeedbackGainMax, rawGain));
+        }
         // DRIVE (nested knob) - same NaN-guard reasoning as the wet macro
         // just above, since this also reaches a smoother target.
         const auto safeDriveNormalised01 = std::isfinite (driveNormalised01) ? driveNormalised01 : 0.0f;
@@ -191,10 +188,6 @@ namespace uni76::dsp
         // Only the wet gain (Mix - dry/wet balance) is macro-dependent now
         // (see VerbCurves.h's "Decay/Pre-delay - FIXED" reasoning) - no
         // per-block RT60/pre-delay recomputation is needed any more.
-        const auto tForCoefficients = wetSmoother.getCurrentValue();
-        const auto wetGain = verbWetGain (tForCoefficients);
-        wetSmoother.skip (numSamples);
-
         // DRIVE-derived send/return coefficients - once-per-block pattern
         // (no audio-rate precision needed - DRIVE is a slow user/
         // automation macro, not an LFO-driven value the way PAN's
@@ -311,47 +304,18 @@ namespace uni76::dsp
             // ---- fixed pre-delay (constant - Mix never stretches this) --
             const auto preDelayed = preDelay.processSample (diffused);
 
-            // ---- reverb tank: small, bounded, per-line-modulated reads --
-            // See VerbCurves.h's "Tank line modulation" section for why
-            // this exists at all (it is the actual anti-metallic
-            // mechanism - a static FDN's modes are fixed for the life of
-            // the instance, which is what reads as "metallic"/"a fixed
-            // resonant note") and why the depth is kept far below the
-            // threshold where it would read as an audible chorus/pitch
-            // effect. At modulation depth 0 this collapses to exactly a
-            // direct index read (frac==0, idx0==lineWritePos).
+            // ---- reverb tank: direct static reads -----------------------
+            // No LFO, fractional interpolation or chorus-like modulation.
             std::array<float, verbNumLines> rawLineOut {};
             for (int k = 0; k < verbNumLines; ++k)
             {
                 const auto& buf = lineBuffers[(size_t) k];
-                const auto size = (int) buf.size();
-                const auto modOffset = verbLineModDepthSamples * (float) std::sin (lineModPhase[(size_t) k]);
-
-                auto readPosF = (float) lineWritePos[(size_t) k] + modOffset;
-                if (! std::isfinite (readPosF))
-                    readPosF = (float) lineWritePos[(size_t) k];
-                readPosF = std::fmod (readPosF, (float) size);
-                if (readPosF < 0.0f)
-                    readPosF += (float) size;
-                const auto idx0 = juce::jlimit (0, size - 1, (int) readPosF);
-                const auto frac = juce::jlimit (0.0f, 1.0f, readPosF - (float) idx0);
-                // AllpassFractionalDelay (Biquad.h), not plain linear
-                // interpolation - a true allpass (flat magnitude response
-                // at any fractional delay), so this modulation costs no
-                // measurable per-pass loss inside the feedback loop, unlike
-                // the frequency-dependent attenuation a 2-tap linear blend
-                // would introduce here. See VerbCurves.h's "Tank line
-                // modulation" section.
-                rawLineOut[(size_t) k] = lineInterpolators[(size_t) k].processSample (buf[(size_t) idx0], frac);
-
-                lineModPhase[(size_t) k] += lineModIncrement[(size_t) k];
-                if (lineModPhase[(size_t) k] >= twoPi)
-                    lineModPhase[(size_t) k] -= twoPi;
+                rawLineOut[(size_t) k] = buf[(size_t) lineWritePos[(size_t) k]];
             }
 
             std::array<float, verbNumLines> mixedFeedback {};
             for (int k = 0; k < verbNumLines; ++k)
-                mixedFeedback[(size_t) k] = lineDamping[(size_t) k].processSample (rawLineOut[(size_t) k]) * lineFeedbackGain[(size_t) k];
+                mixedFeedback[(size_t) k] = lineDamping[(size_t) k].processSample (rawLineOut[(size_t) k]) * lineFeedbackGain[(size_t) k].getNextValue();
 
             // Householder reflection - an energy-preserving (orthogonal)
             // feedback matrix, O(N) - see the file-local houseworthMix()
@@ -436,6 +400,10 @@ namespace uni76::dsp
             // (disabled), the wet term is exactly zero regardless of the
             // tank's internal state - see the class comment in
             // VerbProcessor.h.
+            // Advance Mix at audio rate. The previous once-per-block value +
+            // skip() implementation turned the intended 30 ms ramp into a
+            // staircase whose edges could click at larger host block sizes.
+            const auto wetGain = verbWetGain (wetSmoother.getNextValue());
             const auto wetContribution = wetGain * mix;
             // sideCarry preserves incoming stereo width in the wet output
             // itself (see the `side` comment above and VerbCurves.h) -

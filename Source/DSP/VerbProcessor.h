@@ -23,7 +23,8 @@
     character:
 
         - warm and mild, not clinical/digital-sounding;
-        - a soft, dense tail, fixed at ~3 seconds regardless of Mix;
+        - a soft, dense tail that grows from a compact room to a long
+          ambient decay as VERB is raised;
         - no metallic ringing, no fixed resonant/standing-out notes;
         - no hard/harsh early reflections, no audible comb filtering;
         - no explicit chorus and no pitch wobble anywhere in the tank;
@@ -36,14 +37,8 @@
     N-line Feedback Delay Network (Stautner & Puckette 1982 style) fed by
     a long multi-stage input diffusion cascade, mixed with an orthogonal
     Householder matrix - a different line count, different lengths, and a
-    much smaller, carefully-bounded modulation depth than the old plate
-    module's own (see VerbCurves.h's "Tank line modulation" section for
-    why a *small* amount of correctly-bounded modulation is the actual
-    anti-metallic mechanism here, not something this redesign avoids -
-    the old plate module's own never-fully-solved "metallic ring" history
-    (see docs/DSP_VERB.md's superseded "Historical implementation"
-    section) came from too little, unsafely-added modulation on a
-    much-longer-decay tank, not from modulation being the wrong idea).
+    static delay lines.  There is no tank LFO, fractional-delay state or
+    chorus path; this avoids modulation grit inside the feedback loop.
 
     Topology - **DRIVE lives entirely after the tank, on the wet tail
     only - it never touches the send, the DI/Dry signal, or the tank's
@@ -60,15 +55,10 @@
           -> input diffusion cascade (8-stage short-delay allpass -
              smooths the input into a dense wash BEFORE the tank, so
              there is no discrete early-reflection "slap")
-          -> fixed pre-delay (16ms, constant regardless of Mix)
-          -> reverb tank (12 delay lines, Householder feedback matrix,
-             per-line one-pole damping so highs decay faster than mid, a
-             small/slow/staggered per-line read-position modulation just
-             large enough to detune the tank's own fixed resonant modes
-             (the actual anti-"metallic ring" mechanism) but far below
-             the depth where it would read as an audible chorus/pitch
-             effect - see VerbCurves.h's "Tank line modulation" section -
-             fixed decorrelated stereo output taps)
+          -> fixed pre-delay (16ms constant)
+          -> reverb tank (16 static delay lines, Householder feedback
+             matrix, per-line one-pole damping so highs decay faster than
+             mid, fixed decorrelated stereo output taps)
           -> analog return stage (asymmetric tanh, DRIVE-scaled here and
              only here - see "DRIVE routing" below - + static darkening
              bandwidth ceiling)
@@ -156,28 +146,12 @@ namespace uni76::dsp
         std::array<std::vector<float>, verbNumDiffusers> diffuserBuffers;
         std::array<int, verbNumDiffusers> diffuserWritePos {};
 
-        // ---- reverb tank: decorrelated delay lines, small bounded modulation ----
+        // ---- reverb tank: decorrelated static delay lines ----
         std::array<std::vector<float>, verbNumLines> lineBuffers;
         std::array<int, verbNumLines> lineWritePos {};
         std::array<int, verbNumLines> lineLengthSamples {};
         std::array<OnePoleLowPass, verbNumLines> lineDamping;
-        std::array<float, verbNumLines> lineFeedbackGain {};
-
-        // Small, slow, per-line-staggered read-position modulation - see
-        // VerbCurves.h's "Tank line modulation" section for why this is
-        // present at all (it is the actual anti-metallic mechanism, not
-        // a texture) and why it is kept far below the depth where it
-        // would read as an audible chorus/pitch effect. Read via
-        // AllpassFractionalDelay (Biquad.h), not plain linear
-        // interpolation - a true allpass, so the modulation costs no
-        // measurable RT60/level the way linear interpolation's own
-        // frequency-dependent attenuation would (see Biquad.h's class
-        // comment and its own isolated unit tests,
-        // Tests/PluginTests.cpp's "uni76::dsp::AllpassFractionalDelay"
-        // suite, verified BEFORE this was wired in here).
-        std::array<double, verbNumLines> lineModPhase {};
-        std::array<double, verbNumLines> lineModIncrement {};
-        std::array<AllpassFractionalDelay, verbNumLines> lineInterpolators;
+        std::array<juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>, verbNumLines> lineFeedbackGain;
 
         // ---- analog return bandwidth (static darkening, not DRIVE-scaled) ----
         OnePoleLowPass returnBandwidthL, returnBandwidthR;

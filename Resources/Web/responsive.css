@@ -17,12 +17,49 @@
    narrower preset-name label so a long preset name can't push the
    controls into the title column. */
 @media (max-width: 700px) {
+  :root {
+    --fs-module-name: clamp(0.78rem, 0.55rem + 1vw, 1rem);
+    --fs-module-tag: 0.46rem;
+    --fs-knob-value: clamp(0.7rem, 0.55rem + 0.65vw, 0.88rem);
+    --fs-knob-label: clamp(0.52rem, 0.4rem + 0.55vw, 0.66rem);
+    --module-knob-anchor: 49%;
+    --knob-size: 3.7rem;
+  }
+
+  .header {
+    grid-template-columns: minmax(7rem, 1fr) auto;
+    padding-inline: 0.8rem;
+  }
+
+  .header__title {
+    justify-self: start;
+  }
+
+  .header__product {
+    font-size: 1.85rem;
+    white-space: nowrap;
+  }
+
+  .header__controls {
+    gap: 0.18rem;
+  }
+
+  .header__btn {
+    padding: 0.42em 0.55em;
+    font-size: 0.52rem;
+  }
+
+  .header__btn--theme {
+    margin-right: 0.15rem;
+    width: 4.2rem;
+  }
+
   .header__brand {
     display: none;
   }
 
   .header__btn-preset-label {
-    width: 4.5rem;
+    width: 4rem;
   }
 
   /* The prev/next arrows added alongside PRESET need their own shrink at
@@ -35,6 +72,42 @@
 
   .module__tag {
     display: none;
+  }
+
+  .module__name {
+    letter-spacing: -0.02em;
+    transform: scaleX(0.86);
+  }
+
+  .knob__label {
+    width: 100%;
+    max-width: 100%;
+    font-size: 0.48rem;
+    line-height: 1.15;
+    letter-spacing: 0.08em;
+    white-space: normal;
+    overflow-wrap: normal;
+  }
+
+  .module__aux--delay {
+    top: calc(var(--module-knob-anchor) + var(--knob-size) * 0.72 + 2.65rem);
+  }
+
+  .delay-division__btn,
+  .delay-mode-btn {
+    font-size: 0.32rem;
+    padding-inline: 0.12em;
+    line-height: 1;
+  }
+
+  .delay-mode-btn {
+    font-size: 0.36rem;
+  }
+
+  .module__delay-content .knob-module__inner-readout {
+    flex-direction: column;
+    align-items: center;
+    gap: 0;
   }
 }
 

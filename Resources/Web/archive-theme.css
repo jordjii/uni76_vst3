@@ -1,0 +1,162 @@
+/* Archive is colour-only. Geometry lives in the shared stylesheets so
+   switching theme cannot move any control. */
+
+body[data-theme="archive"] {
+  --archive-paper: #d8d0bc;
+  --archive-paper-light: #e6dfcf;
+  --archive-ink: #171612;
+  --archive-ink-mid: rgba(23, 22, 18, 0.72);
+  --archive-rule: rgba(23, 22, 18, 0.5);
+  --archive-orange: #db4b16;
+  --bg-app: #cfc6b1;
+  --bg-header: var(--archive-paper-light);
+  --bg-footer: var(--archive-paper-light);
+  --text-primary: var(--archive-ink);
+  --text-secondary: var(--archive-ink-mid);
+  --text-tertiary: rgba(23, 22, 18, 0.56);
+  --control-outline: rgba(23, 22, 18, 0.55);
+  --control-outline-hover: var(--archive-ink);
+  --line-hairline: rgba(23, 22, 18, 0.18);
+  --line-hairline-strong: rgba(23, 22, 18, 0.48);
+  --focus-ring-on-dark: var(--archive-orange);
+  --ink-strong: var(--archive-ink);
+  --ink-mid: var(--archive-ink-mid);
+  --ink-soft: rgba(23, 22, 18, 0.5);
+  --ink-hairline: rgba(23, 22, 18, 0.2);
+  --ink-hairline-strong: rgba(23, 22, 18, 0.48);
+  --knob-face: #151512;
+  --knob-face-edge: #050504;
+  --knob-pointer: #eee8da;
+  color-scheme: light;
+}
+
+body[data-theme="archive"] .app {
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.12), transparent 10%, transparent 90%, rgba(48,42,31,.08)),
+    var(--archive-paper);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.32), inset 0 0 28px rgba(54,45,30,.13);
+}
+
+body[data-theme="archive"] .app::after {
+  opacity: 0.14;
+  mix-blend-mode: multiply;
+  background-image:
+    radial-gradient(ellipse at 3% 5%, rgba(75,58,37,.24) 0 1px, transparent 2px),
+    radial-gradient(ellipse at 19% 72%, rgba(75,58,37,.16) 0 1px, transparent 2px),
+    radial-gradient(ellipse at 38% 16%, rgba(255,255,255,.5) 0 1px, transparent 2px),
+    radial-gradient(ellipse at 64% 83%, rgba(75,58,37,.16) 0 1px, transparent 2px),
+    radial-gradient(ellipse at 91% 31%, rgba(75,58,37,.2) 0 1px, transparent 2px);
+  background-size: 97px 73px, 131px 109px, 83px 127px, 149px 89px, 113px 137px;
+}
+
+body[data-theme="archive"] .header,
+body[data-theme="archive"] .footer {
+  background: rgba(230, 223, 207, 0.72);
+}
+
+body[data-theme="archive"] .header__brand-name,
+body[data-theme="archive"] .header__product,
+body[data-theme="archive"] .header__subtitle,
+body[data-theme="archive"] .meter__label,
+body[data-theme="archive"] .meter__scale {
+  color: var(--archive-ink);
+}
+
+body[data-theme="archive"] .header__brand-collection { color: var(--archive-ink-mid); }
+
+body[data-theme="archive"] .header__btn {
+  color: var(--archive-ink);
+  border-color: var(--archive-rule);
+  background: rgba(255,255,255,.12);
+}
+
+body[data-theme="archive"] .header__btn--theme {
+  color: #a9300e;
+  border-color: #a9300e;
+}
+
+body[data-theme="archive"] .header__btn--preset {
+  color: var(--archive-paper-light);
+  background: var(--archive-ink);
+  border-color: var(--archive-ink);
+}
+
+body[data-theme="archive"] .preset-menu {
+  color: var(--archive-ink);
+  background: var(--archive-paper-light);
+  border-color: var(--archive-rule);
+}
+
+body[data-theme="archive"] .preset-menu__item,
+body[data-theme="archive"] .preset-menu__delete-btn,
+body[data-theme="archive"] .preset-menu__save-input,
+body[data-theme="archive"] .preset-menu__save-btn { color: var(--archive-ink); }
+
+body[data-theme="archive"] .preset-menu__item:hover,
+body[data-theme="archive"] .preset-menu__item:focus-visible { background: rgba(219,75,22,.12); }
+
+body[data-theme="archive"] .module {
+  background:
+    linear-gradient(90deg, rgba(255,255,255,.16), transparent 25%, transparent 75%, rgba(64,52,35,.07)),
+    var(--archive-paper);
+  color: var(--archive-ink);
+  border-color: var(--archive-rule);
+  text-shadow: 0 1px 0 rgba(255,255,255,.38);
+}
+
+body[data-theme="archive"] .module.is-disabled { filter: grayscale(.8) brightness(.84); }
+
+body[data-theme="archive"] .module__power {
+  background: #ed3217;
+  border-color: #681408;
+  box-shadow: 0 0 5px rgba(235,48,17,.7), inset 1px 1px 1px rgba(255,255,255,.5);
+}
+
+body[data-theme="archive"] .module.is-disabled .module__power {
+  background: #292824;
+  box-shadow: inset 0 0 2px rgba(0,0,0,.55);
+}
+
+body[data-theme="archive"] .module__name,
+body[data-theme="archive"] .module__tag,
+body[data-theme="archive"] .knob__value,
+body[data-theme="archive"] .knob__label,
+body[data-theme="archive"] .knob__scale-numbers span,
+body[data-theme="archive"] .delay-division__btn,
+body[data-theme="archive"] .delay-mode-btn { color: var(--archive-ink); }
+
+body[data-theme="archive"] .knob__body {
+  border-color: #292720;
+  background: radial-gradient(circle at 38% 32%, #2d2d28 0, #171714 43%, #0b0b09 100%);
+}
+
+body[data-theme="archive"] .knob--inner .knob__body { border-color: var(--archive-orange); }
+body[data-theme="archive"] .module[data-param="reverb"] .knob--inner .knob__body { border-color: #aa9275; }
+
+body[data-theme="archive"] .knob__collar,
+body[data-theme="archive"] .delay-division__btn,
+body[data-theme="archive"] .delay-mode-btn { border-color: var(--archive-rule); }
+
+body[data-theme="archive"] .knob__tick-mark,
+body[data-theme="archive"] .knob__tick--major .knob__tick-mark { background: var(--archive-ink); }
+
+body[data-theme="archive"] .delay-division__btn.is-active,
+body[data-theme="archive"] .ab-toggle__btn.is-active {
+  color: var(--archive-ink);
+  background: var(--archive-orange);
+}
+
+body[data-theme="archive"] .delay-mode-btn.is-active {
+  color: var(--archive-paper-light);
+  background: var(--archive-ink);
+  border-color: var(--archive-ink);
+}
+
+body[data-theme="archive"] .meter-bar,
+body[data-theme="archive"] .ab-toggle {
+  border-color: var(--archive-rule);
+  background: rgba(23,22,18,.1);
+}
+
+body[data-theme="archive"] .meter-bar__segment { background: rgba(23,22,18,.22); }
+body[data-theme="archive"] .bolt { background: radial-gradient(circle at 34% 28%, #777263 0, #2d2b24 50%, #11100d 100%); }

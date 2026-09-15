@@ -30,6 +30,7 @@ namespace uni76::ui
                 { "scales.css",      { BinaryData::scales_css,      BinaryData::scales_cssSize,      "text/css" } },
                 { "meters.css",      { BinaryData::meters_css,      BinaryData::meters_cssSize,      "text/css" } },
                 { "responsive.css",  { BinaryData::responsive_css,  BinaryData::responsive_cssSize,  "text/css" } },
+                { "archive-theme.css", { BinaryData::archivetheme_css, BinaryData::archivetheme_cssSize, "text/css" } },
 
                 { "app.js",          { BinaryData::app_js,          BinaryData::app_jsSize,          "text/javascript" } },
                 { "knob.js",         { BinaryData::knob_js,         BinaryData::knob_jsSize,         "text/javascript" } },
@@ -39,6 +40,7 @@ namespace uni76::ui
                 { "module_power.js", { BinaryData::module_power_js, BinaryData::module_power_jsSize, "text/javascript" } },
                 { "chain_order.js",  { BinaryData::chain_order_js,  BinaryData::chain_order_jsSize,  "text/javascript" } },
                 { "header_controls.js", { BinaryData::header_controls_js, BinaryData::header_controls_jsSize, "text/javascript" } },
+                { "theme.js",        { BinaryData::theme_js,        BinaryData::theme_jsSize,        "text/javascript" } },
                 { "juce_webview.js", { BinaryData::juce_webview_js, BinaryData::juce_webview_jsSize, "text/javascript" } },
             };
 
