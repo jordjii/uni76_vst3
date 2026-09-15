@@ -31,6 +31,10 @@ UNI76AudioProcessor::UNI76AudioProcessor()
     delayDivisionParameter = apvts.getRawParameterValue (uni76::ParamID::delayDivision);
     delayStereoParameter = apvts.getRawParameterValue (uni76::ParamID::delayStereo);
     delayPingPongParameter = apvts.getRawParameterValue (uni76::ParamID::delayPingPong);
+
+    // Deliberately does NOT call licenseState.refresh() here - see
+    // Core/LicenseState.h's class comment and createPluginFilter() below
+    // for why the real, file-backed check happens there instead.
 }
 
 UNI76AudioProcessor::~UNI76AudioProcessor() = default;
@@ -121,6 +125,17 @@ void UNI76AudioProcessor::processBlock (juce::AudioBuffer<float>& buffer, juce::
 {
     juce::ScopedNoDenormals noDenormals;
     juce::ignoreUnused (midiMessages);
+
+    // Offline license gate (see Core/LicenseState.h) - a single relaxed
+    // atomic read, checked first, before anything else in this function.
+    // Unlicensed means genuine silence, not a degraded/limited signal -
+    // buffer.clear() then an early return, so the meters correctly show
+    // nothing rather than lying about activity.
+    if (! licenseState.isLicensed())
+    {
+        buffer.clear();
+        return;
+    }
 
     // Measured before the processing chain.
     inputLevelMeter.pushBlock (buffer);
@@ -439,7 +454,18 @@ void UNI76AudioProcessor::setStateInformation (const void* data, int sizeInBytes
 //==============================================================================
 // This creates the platform-specific plugin instance for the JUCE VST3
 // wrapper to host. Required entry point - do not rename or remove.
+//
+// This is the plugin's one and only real hosting entry point (no
+// Standalone format - see CLAUDE.md's "Format policy"), so it's also
+// where the real, file-backed license check runs - see
+// UNI76AudioProcessor::refreshLicenseState() and Core/LicenseState.h's
+// class comment for why this is deliberately NOT inside the constructor
+// itself (constructing a processor directly, the way every one of
+// Tests/PluginTests.cpp's existing DSP tests already does, must keep
+// processing real audio with no test-suite changes needed).
 juce::AudioProcessor* JUCE_CALLTYPE createPluginFilter()
 {
-    return new UNI76AudioProcessor();
+    auto* processor = new UNI76AudioProcessor();
+    processor->refreshLicenseState();
+    return processor;
 }

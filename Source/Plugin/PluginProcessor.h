@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include "Core/ChainOrder.h"
 #include "Core/LevelMeter.h"
+#include "Core/LicenseState.h"
 #include "Core/ModuleEnableState.h"
 #include "DSP/PreampProcessor.h"
 #include "DSP/EqProcessor.h"
@@ -137,6 +138,17 @@ public:
     int getActivePresetKind() const noexcept { return activePresetKind; }
     const juce::String& getActivePresetName() const noexcept { return activePresetName; }
 
+    /** Offline, machine-bound license check - see Core/LicenseState.h.
+        Realtime-safe (atomic read only); processBlock() mutes entirely
+        when this is false. */
+    bool isLicensed() const noexcept { return licenseState.isLicensed(); }
+
+    /** Runs the real, file-backed license check (see Core/LicenseState.h).
+        Message-thread only - called exactly once, by createPluginFilter()
+        immediately after construction (see that function's own comment
+        for why this is deliberately not in the constructor itself). */
+    void refreshLicenseState() { licenseState.refresh(); }
+
 private:
     juce::AudioProcessorValueTreeState apvts;
 
@@ -158,6 +170,13 @@ private:
     // comment above.
     int activePresetKind = 0;
     juce::String activePresetName;
+
+    // NOT part of the saved state ValueTree at all, unlike everything else
+    // above - a license is machine-wide, not project-wide, so it's always
+    // re-read fresh from disk (see refresh(), called once in the
+    // constructor) rather than round-tripped through
+    // getStateInformation()/setStateInformation(). See Core/LicenseState.h.
+    uni76::LicenseState licenseState;
 
     uni76::dsp::PreampProcessor preampProcessor;
     uni76::dsp::EqProcessor eqProcessor;

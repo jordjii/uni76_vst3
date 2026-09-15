@@ -38,3 +38,9 @@ Packaging/macOS/build/
 
 # Local developer overrides
 CMakeUserPresets.json
+
+# License keygen output (Tools/LicenseKeygen) - the private key must NEVER
+# be committed; issued per-customer .uni76lic files don't belong in the
+# repo either. See docs/LICENSING.md.
+Tools/LicenseKeygen/keys/
+*.uni76lic

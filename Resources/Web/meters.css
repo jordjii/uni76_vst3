@@ -96,3 +96,34 @@
   justify-content: center;
   min-width: 0;
 }
+
+/* License status banner (see Core/LicenseState.h, index.html) - absolutely
+   positioned against .app (position: relative - shell.css), so it overlays
+   the bottom edge without participating in the header/main/footer grid at
+   all - the safest possible placement for something that must only ever
+   appear in the unlicensed edge case, never nudge any existing layout.
+   Reuses --meter-red (already used for the meters' own clip zone) rather
+   than introducing a new colour token for a single warning banner. */
+.license-banner {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: 28px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding-inline: var(--space-md);
+  font-family: var(--font-mono);
+  font-size: var(--fs-footer-caption);
+  font-weight: 800;
+  letter-spacing: var(--tracking-wide);
+  color: #fff;
+  background: var(--meter-red);
+  text-align: center;
+  z-index: 5;
+}
+
+.license-banner[hidden] {
+  display: none;
+}

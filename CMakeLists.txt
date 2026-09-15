@@ -24,6 +24,11 @@ endif()
 
 option(UNI76_BUILD_TESTS "Build the UNI 76 automated test suite" ON)
 
+# Developer-only offline license keygen (Tools/LicenseKeygen) - never part
+# of the shipped plugin, so OFF by default; a normal plugin/test build
+# never needs it. See docs/LICENSING.md.
+option(UNI76_BUILD_TOOLS "Build UNI 76 developer tools (e.g. the license keygen)" OFF)
+
 # ------------------------------------------------------------------------------
 # JUCE - fetched at a pinned commit so every developer and CI machine builds
 # against an identical framework revision. See cmake/PluginIdentity.cmake.
@@ -43,4 +48,8 @@ add_subdirectory(Source/Plugin)
 if(UNI76_BUILD_TESTS)
     enable_testing()
     add_subdirectory(Tests)
+endif()
+
+if(UNI76_BUILD_TOOLS)
+    add_subdirectory(Tools)
 endif()

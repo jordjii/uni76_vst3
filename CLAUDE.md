@@ -2220,10 +2220,99 @@ backward-compatibility details. Summarised here:
   build verified clean (0 warnings); manual verification in a real DAW
   is the user's own next step.
 
+## Offline license / copy-protection system (2026-09-15)
+
+UNI 76 ships bundled with a paid sound pack; this closes the "licensing
+system" item that used to sit in the "Next steps - not started" list
+below. See [docs/LICENSING.md](docs/LICENSING.md) for the full workflow
+and reasoning - summarised here:
+
+- **Fully offline, no server, no network call, ever** (the user explicitly
+  chose not to stand up a backend for this yet) - a license is a small
+  RSA-3072-signed XML file (`license.uni76lic`) the customer drops into a
+  fixed per-user app-data folder (`Nostalgia Audio/UNI 76/License`, same
+  location convention `Core/UserPresets.h` already uses for its own
+  folder), bound to 1-2 machine IDs
+  (`juce::SystemStats::getUniqueDeviceID()`) baked in at issue time. No
+  valid license -> the plugin outputs genuine silence
+  (`buffer.clear(); return;` at the top of `processBlock()`), not a
+  degraded/watermarked signal - the user's own explicit choice.
+- **New**: `Source/Core/LicenseCrypto.h` (shared RSA sign/verify helpers -
+  textbook RSA via `juce::RSAKey`/`juce::BigInteger`, deliberately no
+  PKCS#1 padding since this is a closed single-signer system, not a
+  general protocol), `Source/Core/LicenseState.h/.cpp` (the plugin-side
+  check - loads/verifies the license file, caches the result in a
+  `std::atomic<bool>` so `processBlock()` can read it lock-free, same
+  realtime-safety pattern `Core/ModuleEnableState.h`'s flags already
+  establish), `Source/Core/LicensePublicKey.h` (the embedded public key,
+  generated once via the new tool below - safe to commit, unlike the
+  matching private key). `Source/Plugin/CMakeLists.txt` now links
+  `juce::juce_cryptography` (already vendored with JUCE via
+  `FetchContent` - zero new external dependency).
+- **New**: `Tools/LicenseKeygen` - this project's first standalone
+  developer-only tool (a new `Tools/` directory, guarded by a new
+  `UNI76_BUILD_TOOLS` CMake option, default OFF - never part of a normal
+  plugin/test build). `genkeys` generates the one-time RSA keypair;
+  `issue` builds and signs one customer's license file by hand - the
+  whole per-sale workflow is a manual email exchange (send us your
+  machine ID -> we run `issue` -> we email the file back), which is
+  exactly the accepted tradeoff for "no backend yet."
+- **A genuine architecture decision, not an oversight**: the real,
+  file-backed check does NOT run in `UNI76AudioProcessor`'s constructor -
+  it runs in `createPluginFilter()` (the plugin's one real hosting entry
+  point; there's no Standalone format) via the new
+  `refreshLicenseState()` method, called immediately after construction.
+  `LicenseState`'s cached flag defaults to `licensed = true`, so a
+  processor built by direct C++ construction - exactly what every one of
+  `Tests/PluginTests.cpp`'s ~30 pre-existing DSP test classes already
+  does - never reaches the real check at all and keeps processing real
+  audio with zero test-suite changes needed. Fail-open for direct
+  construction, fail-closed for every path an actual host can reach. This
+  was found the hard way: the first draft called `refresh()` from the
+  constructor, which would have silently muted every existing DSP test's
+  output (all-zero buffers) the moment it shipped - caught before
+  committing, not after.
+- **UI**: a small, otherwise-hidden warning banner
+  (`Resources/Web/license_status.js`, `.license-banner` in
+  `index.html`/`meters.css`) appears only when unlicensed, positioned
+  absolutely over the footer so it can never disturb the fixed
+  header/main/footer grid - piggybacked onto the existing 30Hz
+  `meterLevels` native-to-JS event (`WebUIEditor.cpp`'s `timerCallback()`)
+  the same way `presetName`/`presetKind`/`presetDirty` already are,
+  rather than a new native function or a second timer.
+- **Tests**: two new suites, `UNI76LicenseCryptoTests` (sign/verify
+  round-trip, tamper detection, wrong-key rejection, garbage-input
+  handling - using fresh throwaway keypairs, not the real embedded one)
+  and `UNI76LicenseStateTests` (default-licensed-until-refreshed,
+  fail-closed on a missing/corrupt/wrong-machine license, and a
+  processor-level test confirming `processBlock()` produces genuine
+  silence when unlicensed and real audio otherwise) - both touch the same
+  real app-data folder `Core/UserPresets.h`'s own tests already do,
+  backing up and restoring whatever license file a developer may already
+  have installed for themselves (`ScopedLicenseFileBackup`), since unlike
+  a named user preset there's only one license file slot to collide with.
+  **Manually verified end-to-end this round** (not committed as an
+  automated test, since it would need a machine-specific fixture): built
+  `UNI76LicenseKeygen`, generated the real keypair, embedded the real
+  public key, issued a real license for the development machine's own
+  real ID, and confirmed the real embedded key verifies it - then removed
+  the one-off test again. Debug/Release build clean (0 warnings); full
+  `UNI76Tests` suite unaffected by this round (the same pre-existing,
+  unrelated failures already present on `main` before this work started
+  - confirmed by running the suite against the unmodified HEAD first -
+  remain, and are out of scope here).
+- **Not done this round**: no automated/hosted purchase flow (deliberately
+  manual per the user's own choice), no obfuscation/anti-tamper hardening
+  beyond the RSA check itself (a determined attacker can still patch the
+  compiled check directly - see docs/LICENSING.md's own "Why this shape"
+  section for the accepted realistic limit), macOS side untouched this
+  round (same mechanism, same code, just not rebuilt/reverified on macOS
+  this session).
+
 ## Next steps (not started - waiting for a separate go-ahead)
 
-Presets browser, copy protection, licensing system - see
-[docs/RELEASE.md](docs/RELEASE.md) for the pre-public-release checklist.
+Presets browser - see [docs/RELEASE.md](docs/RELEASE.md) for the
+pre-public-release checklist.
 All 7 modules' DSP is now complete (see
 [docs/DSP_PREAMP.md](docs/DSP_PREAMP.md), [docs/DSP_EQ.md](docs/DSP_EQ.md),
 [docs/DSP_SAT.md](docs/DSP_SAT.md), [docs/DSP_PITCH.md](docs/DSP_PITCH.md),

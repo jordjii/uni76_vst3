@@ -582,5 +582,10 @@ void UNI76AudioProcessorEditor::timerCallback()
                                                                                  : "none");
     payload->setProperty ("presetDirty", presetInfo.dirty);
 
+    // Piggybacked the same way presetName/presetKind/presetDirty are above
+    // - see Core/LicenseState.h. A plain atomic read on the message
+    // thread, negligible next to the meter read this tick already does.
+    payload->setProperty ("licensed", processor.isLicensed());
+
     webView.emitEventIfBrowserIsVisible ("meterLevels", juce::var (payload));
 }

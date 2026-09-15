@@ -518,6 +518,14 @@
         </span>
       </div>
     </footer>
+
+    <!-- Shown only when the license check fails (see Core/LicenseState.h,
+         docs/LICENSING.md) - hidden by default. Positioned absolutely
+         (see meters.css's .license-banner rule) so it overlays without
+         disturbing the fixed header/main/footer grid geometry at all. -->
+    <div class="license-banner" hidden role="alert">
+      UNLICENSED &mdash; open "machine-id.txt" in Nostalgia Audio/UNI 76/License and contact support
+    </div>
   </div>
 
   <script type="module" src="app.js"></script>

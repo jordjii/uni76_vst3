@@ -48,6 +48,10 @@ target_sources(UNI76
 
         ../Core/PluginIdentity.h
         ../Core/LevelMeter.h
+        ../Core/LicenseCrypto.h
+        ../Core/LicensePublicKey.h
+        ../Core/LicenseState.h
+        ../Core/LicenseState.cpp
         ../Core/ModuleEnableState.h
         ../Core/MeterEnvelope.h
         ../Core/FactoryPresets.h
@@ -125,6 +129,7 @@ juce_add_binary_data(UNI76WebResources
         "${CMAKE_SOURCE_DIR}/Resources/Web/chain_order.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/header_controls.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/theme.js"
+        "${CMAKE_SOURCE_DIR}/Resources/Web/license_status.js"
         "${CMAKE_SOURCE_DIR}/Resources/Web/juce_webview.js")
 
 target_compile_definitions(UNI76
@@ -153,6 +158,7 @@ target_link_libraries(UNI76
         UNI76WebResources
         juce::juce_audio_processors
         juce::juce_audio_utils
+        juce::juce_cryptography
         juce::juce_dsp
         juce::juce_gui_extra
     PUBLIC

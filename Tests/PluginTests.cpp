@@ -8,6 +8,8 @@
 #include "Core/MeterEnvelope.h"
 #include "Core/ModuleEnableState.h"
 #include "Core/ChainOrder.h"
+#include "Core/LicenseCrypto.h"
+#include "Core/LicenseState.h"
 #include "Core/FactoryPresets.h"
 #include "Core/UserPresets.h"
 #include "DSP/PreampProcessor.h"
@@ -12304,6 +12306,251 @@ public:
 };
 
 static UNI76ImagerBipolarTests uni76ImagerBipolarTests; // NOLINT - self-registers with the UnitTestRunner
+
+//==============================================================================
+// uni76::license / uni76::LicenseState - offline, machine-bound license
+// check (see Core/LicenseCrypto.h, Core/LicenseState.h, docs/LICENSING.md).
+//
+// LicenseState::refresh() operates on the same real, fixed per-user
+// app-data folder Core/UserPresets.h's own tests already read/write
+// directly (see that class's own tests above) - not a new precedent for
+// this suite. Unlike a named user preset, though, there is only ONE
+// license file slot, so a developer who has already installed a real
+// license for themselves could have it clobbered by a naive test - every
+// test below that touches the real license file backs up and restores
+// whatever was there first via ScopedLicenseFileBackup.
+//
+// The RSA keypairs used here are generated fresh per test (deliberately
+// small - 512 bits - purely for test speed; production keys are 3072-bit,
+// see Tools/LicenseKeygen) and are NOT the real, embedded
+// Core/LicensePublicKey.h key. That means these tests can fully exercise
+// every FAILURE path through the real LicenseState::refresh() (missing
+// file, corrupt XML, tampered/wrong-key signature, wrong machine) end to
+// end, but cannot exercise its SUCCESS path against the real embedded
+// key without hardcoding a fixture signed by the real private key (which
+// this suite deliberately does not do - see the class comment on
+// UNI76LicenseCryptoTests below for why the success path is instead
+// covered at the LicenseCrypto level, with LicenseState's own XML/
+// token-parsing logic covered structurally).
+namespace
+{
+    struct ScopedLicenseFileBackup
+    {
+        ScopedLicenseFileBackup()
+        {
+            auto file = uni76::LicenseState::getLicenseFile();
+            if (file.existsAsFile())
+            {
+                existed = true;
+                content = file.loadFileAsString();
+            }
+        }
+
+        ~ScopedLicenseFileBackup()
+        {
+            auto file = uni76::LicenseState::getLicenseFile();
+            if (existed)
+                file.replaceWithText (content);
+            else
+                file.deleteFile();
+        }
+
+        bool existed = false;
+        juce::String content;
+    };
+}
+
+class UNI76LicenseCryptoTests final : public juce::UnitTest
+{
+public:
+    UNI76LicenseCryptoTests() : juce::UnitTest ("uni76::license (LicenseCrypto)", "UNI76") {}
+
+    void runTest() override
+    {
+        // Deliberately small/fast keys for the test suite - see the
+        // section comment above. The sign/verify *mechanism* under test
+        // (LicenseCrypto.h) is identical regardless of key size.
+        juce::RSAKey publicKeyA, privateKeyA;
+        juce::RSAKey::createKeyPair (publicKeyA, privateKeyA, 512);
+        juce::RSAKey publicKeyB, privateKeyB;
+        juce::RSAKey::createKeyPair (publicKeyB, privateKeyB, 512);
+
+        beginTest ("A signature verifies against the correct public key");
+        {
+            // Several payloads, deliberately including ones whose SHA-256
+            // hash could plausibly start with a zero hex nibble - see
+            // LicenseCrypto.h's own doc comment on why comparison is done
+            // as BigInteger objects, not hex-string text, specifically to
+            // avoid a false failure in exactly this situation. (Not an
+            // empty payload - verifySignature() deliberately treats an
+            // empty payload as invalid input, see its own guard clause.)
+            const char* payloads[] { "UNI76|1|a@b.com|MACHINE1||2026-09-15", "x", "the quick brown fox" };
+
+            for (auto* payload : payloads)
+            {
+                const auto signature = uni76::license::signPayload (payload, privateKeyA.toString());
+                expect (uni76::license::verifySignature (payload, signature, publicKeyA.toString()),
+                        juce::String ("should verify for payload: ") + payload);
+            }
+        }
+
+        beginTest ("A tampered payload fails verification");
+        {
+            const juce::String payload = "UNI76|1|a@b.com|MACHINE1||2026-09-15";
+            const auto signature = uni76::license::signPayload (payload, privateKeyA.toString());
+
+            expect (! uni76::license::verifySignature (payload + "X", signature, publicKeyA.toString()),
+                    "a modified payload must not verify against the original signature");
+        }
+
+        beginTest ("The wrong public key fails verification");
+        {
+            const juce::String payload = "UNI76|1|a@b.com|MACHINE1||2026-09-15";
+            const auto signature = uni76::license::signPayload (payload, privateKeyA.toString());
+
+            expect (! uni76::license::verifySignature (payload, signature, publicKeyB.toString()),
+                    "a signature must not verify against a different keypair's public key");
+        }
+
+        beginTest ("Garbage/empty signature and public key fail closed without crashing");
+        {
+            const juce::String payload = "UNI76|1|a@b.com|MACHINE1||2026-09-15";
+
+            expect (! uni76::license::verifySignature (payload, "", publicKeyA.toString()), "empty signature");
+            expect (! uni76::license::verifySignature (payload, "not-hex-at-all!!", publicKeyA.toString()), "garbage signature");
+            expect (! uni76::license::verifySignature (payload, "deadbeef", ""), "empty public key string");
+            expect (! uni76::license::verifySignature ("", "", ""), "everything empty");
+        }
+    }
+};
+
+static UNI76LicenseCryptoTests uni76LicenseCryptoTests; // NOLINT - self-registers with the UnitTestRunner
+
+class UNI76LicenseStateTests final : public juce::UnitTest
+{
+public:
+    UNI76LicenseStateTests() : juce::UnitTest ("uni76::LicenseState", "UNI76") {}
+
+    void runTest() override
+    {
+        beginTest ("A freshly-constructed LicenseState defaults to licensed=true (fail-open for direct construction)");
+        {
+            // See Core/LicenseState.h's class comment: this is deliberate,
+            // not a bug - it's what lets every pre-existing DSP test in
+            // this suite construct a UNI76AudioProcessor and process real
+            // audio without needing a genuine signed license file on
+            // whatever machine happens to be running the tests. Only
+            // createPluginFilter() (the real VST3/AU hosting entry point)
+            // ever calls refresh() to run the real, fail-closed check.
+            uni76::LicenseState state;
+            expect (state.isLicensed(), "a never-refreshed LicenseState should read as licensed");
+        }
+
+        beginTest ("refresh() with no license file present reports unlicensed, and writes machine-id.txt");
+        {
+            ScopedLicenseFileBackup backup;
+            uni76::LicenseState::getLicenseFile().deleteFile();
+            uni76::LicenseState::getMachineIdFile().deleteFile();
+
+            uni76::LicenseState state;
+            state.refresh();
+
+            expect (! state.isLicensed(), "no license file present -> unlicensed");
+            expect (uni76::LicenseState::getMachineIdFile().existsAsFile(), "refresh() should always write machine-id.txt");
+            expect (uni76::LicenseState::getMachineIdFile().loadFileAsString().contains (juce::SystemStats::getUniqueDeviceID()),
+                    "machine-id.txt should contain this machine's real ID");
+        }
+
+        beginTest ("refresh() fails closed on a corrupt/malformed license file, without crashing");
+        {
+            ScopedLicenseFileBackup backup;
+
+            const char* badFiles[] {
+                "this is not xml at all",
+                "<SomeOtherTag version=\"1\" payload=\"x\" signature=\"y\"/>",
+                "<UNI76License version=\"99\" payload=\"x\" signature=\"y\"/>", // unknown format version
+                "<UNI76License version=\"1\"/>",                               // missing payload/signature entirely
+                "<UNI76License version=\"1\" payload=\"UNI76|1|a@b.com|X|Y|2026-09-15\" signature=\"not-a-real-signature\"/>",
+            };
+
+            for (auto* badFile : badFiles)
+            {
+                uni76::LicenseState::getLicenseFile().replaceWithText (badFile);
+
+                uni76::LicenseState state;
+                state.refresh();
+
+                expect (! state.isLicensed(), juce::String ("should fail closed for: ") + badFile);
+            }
+        }
+
+        beginTest ("refresh() rejects a well-formed but wrong-machine license");
+        {
+            ScopedLicenseFileBackup backup;
+
+            // A structurally valid license whose signature will simply
+            // fail verification against the real embedded public key (see
+            // this section's own comment on why a genuinely *passing*
+            // signature can't be tested here) - this still exercises the
+            // full payload-shape/machine-matching code path up to the
+            // point verifySignature() (correctly) rejects it.
+            const juce::String payload = "UNI76|1|nobody@example.com|DEFINITELY-NOT-THIS-MACHINE||2026-01-01";
+            juce::XmlElement root ("UNI76License");
+            root.setAttribute ("version", 1);
+            root.setAttribute ("payload", payload);
+            root.setAttribute ("signature", "0");
+            root.writeTo (uni76::LicenseState::getLicenseFile());
+
+            uni76::LicenseState state;
+            state.refresh();
+
+            expect (! state.isLicensed(), "an unverifiable/wrong-machine license must never report licensed");
+        }
+
+        beginTest ("processBlock() produces genuine silence when unlicensed, real audio otherwise");
+        {
+            ScopedLicenseFileBackup backup;
+            uni76::LicenseState::getLicenseFile().deleteFile();
+
+            constexpr double sr = 44100.0;
+            constexpr int blockSize = 256;
+
+            UNI76AudioProcessor processor;
+            processor.setBusesLayout (makeLayout (juce::AudioChannelSet::stereo(), juce::AudioChannelSet::stereo()));
+            // PITCH defaults to enabled with a real ~140ms STFT warm-up
+            // latency (docs/DSP_PITCH.md) - a single small block right
+            // after prepareToPlay would read as silence for a reason that
+            // has nothing to do with licensing. Disabled here so this test
+            // isolates the license gate, not PITCH's own startup behaviour.
+            processor.getModuleEnableState().setEnabled (3, false);
+            processor.prepareToPlay (sr, blockSize);
+
+            juce::AudioBuffer<float> buffer (2, blockSize);
+            juce::MidiBuffer midi;
+
+            // Default (never refreshed) - the same "licensed by default for
+            // direct construction" behaviour every other DSP test in this
+            // suite already implicitly relies on.
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                buffer.getWritePointer (ch)[0] = 1.0f;
+            processor.processBlock (buffer, midi);
+            expect (buffer.getMagnitude (0, blockSize) > 0.0f, "a never-refreshed processor should still process real audio");
+
+            // Now force the real check - no license file present, so it
+            // must genuinely mute, not just leave the signal unprocessed.
+            processor.refreshLicenseState();
+            expect (! processor.isLicensed(), "refreshLicenseState() with no license file should report unlicensed");
+
+            buffer.clear();
+            for (int ch = 0; ch < buffer.getNumChannels(); ++ch)
+                buffer.getWritePointer (ch)[0] = 1.0f;
+            processor.processBlock (buffer, midi);
+            expectEquals (buffer.getMagnitude (0, blockSize), 0.0f, "an unlicensed processor must output genuine silence");
+        }
+    }
+};
+
+static UNI76LicenseStateTests uni76LicenseStateTests; // NOLINT - self-registers with the UnitTestRunner
 
 int main()
 {
